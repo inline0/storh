@@ -57,8 +57,11 @@ Alias of `SegmentedLogStore`.
 Alias of `LogQueue`.
 
 - `enqueue(array $payload, ?string $id = null): string`
+- `enqueueMany(iterable $jobs): array`
 - `claim(): ?StorageRecord`
+- `claimMany(int $limit): array`
 - `complete(string $id, bool $keep_done = true): void`
+- `completeMany(iterable $ids, bool $keep_done = true): int`
 - `requeue_timed_out(int $timeout_seconds): int`
 - `purgeDone(int $olderThanSeconds = 0): int`
 - `counts(): array`

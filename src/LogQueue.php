@@ -80,6 +80,23 @@ final class LogQueue
         return $id;
     }
 
+    /**
+     * @param iterable<array<string, mixed>> $jobs
+     * @return list<string>
+     */
+    public function enqueueMany(iterable $jobs): array
+    {
+        $ids = array();
+        $now = time();
+
+        $this->with_lock(function () use ($jobs, &$ids, $now): void {
+            $this->sync_from_log();
+            $this->append_events($this->enqueue_events($jobs, $ids, $now));
+        });
+
+        return $ids;
+    }
+
     public function claim(): ?StorageRecord
     {
         return $this->with_lock(function (): ?StorageRecord {
@@ -107,6 +124,36 @@ final class LogQueue
         });
     }
 
+    /**
+     * @return list<StorageRecord>
+     */
+    public function claimMany(int $limit): array
+    {
+        if ($limit < 1) {
+            throw new StorageException('Queue claim limit must be at least 1.');
+        }
+
+        return $this->with_lock(function () use ($limit): array {
+            $this->sync_from_log();
+            $records = array();
+            $now = time();
+
+            while (count($records) < $limit && $this->pending_offset < count($this->pending_order)) {
+                $id = $this->pending_order[ $this->pending_offset ];
+                $this->pending_offset++;
+                if (! isset($this->pending[ $id ])) {
+                    continue;
+                }
+
+                $records[] = new StorageRecord($id, $this->payloads[ $id ] ?? array());
+            }
+
+            $this->append_events($this->claim_events($records, $now));
+
+            return $records;
+        });
+    }
+
     public function complete(string $id, bool $keep_done = true): void
     {
         UuidV7::assert_valid($id);
@@ -128,29 +175,50 @@ final class LogQueue
         });
     }
 
+    /**
+     * @param iterable<string> $ids
+     */
+    public function completeMany(iterable $ids, bool $keep_done = true): int
+    {
+        $validated = array();
+        foreach ($ids as $id) {
+            UuidV7::assert_valid($id);
+            $validated[] = $id;
+        }
+
+        if (array() === $validated) {
+            return 0;
+        }
+
+        return $this->with_lock(function () use ($validated, $keep_done): int {
+            $this->sync_from_log();
+            $completed = 0;
+            $now = time();
+
+            $this->append_events($this->complete_events($validated, $keep_done, $completed, $now));
+
+            return $completed;
+        });
+    }
+
     public function requeue_timed_out(int $timeout_seconds): int
     {
         return $this->with_lock(function () use ($timeout_seconds): int {
             $this->sync_from_log();
             $now = time();
-            $count = 0;
+            $ids = array();
 
             foreach ($this->processing as $id => $claimed_at) {
                 if ($now - $claimed_at < $timeout_seconds) {
                     continue;
                 }
 
-                $this->append_event(
-                    array(
-                        'op' => 'requeue',
-                        'id' => $id,
-                        'ts' => $now,
-                    )
-                );
-                $count++;
+                $ids[] = $id;
             }
 
-            return $count;
+            $this->append_events($this->id_events('requeue', $ids, $now));
+
+            return count($ids);
         });
     }
 
@@ -159,24 +227,19 @@ final class LogQueue
         return $this->with_lock(function () use ($olderThanSeconds): int {
             $this->sync_from_log();
             $now = time();
-            $count = 0;
+            $ids = array();
 
             foreach ($this->done as $id => $completed_at) {
                 if ($olderThanSeconds > 0 && $now - $completed_at < $olderThanSeconds) {
                     continue;
                 }
 
-                $this->append_event(
-                    array(
-                        'op' => 'purge',
-                        'id' => $id,
-                        'ts' => $now,
-                    )
-                );
-                $count++;
+                $ids[] = $id;
             }
 
-            return $count;
+            $this->append_events($this->id_events('purge', $ids, $now));
+
+            return count($ids);
         });
     }
 
@@ -262,27 +325,22 @@ final class LogQueue
     {
         return $this->with_lock(function () use ($processingTimeoutSeconds): array {
             $this->replay_log(true);
-            $requeued = 0;
             $now = time();
+            $ids = array();
 
             foreach ($this->processing as $id => $claimed_at) {
                 if ($now - $claimed_at < $processingTimeoutSeconds) {
                     continue;
                 }
 
-                $this->append_event(
-                    array(
-                        'op' => 'requeue',
-                        'id' => $id,
-                        'ts' => $now,
-                    )
-                );
-                $requeued++;
+                $ids[] = $id;
             }
+
+            $this->append_events($this->id_events('requeue', $ids, $now));
 
             return array(
                 'ok'       => true,
-                'requeued' => $requeued,
+                'requeued' => count($ids),
             );
         });
     }
@@ -414,14 +472,133 @@ final class LogQueue
      */
     private function append_event(array $event): void
     {
+        $this->append_events(array( $event ));
+    }
+
+    /**
+     * @param iterable<array<string, mixed>> $events
+     */
+    private function append_events(iterable $events): void
+    {
         $path = $this->log_path();
         $handle = $this->log_handle();
+        $lines = '';
+        $applied = array();
+        $wrote = false;
+
         fseek($handle, 0, SEEK_END);
-        AtomicFilesystem::write_all($handle, $this->encode_line($event), $path);
+        foreach ($events as $event) {
+            $lines .= $this->encode_line($event);
+            $applied[] = $event;
+
+            if (strlen($lines) < 1_048_576) {
+                continue;
+            }
+
+            AtomicFilesystem::write_all($handle, $lines, $path);
+            foreach ($applied as $applied_event) {
+                $this->apply_event($applied_event);
+            }
+
+            $lines = '';
+            $applied = array();
+            $wrote = true;
+        }
+
+        if ('' !== $lines) {
+            AtomicFilesystem::write_all($handle, $lines, $path);
+            foreach ($applied as $applied_event) {
+                $this->apply_event($applied_event);
+            }
+
+            $wrote = true;
+        }
+
+        if (! $wrote) {
+            return;
+        }
+
         fflush($handle);
         $offset = ftell($handle);
         $this->log_offset = false === $offset ? $this->log_offset : $offset;
-        $this->apply_event($event);
+    }
+
+    /**
+     * @param iterable<array<string, mixed>> $jobs
+     * @param list<string> $ids
+     * @return \Generator<int, array<string, mixed>>
+     */
+    private function enqueue_events(iterable $jobs, array &$ids, int $now): \Generator
+    {
+        foreach ($jobs as $job) {
+            $id = isset($job['id']) && is_string($job['id']) ? $job['id'] : null;
+            $payload = isset($job['payload']) && is_array($job['payload']) ? $job['payload'] : $job;
+            $id ??= ( $this->id_generator )();
+            UuidV7::assert_valid($id);
+
+            /** @var array<string, mixed> $payload */
+            $ids[] = $id;
+            yield array(
+                'op'      => 'enqueue',
+                'id'      => $id,
+                'payload' => $payload,
+                'ts'      => $now,
+            );
+        }
+    }
+
+    /**
+     * @param list<StorageRecord> $records
+     * @return \Generator<int, array<string, mixed>>
+     */
+    private function claim_events(array $records, int $now): \Generator
+    {
+        foreach ($records as $record) {
+            yield array(
+                'op' => 'claim',
+                'id' => $record->id(),
+                'ts' => $now,
+            );
+        }
+    }
+
+    /**
+     * @param list<string> $ids
+     * @return \Generator<int, array<string, mixed>>
+     */
+    private function complete_events(array $ids, bool $keep_done, int &$completed, int $now): \Generator
+    {
+        $seen = array();
+
+        foreach ($ids as $id) {
+            if (isset($seen[ $id ]) || ! isset($this->processing[ $id ])) {
+                continue;
+            }
+
+            $seen[ $id ] = true;
+            $completed++;
+            yield array(
+                'op'   => 'complete',
+                'id'   => $id,
+                'done' => $keep_done,
+                'ts'   => $now,
+            );
+        }
+    }
+
+    /**
+     * @param list<string> $ids
+     * @return \Generator<int, array<string, mixed>>
+     */
+    private function id_events(string $op, array $ids, int $now): \Generator
+    {
+        foreach ($ids as $id) {
+            yield array(
+                'op' => $op,
+                'id' => $id,
+                'ts' => $now,
+            );
+        }
     }
 
     /**

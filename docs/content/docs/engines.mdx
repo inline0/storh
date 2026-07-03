@@ -39,7 +39,8 @@ $events->compact();
 
 `Queue` is for high-throughput durable work queues. Enqueue, claim, complete,
 requeue, and purge write append-only events to `queue.log`; queue state is
-replayed into memory when the queue opens.
+replayed into memory when the queue opens. Batch methods amortize lock and
+flush cost across many jobs.
 
 ```php
 $queue = new Storh\Queue($root, 'mail');

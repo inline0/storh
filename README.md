@@ -100,7 +100,8 @@ compaction.
 
 `Queue` stores job events in an append-only log and keeps pending, processing,
 and done state in memory. Claims, completions, requeues, and purges append
-bounded events instead of creating one file per job.
+bounded events instead of creating one file per job. Bulk enqueue, claim, and
+complete methods reduce lock and flush cost for large queues.
 
 ## Querying and Indexes
 

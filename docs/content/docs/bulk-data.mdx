@@ -26,6 +26,18 @@ $log->appendMany([
 ]);
 ```
 
+Queue bulk APIs:
+
+```php
+$queue->enqueueMany([
+    ['task' => 'render', 'pageId' => $home->id()],
+    ['task' => 'notify', 'pageId' => $home->id()],
+]);
+
+$jobs = $queue->claimMany(100);
+$queue->completeMany(array_map(fn ($job) => $job->id(), $jobs));
+```
+
 Optional partitions:
 
 ```php

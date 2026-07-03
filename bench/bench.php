@@ -165,7 +165,27 @@ function bench_queue(string $root, int $dataset): array
         $queue->requeue_timed_out(0);
     });
 
-    return compact('enqueue', 'claim', 'complete', 'requeue');
+    unset($queue, $claimed);
+    gc_collect_cycles();
+
+    $bulk_queue = new Queue($root, 'queue-bulk');
+    $bulk_claimed = array();
+
+    $bulk_enqueue = timed(static function () use ($bulk_queue, $dataset): void {
+        $bulk_queue->enqueueMany(rows($dataset));
+    });
+
+    $bulk_claim = timed(static function () use ($bulk_queue, $dataset, &$bulk_claimed): void {
+        foreach ($bulk_queue->claimMany($dataset) as $record) {
+            $bulk_claimed[] = $record->id();
+        }
+    });
+
+    $bulk_complete = timed(static function () use ($bulk_queue, $bulk_claimed): void {
+        $bulk_queue->completeMany($bulk_claimed);
+    });
+
+    return compact('enqueue', 'claim', 'complete', 'requeue', 'bulk_enqueue', 'bulk_claim', 'bulk_complete');
 }
 
 /**
@@ -231,6 +251,16 @@ function row(int $i): array
         'slug'        => 'item-' . $i,
         'publishedAt' => 1_700_000_000_000 + $i,
     );
+}
+
+/**
+ * @return Generator<int, array<string, mixed>>
+ */
+function rows(int $dataset): Generator
+{
+    for ($i = 0; $i < $dataset; $i++) {
+        yield row($i);
+    }
 }
 
 function timed(callable $callback): float

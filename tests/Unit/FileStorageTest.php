@@ -624,6 +624,44 @@ JSONC
         $this->assertFalse($queue->verify()['ok']);
     }
 
+    public function test_log_queue_bulk_enqueue_claim_and_complete(): void
+    {
+        $ids   = $this->fixed_ids();
+        $queue = new LogQueue($this->root, 'bulk-log-queue', $this->id_generator(array_slice($ids, 1)));
+
+        $queued = $queue->enqueueMany(
+            array(
+                array( 'id' => $ids[0], 'payload' => array( 'task' => 'one' ) ),
+                array( 'task' => 'two' ),
+                array( 'task' => 'three' ),
+            )
+        );
+
+        $this->assertSame(array_slice($ids, 0, 3), $queued);
+        $this->assertSame(array( 'pending' => 3, 'processing' => 0, 'done' => 0 ), $queue->counts());
+
+        $claimed = $queue->claimMany(2);
+        $this->assertSame(array_slice($ids, 0, 2), array_map(static fn($record): string => $record->id(), $claimed));
+        $this->assertSame('one', $claimed[0]->data()['task'] ?? null);
+        $this->assertSame(array( 'pending' => 1, 'processing' => 2, 'done' => 0 ), $queue->counts());
+
+        $this->assertSame(1, $queue->completeMany(array( $ids[0], $ids[4] )));
+        $this->assertSame(array( 'pending' => 1, 'processing' => 1, 'done' => 1 ), $queue->counts());
+        $this->assertSame(1, $queue->completeMany(array( $ids[1] ), false));
+        $this->assertSame(array( 'pending' => 1, 'processing' => 0, 'done' => 1 ), $queue->counts());
+
+        $remaining = $queue->claimMany(10);
+        $this->assertSame(array( $ids[2] ), array_map(static fn($record): string => $record->id(), $remaining));
+        $this->assertSame(array(), $queue->claimMany(10));
+
+        try {
+            $queue->claimMany(0);
+            $this->fail('Expected bulk claim limit failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('limit', $exception->getMessage());
+        }
+    }
+
     public function test_segmented_log_accepts_concurrent_appends_without_lost_or_interleaved_records(): void
     {
         if (! function_exists('pcntl_fork') || ! function_exists('pcntl_wait')) {
