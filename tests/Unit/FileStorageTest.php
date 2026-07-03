@@ -863,13 +863,18 @@ JSONC
         $this->assertSame(array( $ids[2], $ids[3] ), array_map(static fn($record): string => $record->id(), $page));
 
         $index_files = glob($this->root . '/branch-log/segments/seg-*.idx.jsonc') ?: array();
+        sort($index_files);
         $this->assertNotSame(array(), $index_files);
+        $sparse_index = AtomicFilesystem::read_jsonc_object($index_files[0]);
+        $entries = isset($sparse_index['entries']) && is_array($sparse_index['entries']) ? $sparse_index['entries'] : array();
+        $this->assertNotSame(array(), $entries);
+        $this->assertSame($ids[0], $entries[0]['id'] ?? null);
+        $this->assertSame(0, $entries[0]['offset'] ?? null);
         unlink($index_files[0]);
         $this->assertNotSame(array(), iterator_to_array($store->stream(RecordQuery::all()->after($ids[0])->limit(1))));
 
         $this->assertNotSame(array(), $store->state_index());
         $this->assertSame(0, $this->invoke_private($store, 'seek_offset_for', array( array( 'file' => 'active.ndjson' ), $ids[0] )));
-        $this->assertSame(array(), $this->invoke_private($store, 'segment_offsets', array( 'missing.ndjson' )));
 
         $empty_store = new SegmentedLogStore($this->root, 'empty-roll', 4096);
         $this->assertNull($this->invoke_private($empty_store, 'roll_active_segment'));

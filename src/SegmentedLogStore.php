@@ -21,6 +21,9 @@ final class SegmentedLogStore implements FileStoreInterface
     /** @var array<string, array{min: string|null, max: string|null, records: int}> */
     private array $segment_stats = array();
 
+    /** @var array<string, list<array{0: string, 1: int}>> */
+    private array $segment_sparse_offsets = array();
+
     /** @var resource|null */
     private mixed $lock_handle = null;
 
@@ -454,7 +457,7 @@ final class SegmentedLogStore implements FileStoreInterface
         fflush($handle);
 
         $id = $envelope['id'];
-        $this->remember_segment_record($file, $id);
+        $this->remember_segment_record($file, $id, $offset);
         $active_max = isset($active['max']) && is_string($active['max']) ? $active['max'] : null;
         $active_min = isset($active['min']) && is_string($active['min']) ? $active['min'] : null;
         $active_records = isset($active['records']) && is_int($active['records']) ? $active['records'] : 0;
@@ -609,7 +612,7 @@ final class SegmentedLogStore implements FileStoreInterface
         foreach ($pending as $entry) {
             $envelope = $entry['envelope'];
             $id = $envelope['id'];
-            $this->remember_segment_record($entry['file'], $id);
+            $this->remember_segment_record($entry['file'], $id, $entry['offset']);
             $this->write_state_entry(
                 $id,
                 array(
@@ -644,7 +647,13 @@ final class SegmentedLogStore implements FileStoreInterface
         $this->close_active_handle();
 
         $index = $this->index_file_name_for_segment($file);
-        $this->write_sparse_index_to($this->segment_path($index), $this->segment_offsets($file));
+        $offsets = $this->segment_sparse_offsets[ $file ] ?? null;
+        if (null === $offsets) {
+            throw new StorageException('Sparse offsets missing for active segment.');
+        }
+
+        $this->write_sparse_entries_to($this->segment_path($index), $offsets);
+        unset($this->segment_sparse_offsets[ $file ]);
 
         $sealed     = isset($manifest['sealed']) && is_array($manifest['sealed']) ? $manifest['sealed'] : array();
         $sealed[]   = array(
@@ -675,6 +684,7 @@ final class SegmentedLogStore implements FileStoreInterface
             'max'     => null,
             'records' => 0,
         );
+        $this->segment_sparse_offsets[ $active_new ] = array();
         $this->write_manifest($manifest);
     }
 
@@ -1108,6 +1118,7 @@ final class SegmentedLogStore implements FileStoreInterface
     {
         $state = array();
         $stats = array();
+        $sparse_offsets = array();
 
         foreach ($this->all_segments() as $segment) {
             $file = isset($segment['file']) && is_string($segment['file']) ? $segment['file'] : '';
@@ -1129,6 +1140,7 @@ final class SegmentedLogStore implements FileStoreInterface
                 $min     = null;
                 $max     = null;
                 $records = 0;
+                $offsets = array();
                 $last_good_offset = 0;
                 while (true) {
                     $offset = ftell($handle);
@@ -1153,6 +1165,9 @@ final class SegmentedLogStore implements FileStoreInterface
                     $id            = $envelope['id'];
                     $min           = null === $min || strcmp($id, $min) < 0 ? $id : $min;
                     $max           = null === $max || strcmp($id, $max) > 0 ? $id : $max;
+                    if (0 === $records % $this->sparse_index_interval) {
+                        $offsets[] = array( $id, $offset );
+                    }
                     $records++;
                     $state[ $id ] = array(
                         'deleted' => 'delete' === $envelope['op'],
@@ -1167,13 +1182,15 @@ final class SegmentedLogStore implements FileStoreInterface
                     'max'     => $max,
                     'records' => $records,
                 );
+                $sparse_offsets[ $file ] = $offsets;
             } finally {
                 fclose($handle);
             }
         }
 
         ksort($state);
-        $this->segment_stats = $stats;
+        $this->segment_stats          = $stats;
+        $this->segment_sparse_offsets = $sparse_offsets;
 
         return $state;
     }
@@ -1381,50 +1398,6 @@ final class SegmentedLogStore implements FileStoreInterface
     }
 
     /**
-     * @return list<array{0: string, 1: int}>
-     */
-    private function segment_offsets(string $file): array
-    {
-        $offsets = array();
-        $handle  = @fopen($this->segment_path($file), 'rb');
-        if (false === $handle) {
-            return $offsets;
-        }
-
-        try {
-            while (true) {
-                $offset = ftell($handle);
-                $line   = fgets($handle);
-                if (false === $offset || false === $line) {
-                    break;
-                }
-
-                $envelope  = $this->decode_line($line);
-                $offsets[] = array( $envelope['id'], $offset );
-            }
-        } finally {
-            fclose($handle);
-        }
-
-        return $offsets;
-    }
-
-    /**
-     * @param list<array{0: string, 1: int}> $offsets
-     */
-    private function write_sparse_index_to(string $path, array $offsets): void
-    {
-        $entries = array();
-        foreach ($offsets as $index => $entry) {
-            if (0 === $index % $this->sparse_index_interval) {
-                $entries[] = $entry;
-            }
-        }
-
-        $this->write_sparse_entries_to($path, $entries);
-    }
-
-    /**
      * @param list<array{0: string, 1: int}> $entries
      */
     private function write_sparse_entries_to(string $path, array $entries): void
@@ -1530,7 +1503,7 @@ final class SegmentedLogStore implements FileStoreInterface
         $this->active_handle_path = null;
     }
 
-    private function remember_segment_record(string $file, string $id): void
+    private function remember_segment_record(string $file, string $id, int $offset): void
     {
         $stats = $this->segment_stats[ $file ] ?? array(
             'min'     => null,
@@ -1540,6 +1513,9 @@ final class SegmentedLogStore implements FileStoreInterface
 
         $stats['min'] = null === $stats['min'] || strcmp($id, $stats['min']) < 0 ? $id : $stats['min'];
         $stats['max'] = null === $stats['max'] || strcmp($id, $stats['max']) > 0 ? $id : $stats['max'];
+        if (0 === $stats['records'] % $this->sparse_index_interval) {
+            $this->segment_sparse_offsets[ $file ][] = array( $id, $offset );
+        }
         $stats['records']++;
 
         $this->segment_stats[ $file ] = $stats;
