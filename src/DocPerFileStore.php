@@ -6,6 +6,8 @@ namespace Storh;
 
 final class DocPerFileStore implements FileStoreInterface
 {
+    private const CACHE_HASH_ALGORITHM = 'xxh128';
+
     private const WRITE_CACHE_LIMIT = 100000;
 
     /** @var callable(): string */
@@ -16,6 +18,8 @@ final class DocPerFileStore implements FileStoreInterface
     private CacheInterface $cache;
 
     private bool $cache_enabled;
+
+    private string $cache_scope;
 
     private ?DocStoreIndexManager $index_manager = null;
 
@@ -52,7 +56,7 @@ final class DocPerFileStore implements FileStoreInterface
         ?callable $id_generator = null,
         ?CacheInterface $cache = null,
         private readonly ?Schema $schema = null,
-        private readonly string $cache_validation = CacheValidation::HASH
+        private readonly string $cache_validation = CacheValidation::STAT
     ) {
         CacheValidation::assert_valid($this->cache_validation);
 
@@ -65,6 +69,7 @@ final class DocPerFileStore implements FileStoreInterface
         $this->cache                 = $cache ?? Cache::null();
         $this->cache_enabled = ! $this->cache instanceof NullCache;
         $this->collection_path = rtrim($this->root, '/\\') . '/' . $this->collection;
+        $this->cache_scope     = hash(self::CACHE_HASH_ALGORITHM, $this->collection_path);
         $this->data_path       = $this->collection_path . '/data';
         $this->temp_prefix     = (string) getmypid();
         AtomicFilesystem::cleanup_temp_files($this->collection_root());
@@ -709,12 +714,12 @@ final class DocPerFileStore implements FileStoreInterface
         }
 
         $cached_exists = $cached[0];
-        $cached_path   = $cached[1];
+        $cached_scope  = $cached[1];
         $cached_mtime  = $cached[2];
         $cached_size   = $cached[3];
         $cached_hash   = $cached[4];
 
-        if ($cached_path !== $path) {
+        if ($cached_scope !== $this->cache_scope) {
             $this->cache->delete($this->cache_key($id));
             return null;
         }
@@ -736,7 +741,7 @@ final class DocPerFileStore implements FileStoreInterface
         $size   = $exists ? (int) filesize($path) : -1;
         $hash   = '';
         if ($exists && CacheValidation::HASH === $this->cache_validation) {
-            $hash = (string) sha1_file($path);
+            $hash = (string) hash_file(self::CACHE_HASH_ALGORITHM, $path);
         }
 
         if (
@@ -774,7 +779,7 @@ final class DocPerFileStore implements FileStoreInterface
             if ($this->last_record_content_path === $path && null !== $this->last_record_content_hash) {
                 $hash = $this->last_record_content_hash;
             } else {
-                $hash = (string) sha1_file($path);
+                $hash = (string) hash_file(self::CACHE_HASH_ALGORITHM, $path);
             }
         }
 
@@ -782,11 +787,11 @@ final class DocPerFileStore implements FileStoreInterface
             $this->cache_key($record->id()),
             array(
                 true,
-                $path,
+                $this->cache_scope,
                 $mtime,
                 $size,
                 $hash,
-                $record->data(),
+                $this->encode_cached_data($record->data()),
             )
         );
     }
@@ -802,7 +807,7 @@ final class DocPerFileStore implements FileStoreInterface
             $this->cache_key($id),
             array(
                 false,
-                $path,
+                $this->cache_scope,
                 0,
                 -1,
                 '',
@@ -815,6 +820,14 @@ final class DocPerFileStore implements FileStoreInterface
      */
     private function cached_data(mixed $value): array
     {
+        if (is_string($value)) {
+            try {
+                $value = json_decode($value, true, 512, JSON_THROW_ON_ERROR);
+            } catch (\JsonException) {
+                return array();
+            }
+        }
+
         if (! is_array($value)) {
             return array();
         }
@@ -827,6 +840,17 @@ final class DocPerFileStore implements FileStoreInterface
         }
 
         return $data;
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    private function encode_cached_data(array $data): string
+    {
+        return json_encode(
+            $data,
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
+        );
     }
 
     /**
@@ -858,7 +882,9 @@ final class DocPerFileStore implements FileStoreInterface
         }
 
         $this->last_record_content_path = $path;
-        $this->last_record_content_hash = CacheValidation::HASH === $this->cache_validation ? sha1($contents) : null;
+        $this->last_record_content_hash = CacheValidation::HASH === $this->cache_validation
+            ? hash(self::CACHE_HASH_ALGORITHM, $contents)
+            : null;
     }
 
     /**
@@ -872,7 +898,9 @@ final class DocPerFileStore implements FileStoreInterface
         }
 
         $this->last_record_content_path = $path;
-        $this->last_record_content_hash = CacheValidation::HASH === $this->cache_validation ? sha1($contents) : null;
+        $this->last_record_content_hash = CacheValidation::HASH === $this->cache_validation
+            ? hash(self::CACHE_HASH_ALGORITHM, $contents)
+            : null;
 
         try {
             $decoded = json_decode($contents, true, 512, JSON_THROW_ON_ERROR);

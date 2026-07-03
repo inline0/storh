@@ -675,7 +675,12 @@ final class AdvancedStorageTest extends TestCase
         $writer->put(array( 'value' => 'initial' ));
 
         $cache = Cache::memory(10);
-        $reader = new DocPerFileStore($this->root, 'hash-docs', cache: $cache);
+        $reader = new DocPerFileStore(
+            $this->root,
+            'hash-docs',
+            cache: $cache,
+            cache_validation: CacheValidation::HASH
+        );
         $this->assertSame('initial', $reader->get($ids[0])?->data()['value'] ?? null);
 
         AtomicFilesystem::write_atomic(

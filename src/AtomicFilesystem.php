@@ -45,8 +45,19 @@ final class AtomicFilesystem
      */
     public static function write_all(mixed $handle, string $contents, string $path): void
     {
-        $offset = 0;
         $length = strlen($contents);
+        if (0 === $length) {
+            return;
+        }
+
+        $offset = @fwrite($handle, $contents);
+        if (false === $offset || 0 === $offset) {
+            throw new StorageException('Could not write storage file: ' . $path);
+        }
+
+        if ($offset === $length) {
+            return;
+        }
 
         while ($offset < $length) {
             $written = @fwrite($handle, substr($contents, $offset));

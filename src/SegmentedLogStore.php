@@ -6,6 +6,8 @@ namespace Storh;
 
 final class SegmentedLogStore implements FileStoreInterface
 {
+    private const CACHE_HASH_ALGORITHM = 'xxh128';
+
     /** @var callable(): string */
     private mixed $id_generator;
 
@@ -52,7 +54,7 @@ final class SegmentedLogStore implements FileStoreInterface
         ?CacheInterface $cache = null,
         ?string $partition = null,
         ?int $partition_timestamp_ms = null,
-        private readonly string $cache_validation = CacheValidation::HASH
+        private readonly string $cache_validation = CacheValidation::STAT
     ) {
         CacheValidation::assert_valid($this->cache_validation);
 
@@ -1766,7 +1768,9 @@ final class SegmentedLogStore implements FileStoreInterface
         $exists = is_file($path);
         $mtime  = $exists ? (int) filemtime($path) : 0;
         $size   = $exists ? (int) filesize($path) : -1;
-        $hash   = $exists && CacheValidation::HASH === $this->cache_validation ? (string) sha1_file($path) : '';
+        $hash   = $exists && CacheValidation::HASH === $this->cache_validation
+            ? (string) hash_file(self::CACHE_HASH_ALGORITHM, $path)
+            : '';
 
         if (
             is_array($cached) &&

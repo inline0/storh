@@ -16,7 +16,7 @@ $options = getopt('', array( 'dataset::', 'engine::', 'output::', 'cache-validat
 $dataset = max(1, (int) ( $options['dataset'] ?? 1000 ));
 $engine  = (string) ( $options['engine'] ?? 'all' );
 $output  = (string) ( $options['output'] ?? dirname(__DIR__) . '/build/bench-current.json' );
-$cache_validation = CacheValidation::assert_valid((string) ( $options['cache-validation'] ?? CacheValidation::HASH ));
+$cache_validation = CacheValidation::assert_valid((string) ( $options['cache-validation'] ?? CacheValidation::STAT ));
 $root    = sys_get_temp_dir() . '/storh-bench-' . getmypid() . '-' . bin2hex(random_bytes(4));
 
 mkdir($root, 0777, true);

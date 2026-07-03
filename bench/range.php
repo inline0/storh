@@ -35,7 +35,7 @@ foreach ($datasets as $dataset) {
             continue;
         }
 
-        run_bench($dataset, $engine, $output_dir, CacheValidation::HASH, $memory_limit);
+        run_bench($dataset, $engine, $output_dir, CacheValidation::STAT, $memory_limit);
     }
 }
 
