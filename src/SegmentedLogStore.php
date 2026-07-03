@@ -202,6 +202,7 @@ final class SegmentedLogStore implements FileStoreInterface
 
         $query ??= RecordQuery::all();
         $count  = 0;
+        $filters_records = $query->filters_records();
 
         foreach ($this->query_segments($query) as $segment) {
             $file = isset($segment['file']) && is_string($segment['file']) ? $segment['file'] : '';
@@ -246,7 +247,7 @@ final class SegmentedLogStore implements FileStoreInterface
                     }
 
                     $record = $this->record_from_envelope($envelope);
-                    if (! $query->matches($record)) {
+                    if ($filters_records && ! $query->matches($record)) {
                         continue;
                     }
 

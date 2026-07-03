@@ -110,10 +110,24 @@ final class RecordQuery
         return $this->limit;
     }
 
+    public function filters_records(): bool
+    {
+        return null !== $this->after_id ||
+            null !== $this->from_ms ||
+            null !== $this->until_ms ||
+            array() !== $this->field_equals;
+    }
+
     public function matches(StorageRecord $record): bool
     {
-        $id = $record->id();
+        return $this->matches_data($record->id(), $record->data());
+    }
 
+    /**
+     * @param array<string, mixed> $data
+     */
+    public function matches_data(string $id, array $data): bool
+    {
         if (null !== $this->after_id && strcmp($id, $this->after_id) <= 0) {
             return false;
         }
@@ -128,7 +142,6 @@ final class RecordQuery
             return false;
         }
 
-        $data = $record->data();
         foreach ($this->field_equals as $field => $value) {
             if (! array_key_exists($field, $data) || $data[ $field ] !== $value) {
                 return false;

@@ -249,6 +249,7 @@ final class DocPerFileStore implements FileStoreInterface
     {
         $query ??= RecordQuery::all();
         $count = 0;
+        $filters_records = $query->filters_records();
 
         if (null !== $this->record_path_cache && null !== $this->record_data_cache) {
             $ids = array_keys($this->record_path_cache);
@@ -259,12 +260,11 @@ final class DocPerFileStore implements FileStoreInterface
                     continue;
                 }
 
-                $record = new StorageRecord($id, $data);
-                if (! $query->matches($record)) {
+                if ($filters_records && ! $query->matches_data($id, $data)) {
                     continue;
                 }
 
-                yield $record;
+                yield new StorageRecord($id, $data);
                 $count++;
 
                 if (null !== $query->limit_value() && $count >= $query->limit_value()) {
@@ -288,7 +288,7 @@ final class DocPerFileStore implements FileStoreInterface
                 throw $throwable;
             }
 
-            if (! $query->matches($record)) {
+            if ($filters_records && ! $query->matches($record)) {
                 continue;
             }
 
@@ -368,6 +368,24 @@ final class DocPerFileStore implements FileStoreInterface
             return $records;
         }
 
+        if (null !== $this->record_path_cache && null !== $this->record_data_cache) {
+            $ids = array_keys($this->record_path_cache);
+            sort($ids);
+            foreach ($ids as $id) {
+                $data = $this->record_data_cache[ $id ] ?? null;
+                if (null === $data || ! $query->matches_data($id, $data)) {
+                    continue;
+                }
+
+                $records[] = new StorageRecord($id, $data);
+                if ($can_stop_early && count($records) >= $limit) {
+                    return $records;
+                }
+            }
+
+            return $records;
+        }
+
         foreach ($this->stream() as $record) {
             if ($query->matches($record)) {
                 $records[] = $record;
@@ -395,6 +413,21 @@ final class DocPerFileStore implements FileStoreInterface
             foreach ($ids as $id) {
                 $record = $this->get($id);
                 if (null === $record || ! $query->matches($record)) {
+                    continue;
+                }
+
+                $count++;
+                if (null !== $limit && $count >= $limit) {
+                    return $count;
+                }
+            }
+
+            return $count;
+        }
+
+        if (null !== $this->record_path_cache && null !== $this->record_data_cache) {
+            foreach ($this->record_data_cache as $id => $data) {
+                if (! $query->matches_data($id, $data)) {
                     continue;
                 }
 
