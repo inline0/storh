@@ -80,21 +80,25 @@ final class DocStoreIndexManager
         AtomicFilesystem::ensure_directory($this->entries_root());
 
         $buckets = array();
+        $range_buckets = array();
         $entries = 0;
         $definitions = $this->definitions();
         foreach ($this->store->stream() as $record) {
-            $this->collect_index_entries($buckets, $definitions, $record->id(), $record->data());
+            $this->collect_rebuild_index_entries($buckets, $range_buckets, $definitions, $record->id(), $record->data());
             $entries++;
 
-            if ($this->bucket_value_count($buckets) < 4096) {
+            if ($this->bucket_value_count($buckets) < 4096 && $this->range_bucket_bytes($range_buckets) < 1_048_576) {
                 continue;
             }
 
             $this->merge_index_buckets($buckets);
+            $this->append_range_buckets($range_buckets);
             $buckets = array();
+            $range_buckets = array();
         }
 
         $this->merge_index_buckets($buckets);
+        $this->append_range_buckets($range_buckets);
 
         return array(
             'fields'  => count($this->definitions()),
@@ -367,11 +371,9 @@ final class DocStoreIndexManager
         }
 
         $entry = AtomicFilesystem::read_jsonc_object($root);
-        $ids = $this->ids_for_index_key($entry, $this->value_key($value));
+        $ids = $this->ids_for_index_key($entry, $this->value_key($value), $limit);
 
-        sort($ids);
-
-        return null === $limit ? $ids : array_slice($ids, 0, $limit);
+        return $ids;
     }
 
     /**
@@ -571,6 +573,66 @@ final class DocStoreIndexManager
 
     /**
      * @param array<string, array{path: string, field: string, values: array<string, array{value: mixed, ids: array<string, true>}>}> $buckets
+     * @param array<string, string> $range_buckets
+     * @param array<string, array{field: string, unique: bool, range: bool}> $definitions
+     * @param array<string, mixed> $data
+     */
+    private function collect_rebuild_index_entries(array &$buckets, array &$range_buckets, array $definitions, string $id, array $data): void
+    {
+        foreach ($definitions as $definition) {
+            $field = $definition['field'];
+            if (! array_key_exists($field, $data) || ! $this->indexable($data[ $field ])) {
+                continue;
+            }
+
+            $value = $data[ $field ];
+            if ($definition['range']) {
+                $this->collect_range_entry($range_buckets, $field, $value, $id);
+                continue;
+            }
+
+            $this->collect_index_entry(
+                $buckets,
+                $this->eq_entry_path($field, $value),
+                $field,
+                $this->value_key($value),
+                $value,
+                $id
+            );
+        }
+    }
+
+    /**
+     * @param array<string, string> $range_buckets
+     */
+    private function collect_range_entry(array &$range_buckets, string $field, mixed $value, string $id): void
+    {
+        $path = $this->range_entry_path($field, $value);
+        $range_buckets[ $path ] = ( $range_buckets[ $path ] ?? '' ) . $this->encode_index_object(
+            array(
+                'key'    => $this->range_key($value),
+                'value'  => $value,
+                'ids'    => array( $id ),
+                'remove' => array(),
+            )
+        );
+    }
+
+    /**
+     * @param array<string, string> $range_buckets
+     */
+    private function append_range_buckets(array $range_buckets): void
+    {
+        foreach ($range_buckets as $path => $contents) {
+            AtomicFilesystem::ensure_directory(dirname($path));
+            if (false === @file_put_contents($path, $contents, FILE_APPEND)) {
+                throw new StorageException('Could not write range index: ' . $path);
+            }
+        }
+    }
+
+    /**
+     * @param array<string, array{path: string, field: string, values: array<string, array{value: mixed, ids: array<string, true>}>}> $buckets
      */
     private function collect_index_entry(array &$buckets, string $path, string $field, string $value_key, mixed $value, string $id): void
     {
@@ -692,7 +754,7 @@ final class DocStoreIndexManager
      * @param array<string, mixed> $entry
      * @return list<string>
      */
-    private function ids_for_index_key(array $entry, string $key): array
+    private function ids_for_index_key(array $entry, string $key, ?int $limit = null): array
     {
         $values = isset($entry['values']) && is_array($entry['values']) ? $entry['values'] : array();
         $value_entry = $values[ $key ] ?? null;
@@ -700,20 +762,23 @@ final class DocStoreIndexManager
             return array();
         }
 
-        return $this->ids_from_value_entry($this->string_keyed($value_entry));
+        return $this->ids_from_value_entry($this->string_keyed($value_entry), $limit);
     }
 
     /**
      * @param array<string, mixed> $entry
      * @return list<string>
      */
-    private function ids_from_value_entry(array $entry): array
+    private function ids_from_value_entry(array $entry, ?int $limit = null): array
     {
         $ids = array();
         $items = isset($entry['ids']) && is_array($entry['ids']) ? $entry['ids'] : array();
         foreach ($items as $id) {
             if (is_string($id) && UuidV7::is_valid($id)) {
                 $ids[] = $id;
+                if (null !== $limit && count($ids) >= $limit) {
+                    return $ids;
+                }
             }
         }
 
@@ -804,6 +869,19 @@ final class DocStoreIndexManager
         }
 
         return $count;
+    }
+
+    /**
+     * @param array<string, string> $range_buckets
+     */
+    private function range_bucket_bytes(array $range_buckets): int
+    {
+        $bytes = 0;
+        foreach ($range_buckets as $contents) {
+            $bytes += strlen($contents);
+        }
+
+        return $bytes;
     }
 
     private function assert_field(string $field): void

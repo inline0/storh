@@ -19,6 +19,12 @@ final class DocPerFileStore implements FileStoreInterface
 
     private ?DocStoreIndexManager $index_manager = null;
 
+    private string $collection_path;
+
+    private string $data_path;
+
+    private string $temp_prefix;
+
     private int $temp_counter = 0;
 
     /** @var array<string, true> */
@@ -48,6 +54,9 @@ final class DocPerFileStore implements FileStoreInterface
         $this->id_generator          = $id_generator ?? static fn(): string => UuidV7::generate();
         $this->cache                 = $cache ?? Cache::null();
         $this->cache_enabled = ! $this->cache instanceof NullCache;
+        $this->collection_path = rtrim($this->root, '/\\') . '/' . $this->collection;
+        $this->data_path       = $this->collection_path . '/data';
+        $this->temp_prefix     = (string) getmypid();
         AtomicFilesystem::cleanup_temp_files($this->collection_root());
         if (! is_dir($this->data_root())) {
             $this->record_path_cache = array();
@@ -69,16 +78,20 @@ final class DocPerFileStore implements FileStoreInterface
         $this->assert_record_id($id, $generated);
         $this->schema?->validate($data);
 
-        $old = $generated ? null : $this->get($id);
-        $indexes = $this->indexes();
-        $indexes->validate_unique($id, $data, $old?->data());
+        $indexes = $this->active_indexes();
+        $old = null === $indexes || $generated ? null : $this->get($id);
+        if (null !== $indexes) {
+            $indexes->validate_unique($id, $data, $old?->data());
+        }
 
         $record = new StorageRecord($id, $data);
         $path = $this->record_path_for_id($id);
         $this->write_record_file($path, $id, $data);
         $this->remember_written_record($id, $path, $data);
 
-        $indexes->update_record($id, $data, $old?->data());
+        if (null !== $indexes) {
+            $indexes->update_record($id, $data, $old?->data());
+        }
         $this->cache_record($record, $path);
 
         return $record;
@@ -91,8 +104,8 @@ final class DocPerFileStore implements FileStoreInterface
     public function putMany(iterable $records): array
     {
         $stored = array();
-        $indexes = $this->indexes();
-        $has_indexes = array() !== $indexes->definitions();
+        $indexes = $this->active_indexes();
+        $has_indexes = null !== $indexes;
 
         foreach ($records as $record) {
             $id   = isset($record['id']) && is_string($record['id']) ? $record['id'] : null;
@@ -131,8 +144,8 @@ final class DocPerFileStore implements FileStoreInterface
     public function putStream(iterable $records): int
     {
         $count = 0;
-        $indexes = $this->indexes();
-        $has_indexes = array() !== $indexes->definitions();
+        $indexes = $this->active_indexes();
+        $has_indexes = null !== $indexes;
 
         foreach ($records as $record) {
             $id   = isset($record['id']) && is_string($record['id']) ? $record['id'] : null;
@@ -151,7 +164,7 @@ final class DocPerFileStore implements FileStoreInterface
 
             $path = $this->record_path_for_id($id);
             $this->write_record_file($path, $id, $data);
-            $this->remember_written_record($id, $path, $data);
+            $this->remember_written_record($id, $path, $data, false);
 
             if ($has_indexes) {
                 $indexes->update_record($id, $data, $old?->data());
@@ -284,6 +297,21 @@ final class DocPerFileStore implements FileStoreInterface
         $this->index_manager ??= new DocStoreIndexManager($this);
 
         return $this->index_manager;
+    }
+
+    private function active_indexes(): ?DocStoreIndexManager
+    {
+        if (null !== $this->index_manager) {
+            return array() === $this->index_manager->definitions() ? null : $this->index_manager;
+        }
+
+        if (! is_file($this->collection_root() . '/.storh/indexes/manifest.jsonc')) {
+            return null;
+        }
+
+        $indexes = $this->indexes();
+
+        return array() === $indexes->definitions() ? null : $indexes;
     }
 
     /**
@@ -483,12 +511,12 @@ final class DocPerFileStore implements FileStoreInterface
 
     public function collection_root(): string
     {
-        return rtrim($this->root, '/\\') . '/' . $this->collection;
+        return $this->collection_path;
     }
 
     private function data_root(): string
     {
-        return $this->collection_root() . '/data';
+        return $this->data_path;
     }
 
     /**
@@ -515,13 +543,13 @@ final class DocPerFileStore implements FileStoreInterface
 
         foreach ($iterator as $file) {
             if ($file instanceof \SplFileInfo && 'jsonc' === $file->getExtension()) {
-                $paths[] = $file->getPathname();
+                $paths[ $file->getBasename('.jsonc') ] = $file->getPathname();
             }
         }
 
-        sort($paths);
+        ksort($paths);
 
-        return $paths;
+        return array_values($paths);
     }
 
     private function record_from_file(string $path, string $expected_id): StorageRecord
@@ -651,7 +679,7 @@ final class DocPerFileStore implements FileStoreInterface
 
         $directory = dirname($path);
         $this->ensure_known_directory($directory);
-        $temp = $directory . '/.' . basename($path) . '.' . getmypid() . '.' . ++$this->temp_counter . '.tmp';
+        $temp = $directory . '/.' . basename($path) . '.' . $this->temp_prefix . '.' . ++$this->temp_counter . '.tmp';
         $handle = @fopen($temp, 'wb');
         if (false === $handle) {
             throw new StorageException('Could not open temporary storage file for writing: ' . $temp);
@@ -713,7 +741,7 @@ final class DocPerFileStore implements FileStoreInterface
     /**
      * @param array<string, mixed> $data
      */
-    private function remember_written_record(string $id, string $path, array $data): void
+    private function remember_written_record(string $id, string $path, array $data, bool $cache_data = true): void
     {
         if (null !== $this->record_path_cache) {
             if (count($this->record_path_cache) >= self::WRITE_CACHE_LIMIT) {
@@ -721,6 +749,11 @@ final class DocPerFileStore implements FileStoreInterface
             } else {
                 $this->record_path_cache[ $id ] = $path;
             }
+        }
+
+        if (! $cache_data) {
+            $this->record_data_cache = null;
+            return;
         }
 
         if (null !== $this->record_data_cache) {

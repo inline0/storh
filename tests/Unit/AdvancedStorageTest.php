@@ -15,6 +15,7 @@ use Storh\MemoryCache;
 use Storh\RecordQuery;
 use Storh\Schema;
 use Storh\SegmentedLogStore;
+use Storh\StorageRecord;
 use Storh\StorageException;
 use Storh\Tests\Support\TestFilesystem;
 use Storh\UuidV7;
@@ -144,6 +145,10 @@ final class AdvancedStorageTest extends TestCase
             )
         );
         $this->assertSame(2, $streamed->stats()['records']);
+        $this->assertSame(
+            array( 'stream-a', 'stream-b' ),
+            array_map(static fn(StorageRecord $record): string => $record->data()['slug'], iterator_to_array($streamed->stream()))
+        );
         $this->assertTrue($store->health()['ok']);
         $this->assertTrue($store->verify()['ok']);
         $this->assertSame(3, $store->reindex()['fields']);
