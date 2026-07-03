@@ -453,8 +453,10 @@ final class SegmentedLogStore implements FileStoreInterface
         fseek($handle, 0, SEEK_END);
         $offset = ftell($handle);
         $offset = false === $offset ? 0 : $offset;
-        AtomicFilesystem::write_all($handle, $this->encode_line($envelope), $path);
+        $line = $this->encode_line($envelope);
+        AtomicFilesystem::write_all($handle, $line, $path);
         fflush($handle);
+        $end_offset = $offset + strlen($line);
 
         $id = $envelope['id'];
         $this->remember_segment_record($file, $id, $offset);
@@ -478,8 +480,7 @@ final class SegmentedLogStore implements FileStoreInterface
             )
         );
 
-        clearstatcache(true, $path);
-        if (is_file($path) && filesize($path) >= $this->max_segment_bytes) {
+        if ($end_offset >= $this->max_segment_bytes) {
             $this->write_manifest($manifest);
             $this->roll_active_segment();
         }
