@@ -30,6 +30,8 @@ final class SegmentedLogStore implements FileStoreInterface
     /** @var resource|null */
     private mixed $active_handle = null;
 
+    private bool $active_handle_dirty = false;
+
     private ?string $active_handle_file = null;
 
     private ?string $active_handle_path = null;
@@ -196,6 +198,8 @@ final class SegmentedLogStore implements FileStoreInterface
      */
     public function stream(?RecordQuery $query = null): \Generator
     {
+        $this->flush_active_handle();
+
         $query ??= RecordQuery::all();
         $count  = 0;
 
@@ -319,6 +323,8 @@ final class SegmentedLogStore implements FileStoreInterface
      */
     public function stats(): array
     {
+        $this->flush_active_handle();
+
         $segments = $this->all_segments();
         $bytes    = 0;
         foreach ($segments as $segment) {
@@ -455,20 +461,11 @@ final class SegmentedLogStore implements FileStoreInterface
         $offset = false === $offset ? 0 : $offset;
         $line = $this->encode_line($envelope);
         AtomicFilesystem::write_all($handle, $line, $path);
-        fflush($handle);
+        $this->active_handle_dirty = true;
         $end_offset = $offset + strlen($line);
 
         $id = $envelope['id'];
         $this->remember_segment_record($file, $id, $offset);
-        $active_max = isset($active['max']) && is_string($active['max']) ? $active['max'] : null;
-        $active_min = isset($active['min']) && is_string($active['min']) ? $active['min'] : null;
-        $active_records = isset($active['records']) && is_int($active['records']) ? $active['records'] : 0;
-        $manifest['active'] = array(
-            'file'    => $file,
-            'max'     => null === $active_max || strcmp($id, $active_max) > 0 ? $id : $active_max,
-            'min'     => null === $active_min || strcmp($id, $active_min) < 0 ? $id : $active_min,
-            'records' => $active_records + 1,
-        );
 
         $this->write_state_entry(
             $id,
@@ -481,7 +478,6 @@ final class SegmentedLogStore implements FileStoreInterface
         );
 
         if ($end_offset >= $this->max_segment_bytes) {
-            $this->write_manifest($manifest);
             $this->roll_active_segment();
         }
     }
@@ -645,6 +641,7 @@ final class SegmentedLogStore implements FileStoreInterface
             throw new StorageException('Could not roll missing active segment.');
         }
 
+        $this->flush_active_handle();
         $this->close_active_handle();
 
         $index = $this->index_file_name_for_segment($file);
@@ -758,17 +755,15 @@ final class SegmentedLogStore implements FileStoreInterface
                         $output_offset = ftell($output_handle);
                         $output_offset = false === $output_offset ? 0 : $output_offset;
 
-                        AtomicFilesystem::write_all(
-                            $output_handle,
-                            $this->encode_line(
-                                array(
-                                    'op'   => 'put',
-                                    'id'   => $record->id(),
-                                    'data' => $record->data(),
-                                )
-                            ),
-                            $output_path
+                        $output_line = $this->encode_line(
+                            array(
+                                'op'   => 'put',
+                                'id'   => $record->id(),
+                                'data' => $record->data(),
+                            )
                         );
+                        AtomicFilesystem::write_all($output_handle, $output_line, $output_path);
+                        $output_position = $output_offset + strlen($output_line);
 
                         if (0 === $output_records % $this->sparse_index_interval) {
                             $output_offsets[] = array( $record->id(), $output_offset );
@@ -788,8 +783,7 @@ final class SegmentedLogStore implements FileStoreInterface
                             )
                         );
 
-                        clearstatcache(true, $output_path);
-                        if (is_file($output_path) && filesize($output_path) >= $this->max_segment_bytes) {
+                        if ($output_position >= $this->max_segment_bytes) {
                             $output_segments[] = $this->finish_compaction_segment(
                                 $output_handle,
                                 $output_file,
@@ -905,8 +899,9 @@ final class SegmentedLogStore implements FileStoreInterface
     {
         $path = $this->manifest_path();
         clearstatcache(true, $path);
-        $mtime = is_file($path) ? (int) filemtime($path) : 0;
-        $size  = is_file($path) ? (int) filesize($path) : -1;
+        $exists = is_file($path);
+        $mtime = $exists ? (int) filemtime($path) : 0;
+        $size  = $exists ? (int) filesize($path) : -1;
 
         if (
             null !== $this->manifest_state &&
@@ -931,9 +926,10 @@ final class SegmentedLogStore implements FileStoreInterface
         $path = $this->manifest_path();
         AtomicFilesystem::write_atomic($path, Jsonc::encode_object($manifest));
         clearstatcache(true, $path);
+        $exists = is_file($path);
         $this->manifest_state = $manifest;
-        $this->manifest_mtime = is_file($path) ? (int) filemtime($path) : 0;
-        $this->manifest_size  = is_file($path) ? (int) filesize($path) : -1;
+        $this->manifest_mtime = $exists ? (int) filemtime($path) : 0;
+        $this->manifest_size  = $exists ? (int) filesize($path) : -1;
         $this->cache->delete($this->manifest_cache_key());
     }
 
@@ -1117,6 +1113,8 @@ final class SegmentedLogStore implements FileStoreInterface
      */
     private function build_state_index(bool $truncate_torn = false): array
     {
+        $this->flush_active_handle();
+
         $state = array();
         $stats = array();
         $sparse_offsets = array();
@@ -1201,6 +1199,8 @@ final class SegmentedLogStore implements FileStoreInterface
      */
     private function read_envelope_at(string $file, int $offset): array
     {
+        $this->flush_active_handle();
+
         $handle = @fopen($this->segment_path($file), 'rb');
         if (false === $handle) {
             throw new StorageException('Could not open segment: ' . $file);
@@ -1497,14 +1497,26 @@ final class SegmentedLogStore implements FileStoreInterface
 
     private function close_active_handle(): void
     {
-        if (is_resource($this->active_handle)) {
-            fflush($this->active_handle);
-            fclose($this->active_handle);
+        $handle = $this->active_handle;
+        if (is_resource($handle)) {
+            $this->flush_active_handle();
+            fclose($handle);
         }
 
         $this->active_handle      = null;
+        $this->active_handle_dirty = false;
         $this->active_handle_file = null;
         $this->active_handle_path = null;
+    }
+
+    private function flush_active_handle(): void
+    {
+        if (! is_resource($this->active_handle) || ! $this->active_handle_dirty) {
+            return;
+        }
+
+        fflush($this->active_handle);
+        $this->active_handle_dirty = false;
     }
 
     private function remember_segment_record(string $file, string $id, int $offset): void
@@ -1658,9 +1670,10 @@ final class SegmentedLogStore implements FileStoreInterface
         }
 
         clearstatcache(true, $path);
-        $mtime  = is_file($path) ? (int) filemtime($path) : 0;
-        $size   = is_file($path) ? (int) filesize($path) : -1;
-        $hash   = is_file($path) && CacheValidation::HASH === $this->cache_validation ? (string) sha1_file($path) : '';
+        $exists = is_file($path);
+        $mtime  = $exists ? (int) filemtime($path) : 0;
+        $size   = $exists ? (int) filesize($path) : -1;
+        $hash   = $exists && CacheValidation::HASH === $this->cache_validation ? (string) sha1_file($path) : '';
 
         if (
             is_array($cached) &&
