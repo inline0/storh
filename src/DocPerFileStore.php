@@ -36,6 +36,10 @@ final class DocPerFileStore implements FileStoreInterface
     /** @var array<string, array<string, mixed>>|null */
     private ?array $record_data_cache = null;
 
+    private bool $record_cache_ordered = true;
+
+    private ?string $record_cache_last_id = null;
+
     private ?string $last_record_content_path = null;
 
     private ?string $last_record_content_hash = null;
@@ -252,9 +256,7 @@ final class DocPerFileStore implements FileStoreInterface
         $filters_records = $query->filters_records();
 
         if (null !== $this->record_path_cache && null !== $this->record_data_cache) {
-            $ids = array_keys($this->record_path_cache);
-            sort($ids);
-            foreach ($ids as $id) {
+            foreach ($this->cached_record_ids() as $id) {
                 $data = $this->record_data_cache[ $id ] ?? null;
                 if (null === $data) {
                     continue;
@@ -369,9 +371,7 @@ final class DocPerFileStore implements FileStoreInterface
         }
 
         if (null !== $this->record_path_cache && null !== $this->record_data_cache) {
-            $ids = array_keys($this->record_path_cache);
-            sort($ids);
-            foreach ($ids as $id) {
+            foreach ($this->cached_record_ids() as $id) {
                 $data = $this->record_data_cache[ $id ] ?? null;
                 if (null === $data || ! $query->matches_data($id, $data)) {
                     continue;
@@ -595,6 +595,8 @@ final class DocPerFileStore implements FileStoreInterface
 
         $this->record_path_cache = null;
         $this->record_data_cache = null;
+        $this->record_cache_ordered = true;
+        $this->record_cache_last_id = null;
 
         return $this->record_path_for_id($id);
     }
@@ -640,7 +642,9 @@ final class DocPerFileStore implements FileStoreInterface
 
         if (null !== $this->record_path_cache) {
             $paths = $this->record_path_cache;
-            ksort($paths);
+            if (! $this->record_cache_ordered) {
+                ksort($paths);
+            }
 
             return array_values($paths);
         }
@@ -905,6 +909,8 @@ final class DocPerFileStore implements FileStoreInterface
     {
         $this->record_path_cache = null;
         $this->record_data_cache = null;
+        $this->record_cache_ordered = true;
+        $this->record_cache_last_id = null;
     }
 
     /**
@@ -915,7 +921,18 @@ final class DocPerFileStore implements FileStoreInterface
         if (null !== $this->record_path_cache) {
             if (count($this->record_path_cache) >= self::WRITE_CACHE_LIMIT) {
                 $this->record_path_cache = null;
+                $this->record_cache_ordered = true;
+                $this->record_cache_last_id = null;
             } else {
+                if (! isset($this->record_path_cache[ $id ])) {
+                    if (null !== $this->record_cache_last_id && strcmp($id, $this->record_cache_last_id) < 0) {
+                        $this->record_cache_ordered = false;
+                    }
+                    if (null === $this->record_cache_last_id || strcmp($id, $this->record_cache_last_id) > 0) {
+                        $this->record_cache_last_id = $id;
+                    }
+                }
+
                 $this->record_path_cache[ $id ] = $path;
             }
         }
@@ -949,6 +966,23 @@ final class DocPerFileStore implements FileStoreInterface
         }
 
         $this->record_data_cache[ $id ] = $data;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function cached_record_ids(): array
+    {
+        if (null === $this->record_path_cache) {
+            return array();
+        }
+
+        $ids = array_keys($this->record_path_cache);
+        if (! $this->record_cache_ordered) {
+            sort($ids);
+        }
+
+        return $ids;
     }
 
     /**
