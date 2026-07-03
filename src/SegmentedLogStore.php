@@ -17,6 +17,8 @@ final class SegmentedLogStore implements FileStoreInterface
 
     private CacheInterface $cache;
 
+    private bool $cache_enabled;
+
     /** @var null|array<string, array{deleted: bool, file: string, offset: int, aliases: list<array{file: string, offset: int}>}> */
     private ?array $state = null;
 
@@ -69,6 +71,7 @@ final class SegmentedLogStore implements FileStoreInterface
         $this->trusted_generated_ids = null === $id_generator;
         $this->id_generator          = $id_generator ?? static fn(): string => UuidV7::generate();
         $this->cache                 = $cache ?? Cache::null();
+        $this->cache_enabled         = ! $this->cache instanceof NullCache;
         $this->collection_path       = $this->partitioned_collection($collection, $partition, $partition_timestamp_ms);
         $this->initialize();
     }
@@ -989,7 +992,9 @@ final class SegmentedLogStore implements FileStoreInterface
         $this->manifest_state = $manifest;
         $this->manifest_mtime = $exists ? (int) filemtime($path) : 0;
         $this->manifest_size  = $exists ? (int) filesize($path) : -1;
-        $this->cache->delete($this->manifest_cache_key());
+        if ($this->cache_enabled) {
+            $this->cache->delete($this->manifest_cache_key());
+        }
     }
 
     private function repair_manifest_stats_from_segments(): void
@@ -1149,7 +1154,10 @@ final class SegmentedLogStore implements FileStoreInterface
             return 0;
         }
 
-        $index  = $this->read_cached_jsonc_object($path, $this->sparse_cache_key($path));
+        $index  = $this->read_cached_jsonc_object(
+            $path,
+            $this->cache_enabled ? $this->sparse_cache_key($path) : null
+        );
         $offset = 0;
         $entries = isset($index['entries']) && is_array($index['entries']) ? $index['entries'] : array();
         foreach ($entries as $entry) {
@@ -1313,7 +1321,9 @@ final class SegmentedLogStore implements FileStoreInterface
             'offset'  => $encoded['offset'],
             'aliases' => isset($encoded['aliases']) && is_array($encoded['aliases']) ? $encoded['aliases'] : array(),
         );
-        $this->cache->delete($this->state_cache_key($id));
+        if ($this->cache_enabled) {
+            $this->cache->delete($this->state_cache_key($id));
+        }
     }
 
     /**
@@ -1321,7 +1331,9 @@ final class SegmentedLogStore implements FileStoreInterface
      */
     private function replace_state_index(array $state): void
     {
-        $this->cache->clear_prefix($this->state_cache_prefix());
+        if ($this->cache_enabled) {
+            $this->cache->clear_prefix($this->state_cache_prefix());
+        }
         $this->state = $state;
     }
 
@@ -1510,7 +1522,9 @@ final class SegmentedLogStore implements FileStoreInterface
         }
 
         AtomicFilesystem::write_atomic($path, Jsonc::encode_object(array( 'entries' => $encoded )));
-        $this->cache->delete($this->sparse_cache_key($path));
+        if ($this->cache_enabled) {
+            $this->cache->delete($this->sparse_cache_key($path));
+        }
     }
 
     private function with_lock(callable $callback): mixed
@@ -1642,7 +1656,9 @@ final class SegmentedLogStore implements FileStoreInterface
         if (null !== $this->state) {
             unset($this->state[ $id ]);
         }
-        $this->cache->delete($this->state_cache_key($id));
+        if ($this->cache_enabled) {
+            $this->cache->delete($this->state_cache_key($id));
+        }
     }
 
     private function segment_file_name(int $number): string
@@ -1755,8 +1771,12 @@ final class SegmentedLogStore implements FileStoreInterface
     /**
      * @return array<string, mixed>
      */
-    private function read_cached_jsonc_object(string $path, string $key): array
+    private function read_cached_jsonc_object(string $path, ?string $key): array
     {
+        if (null === $key) {
+            return AtomicFilesystem::read_jsonc_object($path);
+        }
+
         $cached = $this->cache->get($key);
         if (CacheValidation::TRUST === $this->cache_validation && is_array($cached) && is_array($cached['data'] ?? null)) {
             /** @var array<string, mixed> $data */

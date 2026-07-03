@@ -108,7 +108,9 @@ final class DocPerFileStore implements FileStoreInterface
         if (null !== $indexes) {
             $indexes->update_record($id, $data, $old?->data());
         }
-        $this->cache_record($record, $path);
+        if ($this->cache_enabled) {
+            $this->cache_record($record, $path);
+        }
 
         return $record;
     }
@@ -148,7 +150,9 @@ final class DocPerFileStore implements FileStoreInterface
             }
 
             $storage_record = new StorageRecord($id, $data);
-            $this->cache_record($storage_record, $path);
+            if ($this->cache_enabled) {
+                $this->cache_record($storage_record, $path);
+            }
             $stored[] = $storage_record;
         }
 
@@ -209,13 +213,17 @@ final class DocPerFileStore implements FileStoreInterface
             }
         }
 
-        $cached = $this->cached_record($id, $path);
-        if ($cached instanceof StorageRecord || false === $cached) {
-            return false === $cached ? null : $cached;
+        if ($this->cache_enabled) {
+            $cached = $this->cached_record($id, $path);
+            if ($cached instanceof StorageRecord || false === $cached) {
+                return false === $cached ? null : $cached;
+            }
         }
 
         if (! is_file($path)) {
-            $this->cache_missing($id, $path);
+            if ($this->cache_enabled) {
+                $this->cache_missing($id, $path);
+            }
             return null;
         }
 
@@ -223,7 +231,9 @@ final class DocPerFileStore implements FileStoreInterface
         if (CacheValidation::TRUST === $this->cache_validation) {
             $this->remember_trusted_read_record($id, $record->data());
         }
-        $this->cache_record($record);
+        if ($this->cache_enabled) {
+            $this->cache_record($record);
+        }
 
         return $record;
     }
@@ -248,7 +258,9 @@ final class DocPerFileStore implements FileStoreInterface
             $this->indexes()->remove_record($id, $old->data());
         }
 
-        $this->cache_missing($id, $path);
+        if ($this->cache_enabled) {
+            $this->cache_missing($id, $path);
+        }
     }
 
     /**
