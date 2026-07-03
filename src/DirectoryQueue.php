@@ -9,6 +9,8 @@ final class DirectoryQueue
     /** @var callable(): string */
     private mixed $id_generator;
 
+    private bool $trusted_generated_ids;
+
     /** @var null|list<string> */
     private ?array $pending_claim_paths = null;
 
@@ -37,7 +39,8 @@ final class DirectoryQueue
             throw new StorageException('Queue claim cache limit must be at least 0.');
         }
 
-        $this->id_generator = $id_generator ?? static fn(): string => UuidV7::generate();
+        $this->trusted_generated_ids = null === $id_generator;
+        $this->id_generator          = $id_generator ?? static fn(): string => UuidV7::generate();
 
         foreach (array( 'pending', 'processing', 'done' ) as $lane) {
             AtomicFilesystem::ensure_directory($this->lane_path($lane));
@@ -49,8 +52,9 @@ final class DirectoryQueue
      */
     public function enqueue(array $payload, ?string $id = null): string
     {
+        $generated = null === $id;
         $id ??= ( $this->id_generator )();
-        UuidV7::assert_valid($id);
+        $this->assert_job_id($id, $generated);
 
         $bytes = $this->write_queue_record($this->queue_record_path('pending', $id, true), $id, $payload);
         $this->remember_claim_payload($id, $payload, $bytes);
@@ -218,6 +222,15 @@ final class DirectoryQueue
     private function queue_root(): string
     {
         return rtrim($this->root, '/\\') . '/' . $this->name;
+    }
+
+    private function assert_job_id(string $id, bool $generated): void
+    {
+        if ($generated && $this->trusted_generated_ids) {
+            return;
+        }
+
+        UuidV7::assert_valid($id);
     }
 
     private function lane_path(string $lane): string

@@ -9,6 +9,8 @@ final class LogQueue
     /** @var callable(): string */
     private mixed $id_generator;
 
+    private bool $trusted_generated_ids;
+
     /** @var resource|null */
     private mixed $lock_handle = null;
 
@@ -39,7 +41,8 @@ final class LogQueue
         private readonly string $name,
         ?callable $id_generator = null
     ) {
-        $this->id_generator = $id_generator ?? static fn(): string => UuidV7::generate();
+        $this->trusted_generated_ids = null === $id_generator;
+        $this->id_generator          = $id_generator ?? static fn(): string => UuidV7::generate();
         AtomicFilesystem::ensure_directory($this->queue_root());
         $this->with_lock(function (): void {
             $this->replay_log(true);
@@ -62,8 +65,9 @@ final class LogQueue
      */
     public function enqueue(array $payload, ?string $id = null): string
     {
+        $generated = null === $id;
         $id ??= ( $this->id_generator )();
-        UuidV7::assert_valid($id);
+        $this->assert_job_id($id, $generated);
 
         $this->with_lock(function () use ($id, $payload): void {
             $this->sync_from_log();
@@ -407,6 +411,15 @@ final class LogQueue
         return rtrim($this->root, '/\\') . '/' . $this->name;
     }
 
+    private function assert_job_id(string $id, bool $generated): void
+    {
+        if ($generated && $this->trusted_generated_ids) {
+            return;
+        }
+
+        UuidV7::assert_valid($id);
+    }
+
     private function log_path(): string
     {
         return $this->queue_root() . '/queue.log';
@@ -533,8 +546,9 @@ final class LogQueue
         foreach ($jobs as $job) {
             $id = isset($job['id']) && is_string($job['id']) ? $job['id'] : null;
             $payload = isset($job['payload']) && is_array($job['payload']) ? $job['payload'] : $job;
+            $generated = null === $id;
             $id ??= ( $this->id_generator )();
-            UuidV7::assert_valid($id);
+            $this->assert_job_id($id, $generated);
 
             /** @var array<string, mixed> $payload */
             $ids[] = $id;

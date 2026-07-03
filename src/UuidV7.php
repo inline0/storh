@@ -8,7 +8,12 @@ final class UuidV7
 {
     private static int $last_timestamp_ms = -1;
 
+    private static string $last_timestamp_hex = '';
+
     private static string $last_entropy = '';
+
+    /** @var list<string> */
+    private static array $byte_hex = array();
 
     public static function generate(?int $timestamp_ms = null): string
     {
@@ -19,24 +24,25 @@ final class UuidV7
         }
 
         if ($timestamp_ms === self::$last_timestamp_ms && '' !== self::$last_entropy) {
+            if ('' === self::$last_timestamp_hex) {
+                self::$last_timestamp_hex = self::timestamp_hex($timestamp_ms);
+            }
             self::$last_entropy = self::increment_entropy(self::$last_entropy);
         } else {
-            self::$last_timestamp_ms = $timestamp_ms;
-            self::$last_entropy      = random_bytes(10);
+            self::$last_timestamp_ms  = $timestamp_ms;
+            self::$last_timestamp_hex = self::timestamp_hex($timestamp_ms);
+            self::$last_entropy       = random_bytes(10);
         }
 
-        $time_hex    = str_pad(dechex($timestamp_ms), 12, '0', STR_PAD_LEFT);
-        $entropy_hex = bin2hex(self::$last_entropy);
-        $rand_a      = hexdec(substr($entropy_hex, 0, 4)) & 0x0fff;
-        $variant     = ( hexdec(substr($entropy_hex, 4, 4)) & 0x3fff ) | 0x8000;
-        $tail        = substr($entropy_hex, 8, 12);
+        $time_hex = self::$last_timestamp_hex;
+        $entropy  = self::$last_entropy;
+        $byte_hex = self::byte_hex();
 
-        $hex = $time_hex
-            . str_pad(dechex(0x7000 | $rand_a), 4, '0', STR_PAD_LEFT)
-            . str_pad(dechex($variant), 4, '0', STR_PAD_LEFT)
-            . $tail;
-
-        return self::format_hex($hex);
+        return substr($time_hex, 0, 8)
+            . '-' . substr($time_hex, 8, 4)
+            . '-' . $byte_hex[ 0x70 | ( ord($entropy[0]) & 0x0f ) ] . $byte_hex[ ord($entropy[1]) ]
+            . '-' . $byte_hex[ 0x80 | ( ord($entropy[2]) & 0x3f ) ] . $byte_hex[ ord($entropy[3]) ]
+            . '-' . bin2hex(substr($entropy, 4, 6));
     }
 
     public static function is_valid(string $uuid): bool
@@ -56,12 +62,12 @@ final class UuidV7
 
     public static function min_for_timestamp_ms(int $timestamp_ms): string
     {
-        return self::format_hex(str_pad(dechex($timestamp_ms), 12, '0', STR_PAD_LEFT) . '70008000000000000000');
+        return self::format_hex(self::timestamp_hex($timestamp_ms) . '70008000000000000000');
     }
 
     public static function max_for_timestamp_ms(int $timestamp_ms): string
     {
-        return self::format_hex(str_pad(dechex($timestamp_ms), 12, '0', STR_PAD_LEFT) . '7fffbfffffffffffffff');
+        return self::format_hex(self::timestamp_hex($timestamp_ms) . '7fffbfffffffffffffff');
     }
 
     public static function assert_valid(string $uuid): void
@@ -73,13 +79,19 @@ final class UuidV7
 
     public static function reset_for_tests(): void
     {
-        self::$last_timestamp_ms = -1;
-        self::$last_entropy      = '';
+        self::$last_timestamp_ms  = -1;
+        self::$last_timestamp_hex = '';
+        self::$last_entropy       = '';
     }
 
     private static function now_ms(): int
     {
         return (int) floor(microtime(true) * 1000);
+    }
+
+    private static function timestamp_hex(int $timestamp_ms): string
+    {
+        return str_pad(dechex($timestamp_ms), 12, '0', STR_PAD_LEFT);
     }
 
     private static function increment_entropy(string $entropy): string
@@ -99,12 +111,26 @@ final class UuidV7
 
     private static function format_hex(string $hex): string
     {
-        $hex = strtolower($hex);
-
         return substr($hex, 0, 8)
             . '-' . substr($hex, 8, 4)
             . '-' . substr($hex, 12, 4)
             . '-' . substr($hex, 16, 4)
             . '-' . substr($hex, 20, 12);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function byte_hex(): array
+    {
+        if (array() !== self::$byte_hex) {
+            return self::$byte_hex;
+        }
+
+        for ($value = 0; $value < 256; $value++) {
+            self::$byte_hex[] = str_pad(dechex($value), 2, '0', STR_PAD_LEFT);
+        }
+
+        return self::$byte_hex;
     }
 }

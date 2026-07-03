@@ -11,6 +11,8 @@ final class DocPerFileStore implements FileStoreInterface
     /** @var callable(): string */
     private mixed $id_generator;
 
+    private bool $trusted_generated_ids;
+
     private CacheInterface $cache;
 
     private bool $cache_enabled;
@@ -42,8 +44,9 @@ final class DocPerFileStore implements FileStoreInterface
             throw new StorageException('Schema collection does not match DocStore collection.');
         }
 
-        $this->id_generator = $id_generator ?? static fn(): string => UuidV7::generate();
-        $this->cache        = $cache ?? Cache::null();
+        $this->trusted_generated_ids = null === $id_generator;
+        $this->id_generator          = $id_generator ?? static fn(): string => UuidV7::generate();
+        $this->cache                 = $cache ?? Cache::null();
         $this->cache_enabled = ! $this->cache instanceof NullCache;
         AtomicFilesystem::cleanup_temp_files($this->collection_root());
         if (! is_dir($this->data_root())) {
@@ -63,7 +66,7 @@ final class DocPerFileStore implements FileStoreInterface
     {
         $generated = null === $id;
         $id ??= ( $this->id_generator )();
-        UuidV7::assert_valid($id);
+        $this->assert_record_id($id, $generated);
         $this->schema?->validate($data);
 
         $old = $generated ? null : $this->get($id);
@@ -96,7 +99,7 @@ final class DocPerFileStore implements FileStoreInterface
             $data = isset($record['data']) && is_array($record['data']) ? $record['data'] : $record;
             $generated = null === $id;
             $id ??= ( $this->id_generator )();
-            UuidV7::assert_valid($id);
+            $this->assert_record_id($id, $generated);
 
             /** @var array<string, mixed> $data */
             $this->schema?->validate($data);
@@ -136,7 +139,7 @@ final class DocPerFileStore implements FileStoreInterface
             $data = isset($record['data']) && is_array($record['data']) ? $record['data'] : $record;
             $generated = null === $id;
             $id ??= ( $this->id_generator )();
-            UuidV7::assert_valid($id);
+            $this->assert_record_id($id, $generated);
 
             /** @var array<string, mixed> $data */
             $this->schema?->validate($data);
@@ -467,6 +470,15 @@ final class DocPerFileStore implements FileStoreInterface
     private function record_path_for_id(string $id): string
     {
         return $this->data_root() . '/' . substr($id, 24, 2) . '/' . $id . '.jsonc';
+    }
+
+    private function assert_record_id(string $id, bool $generated): void
+    {
+        if ($generated && $this->trusted_generated_ids) {
+            return;
+        }
+
+        UuidV7::assert_valid($id);
     }
 
     public function collection_root(): string

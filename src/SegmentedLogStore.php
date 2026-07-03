@@ -9,6 +9,8 @@ final class SegmentedLogStore implements FileStoreInterface
     /** @var callable(): string */
     private mixed $id_generator;
 
+    private bool $trusted_generated_ids;
+
     private readonly string $collection_path;
 
     private CacheInterface $cache;
@@ -57,9 +59,10 @@ final class SegmentedLogStore implements FileStoreInterface
             throw new StorageException('Sparse index interval must be at least 1.');
         }
 
-        $this->id_generator   = $id_generator ?? static fn(): string => UuidV7::generate();
-        $this->cache          = $cache ?? Cache::null();
-        $this->collection_path = $this->partitioned_collection($collection, $partition, $partition_timestamp_ms);
+        $this->trusted_generated_ids = null === $id_generator;
+        $this->id_generator          = $id_generator ?? static fn(): string => UuidV7::generate();
+        $this->cache                 = $cache ?? Cache::null();
+        $this->collection_path       = $this->partitioned_collection($collection, $partition, $partition_timestamp_ms);
         $this->initialize();
     }
 
@@ -76,8 +79,9 @@ final class SegmentedLogStore implements FileStoreInterface
      */
     public function put(array $data, ?string $id = null): StorageRecord
     {
+        $generated = null === $id;
         $id ??= ( $this->id_generator )();
-        UuidV7::assert_valid($id);
+        $this->assert_record_id($id, $generated);
 
         $this->with_lock(
             function () use ($id, $data): void {
@@ -105,8 +109,9 @@ final class SegmentedLogStore implements FileStoreInterface
         foreach ($records as $record) {
             $id   = isset($record['id']) && is_string($record['id']) ? $record['id'] : null;
             $data = isset($record['data']) && is_array($record['data']) ? $record['data'] : $record;
+            $generated = null === $id;
             $id ??= ( $this->id_generator )();
-            UuidV7::assert_valid($id);
+            $this->assert_record_id($id, $generated);
 
             /** @var array<string, mixed> $data */
             $stored[] = new StorageRecord($id, $data);
@@ -581,8 +586,9 @@ final class SegmentedLogStore implements FileStoreInterface
         foreach ($records as $record) {
             $id   = isset($record['id']) && is_string($record['id']) ? $record['id'] : null;
             $data = isset($record['data']) && is_array($record['data']) ? $record['data'] : $record;
+            $generated = null === $id;
             $id ??= ( $this->id_generator )();
-            UuidV7::assert_valid($id);
+            $this->assert_record_id($id, $generated);
 
             /** @var array<string, mixed> $data */
             $count++;
@@ -1489,6 +1495,15 @@ final class SegmentedLogStore implements FileStoreInterface
     private function collection_root(): string
     {
         return rtrim($this->root, '/\\') . '/' . $this->collection_path;
+    }
+
+    private function assert_record_id(string $id, bool $generated): void
+    {
+        if ($generated && $this->trusted_generated_ids) {
+            return;
+        }
+
+        UuidV7::assert_valid($id);
     }
 
     private function segments_root(): string
