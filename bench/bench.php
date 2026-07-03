@@ -378,7 +378,22 @@ function bench_uuid(int $dataset): array
         }
     });
 
-    return compact('monotonic', 'spread');
+    $sample = UuidV7::generate(1_700_000_000_000);
+    $upper_sample = strtoupper($sample);
+
+    $validate = timed(static function () use ($dataset, $sample, $upper_sample): void {
+        for ($i = 0; $i < $dataset; $i++) {
+            UuidV7::is_valid(0 === ( $i & 1 ) ? $sample : $upper_sample);
+        }
+    });
+
+    $timestamp = timed(static function () use ($dataset, $sample, $upper_sample): void {
+        for ($i = 0; $i < $dataset; $i++) {
+            UuidV7::timestamp_ms(0 === ( $i & 1 ) ? $sample : $upper_sample);
+        }
+    });
+
+    return compact('monotonic', 'spread', 'validate', 'timestamp');
 }
 
 /**

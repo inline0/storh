@@ -59,8 +59,8 @@ final class UuidV7
     public static function is_valid(string $uuid): bool
     {
         return 1 === preg_match(
-            '/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/',
-            strtolower($uuid)
+            '/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i',
+            $uuid
         );
     }
 
@@ -68,7 +68,7 @@ final class UuidV7
     {
         self::assert_valid($uuid);
 
-        return (int) hexdec(substr(str_replace('-', '', strtolower($uuid)), 0, 12));
+        return (int) hexdec(substr($uuid, 0, 8) . substr($uuid, 9, 4));
     }
 
     public static function min_for_timestamp_ms(int $timestamp_ms): string
