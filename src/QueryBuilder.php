@@ -145,6 +145,10 @@ final class QueryBuilder
             return $this->store->count_records($this);
         }
 
+        if ($this->store instanceof SegmentedLogStore) {
+            return $this->store->count_records($this);
+        }
+
         $count = 0;
         foreach ($this->store->stream(null) as $record) {
             if (! $this->matches($record)) {
@@ -202,14 +206,22 @@ final class QueryBuilder
 
     public function matches(StorageRecord $record): bool
     {
-        if (null !== $this->cursor && strcmp($record->id(), $this->cursor) <= 0) {
+        return $this->matches_data($record->id(), $record->data());
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    public function matches_data(string $id, array $data): bool
+    {
+        if (null !== $this->cursor && strcmp($id, $this->cursor) <= 0) {
             return false;
         }
 
         foreach ($this->groups as $group) {
             $matches = true;
             foreach ($group as $condition) {
-                if (! $condition->matches($record)) {
+                if (! $condition->matches_data($id, $data)) {
                     $matches = false;
                     break;
                 }

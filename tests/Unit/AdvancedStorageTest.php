@@ -476,6 +476,9 @@ final class AdvancedStorageTest extends TestCase
         $this->assertTrue($store->verify()['ok']);
         $this->assertTrue($store->repair()['ok']);
         $store->delete($ids[2]);
+        $this->assertSame(2, $store->query()->count());
+        $this->assertSame(1, $store->query()->where('type')->eq('new')->count());
+        $this->assertSame(1, $store->query()->where('type')->eq('new')->cursor($ids[0])->count());
         $this->assertGreaterThanOrEqual(1, $store->stats()['deleted']);
 
         $stream = new SegmentedLogStore($this->root, 'stream-events', 512, 1, $this->id_generator(array_slice($ids, 3)));

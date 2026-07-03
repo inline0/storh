@@ -39,11 +39,18 @@ final class QueryCondition
 
     public function matches(StorageRecord $record): bool
     {
+        return $this->matches_data($record->id(), $record->data());
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    public function matches_data(string $id, array $data): bool
+    {
         if ('id' === $this->field) {
             $exists = true;
-            $actual = $record->id();
+            $actual = $id;
         } else {
-            $data   = $record->data();
             $exists = array_key_exists($this->field, $data);
             $actual = $exists ? $data[ $this->field ] : null;
         }

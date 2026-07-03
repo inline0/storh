@@ -313,6 +313,68 @@ final class SegmentedLogStore implements FileStoreInterface
         return new QueryBuilder($this);
     }
 
+    public function count_records(QueryBuilder $query): int
+    {
+        $this->flush_active_handle();
+
+        $count = 0;
+        $limit = $query->limit_value();
+        $cursor = $query->cursor_id();
+        $state = $this->state_index();
+        $segment_query = RecordQuery::all();
+        if (null !== $cursor) {
+            $segment_query = $segment_query->after($cursor);
+        }
+
+        foreach ($this->query_segments($segment_query) as $segment) {
+            $file = isset($segment['file']) && is_string($segment['file']) ? $segment['file'] : '';
+            if ('' === $file) {
+                continue;
+            }
+
+            $handle = @fopen($this->segment_path($file), 'rb');
+            if (false === $handle) {
+                throw new StorageException('Could not open segment: ' . $file);
+            }
+
+            try {
+                $offset = $this->seek_offset_for($segment, $cursor);
+                if ($offset > 0) {
+                    fseek($handle, $offset);
+                }
+
+                while (true) {
+                    $line_offset = ftell($handle);
+                    $line        = fgets($handle);
+                    if (false === $line || false === $line_offset) {
+                        break;
+                    }
+
+                    $envelope = $this->decode_line($line);
+                    $id       = $envelope['id'];
+                    $entry    = $state[ $id ] ?? null;
+                    if (null === $entry || $entry['deleted'] || ! $this->state_entry_matches($entry, $file, $line_offset)) {
+                        continue;
+                    }
+
+                    UuidV7::assert_valid($id);
+                    if (! $query->matches_data($id, $this->data_from_envelope($envelope))) {
+                        continue;
+                    }
+
+                    $count++;
+                    if (null !== $limit && $count >= $limit) {
+                        return $count;
+                    }
+                }
+            } finally {
+                fclose($handle);
+            }
+        }
+
+        return $count;
+    }
+
     public function retain(): SegmentedLogRetention
     {
         return new SegmentedLogRetention($this);
@@ -1290,7 +1352,11 @@ final class SegmentedLogStore implements FileStoreInterface
      */
     private function state_entry_matches(array $entry, string $file, int $offset): bool
     {
-        foreach ($this->state_locations($entry) as $location) {
+        if ($file === $entry['file'] && $offset === $entry['offset']) {
+            return true;
+        }
+
+        foreach ($entry['aliases'] as $location) {
             if ($file === $location['file'] && $offset === $location['offset']) {
                 return true;
             }
@@ -1336,6 +1402,17 @@ final class SegmentedLogStore implements FileStoreInterface
     private function record_from_envelope(array $envelope): StorageRecord
     {
         $id   = $envelope['id'];
+        UuidV7::assert_valid($id);
+
+        return new StorageRecord($id, $this->data_from_envelope($envelope));
+    }
+
+    /**
+     * @param array{id: string, op: string, data?: mixed} $envelope
+     * @return array<string, mixed>
+     */
+    private function data_from_envelope(array $envelope): array
+    {
         $data = array();
 
         if (isset($envelope['data']) && is_array($envelope['data'])) {
@@ -1346,9 +1423,7 @@ final class SegmentedLogStore implements FileStoreInterface
             }
         }
 
-        UuidV7::assert_valid($id);
-
-        return new StorageRecord($id, $data);
+        return $data;
     }
 
     /**
