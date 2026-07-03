@@ -333,12 +333,7 @@ final class DocPerFileStore implements FileStoreInterface
 
     private function indexed_count(QueryBuilder $query): ?int
     {
-        if ($query->has_ordering() || null !== $query->cursor_id()) {
-            return null;
-        }
-
-        $groups = $query->groups();
-        if (1 !== count($groups) || 1 !== count($groups[0])) {
+        if (null !== $query->cursor_id()) {
             return null;
         }
 

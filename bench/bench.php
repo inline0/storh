@@ -115,6 +115,10 @@ function bench_doc(string $root, int $dataset): array
         $store->query()->where('kind')->eq('post')->where('bucket')->eq(4)->count();
     });
 
+    $indexed_compound_count = timed(static function () use ($store): void {
+        $store->query()->where('kind')->eq('page')->where('bucket')->eq(4)->count();
+    });
+
     $indexed_count = timed(static function () use ($store): void {
         $store->query()->where('kind')->eq('page')->count();
     });
@@ -149,6 +153,7 @@ function bench_doc(string $root, int $dataset): array
         'indexed_range',
         'indexed_compound_miss',
         'indexed_compound_miss_count',
+        'indexed_compound_count',
         'indexed_count',
         'indexed_numeric_count',
         'indexed_range_count',
