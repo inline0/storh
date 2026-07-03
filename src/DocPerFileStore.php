@@ -383,10 +383,38 @@ final class DocPerFileStore implements FileStoreInterface
             return $indexed_count;
         }
 
-        $count = count($this->query_records($query));
         $limit = $query->limit_value();
+        $count = 0;
 
-        return null === $limit ? $count : min($count, $limit);
+        $ids = $this->indexes()->candidate_ids($query);
+        if (null !== $ids) {
+            foreach ($ids as $id) {
+                $record = $this->get($id);
+                if (null === $record || ! $query->matches($record)) {
+                    continue;
+                }
+
+                $count++;
+                if (null !== $limit && $count >= $limit) {
+                    return $count;
+                }
+            }
+
+            return $count;
+        }
+
+        foreach ($this->stream() as $record) {
+            if (! $query->matches($record)) {
+                continue;
+            }
+
+            $count++;
+            if (null !== $limit && $count >= $limit) {
+                return $count;
+            }
+        }
+
+        return $count;
     }
 
     /**

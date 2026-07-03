@@ -145,7 +145,19 @@ final class QueryBuilder
             return $this->store->count_records($this);
         }
 
-        return count($this->get());
+        $count = 0;
+        foreach ($this->store->stream(null) as $record) {
+            if (! $this->matches($record)) {
+                continue;
+            }
+
+            $count++;
+            if (null !== $this->limit && $count >= $this->limit) {
+                return $count;
+            }
+        }
+
+        return $count;
     }
 
     /**

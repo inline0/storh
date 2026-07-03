@@ -137,6 +137,14 @@ function bench_doc(string $root, int $dataset): array
         $store->query()->where('publishedAt')->between(1_700_000_000_010, 1_700_000_000_200)->count();
     });
 
+    $unindexed_count = timed(static function () use ($store): void {
+        $store->query()->where('status')->eq('published')->count();
+    });
+
+    $unindexed_limit_count = timed(static function () use ($store): void {
+        $store->query()->where('status')->eq('published')->limit(100)->count();
+    });
+
     $full = timed(static function () use ($store): void {
         iterator_to_array($store->stream(RecordQuery::all()->where_equal('kind', 'page')->limit(100)));
     });
@@ -163,6 +171,8 @@ function bench_doc(string $root, int $dataset): array
         'indexed_count',
         'indexed_numeric_count',
         'indexed_range_count',
+        'unindexed_count',
+        'unindexed_limit_count',
         'full',
         'bulk_put'
     );
@@ -188,6 +198,14 @@ function bench_log(string $root, int $dataset): array
 
     $range = timed(static function () use ($store): void {
         iterator_to_array($store->stream(RecordQuery::all()->time_range_ms(1_700_000_000_010, 1_700_000_000_200)));
+    });
+
+    $query_count = timed(static function () use ($store): void {
+        $store->query()->where('status')->eq('published')->count();
+    });
+
+    $query_limit_count = timed(static function () use ($store): void {
+        $store->query()->where('status')->eq('published')->limit(100)->count();
     });
 
     $compact = timed(static function () use ($store): void {
@@ -217,7 +235,18 @@ function bench_log(string $root, int $dataset): array
         $bulk_store->compact();
     });
 
-    return compact('append', 'cursor', 'range', 'compact', 'bulk_append', 'bulk_cursor', 'bulk_range', 'bulk_compact');
+    return compact(
+        'append',
+        'cursor',
+        'range',
+        'query_count',
+        'query_limit_count',
+        'compact',
+        'bulk_append',
+        'bulk_cursor',
+        'bulk_range',
+        'bulk_compact'
+    );
 }
 
 /**
