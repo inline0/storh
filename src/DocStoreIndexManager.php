@@ -370,12 +370,7 @@ final class DocStoreIndexManager
             return array();
         }
 
-        $entry = AtomicFilesystem::read_jsonc_object($root);
-        if (($entry['key'] ?? null) !== $this->value_key($value)) {
-            return array();
-        }
-
-        return $this->ids_from_value_entry($entry, $limit);
+        return $this->ids_from_value_file($root, $this->value_key($value), $limit);
     }
 
     /**
@@ -819,6 +814,149 @@ final class DocStoreIndexManager
         }
 
         $this->write_value_index($path, $field, $value_key, $entry['value'] ?? null, $ids);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function ids_from_value_file(string $path, string $expected_key, ?int $limit = null): array
+    {
+        if (null !== $limit) {
+            return $this->limited_ids_from_value_file($path, $expected_key, $limit);
+        }
+
+        $contents = @file_get_contents($path);
+        if (false === $contents) {
+            throw new StorageException('Could not read equality index: ' . $path);
+        }
+
+        $key_marker = '"key":"' . $expected_key . '"';
+        $key_offset = strpos($contents, $key_marker);
+        if (false === $key_offset) {
+            return array();
+        }
+
+        $ids_marker = ',"ids":[';
+        $ids_offset = strpos($contents, $ids_marker, $key_offset + strlen($key_marker));
+        if (false === $ids_offset) {
+            throw new StorageException('Malformed equality index: ' . $path);
+        }
+
+        $ids = array();
+        $position = $ids_offset + strlen($ids_marker);
+        while (true) {
+            $open = strpos($contents, '"', $position);
+            $end = strpos($contents, ']', $position);
+            if (false === $open || (false !== $end && $end < $open)) {
+                break;
+            }
+
+            $close = strpos($contents, '"', $open + 1);
+            if (false === $close) {
+                throw new StorageException('Malformed equality index: ' . $path);
+            }
+
+            $id = substr($contents, $open + 1, $close - $open - 1);
+            if (UuidV7::is_valid($id)) {
+                $ids[] = $id;
+            }
+
+            $position = $close + 1;
+        }
+
+        return $ids;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function limited_ids_from_value_file(string $path, string $expected_key, int $limit): array
+    {
+        $handle = @fopen($path, 'rb');
+        if (false === $handle) {
+            throw new StorageException('Could not read equality index: ' . $path);
+        }
+
+        $key_marker = '"key":"' . $expected_key . '"';
+        $ids_marker = ',"ids":[';
+        $buffer = '';
+        $key_offset = null;
+        $position = null;
+        $ids = array();
+        $count = 0;
+        $needs_more = false;
+
+        try {
+            while (! feof($handle) && $count < $limit) {
+                $chunk = fread($handle, 8192);
+                if (false === $chunk) {
+                    throw new StorageException('Could not read equality index: ' . $path);
+                }
+
+                $buffer .= $chunk;
+                if (null === $key_offset) {
+                    $offset = strpos($buffer, $key_marker);
+                    if (false === $offset) {
+                        continue;
+                    }
+
+                    $key_offset = $offset;
+                }
+
+                if (null === $position) {
+                    $offset = strpos($buffer, $ids_marker, $key_offset + strlen($key_marker));
+                    if (false === $offset) {
+                        continue;
+                    }
+
+                    $position = $offset + strlen($ids_marker);
+                }
+
+                $needs_more = false;
+                while ($count < $limit) {
+                    $open = strpos($buffer, '"', $position);
+                    $end = strpos($buffer, ']', $position);
+                    if (false === $open) {
+                        if (false !== $end) {
+                            return $ids;
+                        }
+
+                        $needs_more = true;
+                        break;
+                    }
+
+                    if (false !== $end && $end < $open) {
+                        return $ids;
+                    }
+
+                    $close = strpos($buffer, '"', $open + 1);
+                    if (false === $close) {
+                        $needs_more = true;
+                        break;
+                    }
+
+                    $id = substr($buffer, $open + 1, $close - $open - 1);
+                    if (UuidV7::is_valid($id)) {
+                        $ids[] = $id;
+                        $count++;
+                    }
+
+                    $position = $close + 1;
+                }
+            }
+        } finally {
+            fclose($handle);
+        }
+
+        if (null === $key_offset) {
+            return array();
+        }
+
+        if (null === $position || $needs_more) {
+            throw new StorageException('Malformed equality index: ' . $path);
+        }
+
+        return $ids;
     }
 
     /**

@@ -275,6 +275,23 @@ final class AdvancedStorageTest extends TestCase
         $this->assertStringStartsWith('z-', (string) $reflection->invoke($store->indexes(), array( 'not' => 'scalar' )));
     }
 
+    public function test_limited_equality_index_reads_across_chunks(): void
+    {
+        $ids = $this->fixed_ids(280);
+        $store = new DocPerFileStore($this->root, 'chunked-eq-index', $this->id_generator($ids));
+        foreach ($ids as $index => $_) {
+            $store->put(array( 'kind' => 'page', 'position' => $index ));
+        }
+
+        $store->indexes()->field('kind')->sync();
+
+        $records = $store->query()->where('kind')->eq('page')->limit(260)->get();
+
+        $this->assertCount(260, $records);
+        $this->assertSame($ids[0], $records[0]->id());
+        $this->assertSame($ids[259], $records[259]->id());
+    }
+
     public function test_query_builder_all_operators_without_indexes(): void
     {
         $store = new DocPerFileStore($this->root, 'operators', $this->id_generator($this->fixed_ids(5)));
