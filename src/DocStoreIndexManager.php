@@ -6,6 +6,12 @@ namespace Storh;
 
 final class DocStoreIndexManager
 {
+    private const EQ_REBUILD_FLUSH_IDS = 65536;
+
+    private const RANGE_REBUILD_CHUNK_ENTRIES = 16384;
+
+    private const RANGE_SPARSE_STRIDE = 256;
+
     /** @var array<string, array{field: string, unique: bool, range: bool}> */
     private array $pending = array();
 
@@ -81,24 +87,29 @@ final class DocStoreIndexManager
 
         $buckets = array();
         $range_buckets = array();
+        $range_chunks = array();
+        $range_entries = 0;
         $entries = 0;
         $definitions = $this->definitions();
         foreach ($this->store->stream() as $record) {
-            $this->collect_rebuild_index_entries($buckets, $range_buckets, $definitions, $record->id(), $record->data());
+            $this->collect_rebuild_index_entries($buckets, $range_buckets, $range_entries, $definitions, $record->id(), $record->data());
             $entries++;
 
-            if ($this->bucket_value_count($buckets) < 4096 && $this->range_bucket_bytes($range_buckets) < 1_048_576) {
-                continue;
+            if ($this->bucket_id_count($buckets) >= self::EQ_REBUILD_FLUSH_IDS) {
+                $this->merge_index_buckets($buckets);
+                $buckets = array();
             }
 
-            $this->merge_index_buckets($buckets);
-            $this->append_range_buckets($range_buckets);
-            $buckets = array();
-            $range_buckets = array();
+            if ($range_entries >= self::RANGE_REBUILD_CHUNK_ENTRIES) {
+                $this->flush_range_chunks($range_buckets, $range_chunks);
+                $range_buckets = array();
+                $range_entries = 0;
+            }
         }
 
         $this->merge_index_buckets($buckets);
-        $this->append_range_buckets($range_buckets);
+        $this->flush_range_chunks($range_buckets, $range_chunks);
+        $this->write_range_chunks($range_chunks);
 
         return array(
             'fields'  => count($this->definitions()),
@@ -458,67 +469,11 @@ final class DocStoreIndexManager
      */
     private function ids_for_range_condition(QueryCondition $condition): array
     {
-        $root = $this->range_field_root($condition->field());
-        if (! is_file($root)) {
-            return array();
-        }
-
         $ids = array();
-        $handle = @fopen($root, 'rb');
-        if (false === $handle) {
-            return array();
-        }
+        $this->collect_range_condition_ids($this->range_field_root($condition->field()), $condition, $ids, true);
+        $this->collect_range_condition_ids($this->range_delta_field_root($condition->field()), $condition, $ids, false);
 
-        $operator = $condition->operator();
-        $expected = $condition->value();
-        $second_expected = $condition->second_value();
-        $key_window = $this->range_key_window($condition);
-        try {
-            while (false !== ( $line = fgets($handle) )) {
-                $line_key = null;
-                if (null !== $key_window) {
-                    $line_key = $this->range_line_key($line);
-                    if (null !== $line_key && ! $this->range_key_matches_window($line_key, $key_window)) {
-                        continue;
-                    }
-                }
-
-                $value_object = $this->decode_index_line($line);
-                if (array() === $value_object) {
-                    continue;
-                }
-
-                $value = $value_object['value'] ?? null;
-                $key = isset($value_object['key']) && is_string($value_object['key'])
-                    ? $value_object['key']
-                    : ( $line_key ?? $this->range_key($value) );
-                if (! $this->range_value_matches($operator, $value, $expected, $second_expected)) {
-                    continue;
-                }
-
-                foreach ($this->ids_from_value_entry($value_object) as $id) {
-                    $ids[ $key ][ $id ] = true;
-                }
-
-                $removed = isset($value_object['remove']) && is_array($value_object['remove']) ? $value_object['remove'] : array();
-                foreach ($removed as $id) {
-                    if (is_string($id)) {
-                        unset($ids[ $key ][ $id ]);
-                    }
-                }
-            }
-        } finally {
-            fclose($handle);
-        }
-
-        $result = array();
-        foreach ($ids as $value_ids) {
-            foreach ($value_ids as $id => $_) {
-                $result[ $id ] = true;
-            }
-        }
-
-        $result = array_keys($result);
+        $result = array_keys($ids);
         sort($result);
 
         return $result;
@@ -591,6 +546,60 @@ final class DocStoreIndexManager
         return true;
     }
 
+    /**
+     * @param array{0: string|null, 1: bool, 2: string|null, 3: bool} $window
+     */
+    private function range_key_after_window(string $key, array $window): bool
+    {
+        $upper = $window[2];
+        if (null === $upper) {
+            return false;
+        }
+
+        $comparison = strcmp($key, $upper);
+
+        return $comparison > 0 || (0 === $comparison && ! $window[3]);
+    }
+
+    /**
+     * @param array{0: string|null, 1: bool, 2: string|null, 3: bool} $window
+     */
+    private function range_seek_offset(string $field, array $window): int
+    {
+        $lower = $window[0];
+        if (null === $lower) {
+            return 0;
+        }
+
+        $path = $this->range_sparse_index_path($field);
+        if (! is_file($path)) {
+            return 0;
+        }
+
+        $decoded = AtomicFilesystem::read_jsonc_object($path);
+        $items = isset($decoded['checkpoints']) && is_array($decoded['checkpoints']) ? $decoded['checkpoints'] : array();
+        $offset = 0;
+        foreach ($items as $item) {
+            if (! is_array($item)) {
+                continue;
+            }
+
+            $key = $item['key'] ?? null;
+            $candidate_offset = $item['offset'] ?? null;
+            if (! is_string($key) || ! is_int($candidate_offset)) {
+                continue;
+            }
+
+            if (strcmp($key, $lower) >= 0) {
+                break;
+            }
+
+            $offset = $candidate_offset;
+        }
+
+        return $offset;
+    }
+
     private function range_line_key(string $line): ?string
     {
         $prefix = '{"key":"';
@@ -605,43 +614,140 @@ final class DocStoreIndexManager
     }
 
     /**
-     * @return list<string>
+     * @param array<string, true> $ids
      */
-    private function ids_for_range_value(string $field, mixed $value, ?int $limit = null): array
+    private function collect_range_condition_ids(string $path, QueryCondition $condition, array &$ids, bool $sorted): void
     {
-        $path = $this->range_field_root($field);
         if (! is_file($path)) {
-            return array();
+            return;
         }
 
-        $key = $this->range_key($value);
-        $ids = array();
         $handle = @fopen($path, 'rb');
         if (false === $handle) {
-            return array();
+            return;
+        }
+
+        $operator = $condition->operator();
+        $expected = $condition->value();
+        $second_expected = $condition->second_value();
+        $key_window = $this->range_key_window($condition);
+
+        try {
+            if ($sorted && null !== $key_window) {
+                fseek($handle, $this->range_seek_offset($condition->field(), $key_window));
+            }
+
+            while (false !== ( $line = fgets($handle) )) {
+                $line_key = null;
+                if (null !== $key_window) {
+                    $line_key = $this->range_line_key($line);
+                    if (null !== $line_key) {
+                        if ($sorted && $this->range_key_after_window($line_key, $key_window)) {
+                            break;
+                        }
+
+                        if (! $this->range_key_matches_window($line_key, $key_window)) {
+                            continue;
+                        }
+                    }
+                }
+
+                $value_object = $this->decode_index_line($line);
+                if (array() === $value_object) {
+                    continue;
+                }
+
+                $value = $value_object['value'] ?? null;
+                if (! $this->range_value_matches($operator, $value, $expected, $second_expected)) {
+                    continue;
+                }
+
+                $this->apply_range_entry_ids($value_object, $ids);
+            }
+        } finally {
+            fclose($handle);
+        }
+    }
+
+    /**
+     * @param array<string, true> $ids
+     * @param array{0: string|null, 1: bool, 2: string|null, 3: bool} $window
+     */
+    private function collect_range_value_ids(
+        string $path,
+        string $field,
+        string $key,
+        mixed $value,
+        array &$ids,
+        bool $sorted,
+        array $window
+    ): void {
+        if (! is_file($path)) {
+            return;
+        }
+
+        $handle = @fopen($path, 'rb');
+        if (false === $handle) {
+            return;
         }
 
         try {
+            if ($sorted) {
+                fseek($handle, $this->range_seek_offset($field, $window));
+            }
+
             while (false !== ( $line = fgets($handle) )) {
+                $line_key = $this->range_line_key($line);
+                if (null !== $line_key) {
+                    if ($sorted && $this->range_key_after_window($line_key, $window)) {
+                        break;
+                    }
+
+                    if ($line_key !== $key) {
+                        continue;
+                    }
+                }
+
                 $entry = $this->decode_index_line($line);
                 if (($entry['key'] ?? null) !== $key || ($entry['value'] ?? null) !== $value) {
                     continue;
                 }
 
-                foreach ($this->ids_from_value_entry($entry) as $id) {
-                    $ids[ $id ] = true;
-                }
-
-                $removed = isset($entry['remove']) && is_array($entry['remove']) ? $entry['remove'] : array();
-                foreach ($removed as $id) {
-                    if (is_string($id)) {
-                        unset($ids[ $id ]);
-                    }
-                }
+                $this->apply_range_entry_ids($entry, $ids);
             }
         } finally {
             fclose($handle);
         }
+    }
+
+    /**
+     * @param array<string, mixed> $entry
+     * @param array<string, true> $ids
+     */
+    private function apply_range_entry_ids(array $entry, array &$ids): void
+    {
+        foreach ($this->ids_from_value_entry($entry) as $id) {
+            $ids[ $id ] = true;
+        }
+
+        $removed = isset($entry['remove']) && is_array($entry['remove']) ? $entry['remove'] : array();
+        foreach ($removed as $id) {
+            if (is_string($id)) {
+                unset($ids[ $id ]);
+            }
+        }
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function ids_for_range_value(string $field, mixed $value, ?int $limit = null): array
+    {
+        $key = $this->range_key($value);
+        $ids = array();
+        $window = array( $key, true, $key, true );
+        $this->collect_range_value_ids($this->range_field_root($field), $field, $key, $value, $ids, true, $window);
+        $this->collect_range_value_ids($this->range_delta_field_root($field), $field, $key, $value, $ids, false, $window);
 
         $result = array_keys($ids);
         sort($result);
@@ -693,9 +799,19 @@ final class DocStoreIndexManager
         return $this->entries_root() . '/range/' . $this->field_key($field) . '.jsonl';
     }
 
-    private function range_entry_path(string $field, mixed $value): string
+    private function range_delta_field_root(string $field): string
     {
-        return $this->range_field_root($field);
+        return $this->entries_root() . '/range/' . $this->field_key($field) . '.delta.jsonl';
+    }
+
+    private function range_sparse_index_path(string $field): string
+    {
+        return $this->entries_root() . '/range/' . $this->field_key($field) . '.idx.jsonc';
+    }
+
+    private function range_chunk_path(string $field, int $index): string
+    {
+        return $this->entries_root() . '/range/.chunks/' . $this->field_key($field) . '-' . $index . '.jsonl';
     }
 
     private function field_key(string $field): string
@@ -757,12 +873,18 @@ final class DocStoreIndexManager
 
     /**
      * @param array<string, array{path: string, field: string, key: string, value: mixed, ids: array<string, true>}> $buckets
-     * @param array<string, string> $range_buckets
+     * @param array<string, list<string>> $range_buckets
      * @param array<string, array{field: string, unique: bool, range: bool}> $definitions
      * @param array<string, mixed> $data
      */
-    private function collect_rebuild_index_entries(array &$buckets, array &$range_buckets, array $definitions, string $id, array $data): void
-    {
+    private function collect_rebuild_index_entries(
+        array &$buckets,
+        array &$range_buckets,
+        int &$range_entries,
+        array $definitions,
+        string $id,
+        array $data
+    ): void {
         foreach ($definitions as $definition) {
             $field = $definition['field'];
             if (! array_key_exists($field, $data) || ! $this->indexable($data[ $field ])) {
@@ -771,7 +893,7 @@ final class DocStoreIndexManager
 
             $value = $data[ $field ];
             if ($definition['range']) {
-                $this->collect_range_entry($range_buckets, $field, $value, $id);
+                $this->collect_range_entry($range_buckets, $range_entries, $field, $value, $id);
                 continue;
             }
 
@@ -787,32 +909,153 @@ final class DocStoreIndexManager
     }
 
     /**
-     * @param array<string, string> $range_buckets
+     * @param array<string, list<string>> $range_buckets
      */
-    private function collect_range_entry(array &$range_buckets, string $field, mixed $value, string $id): void
+    private function collect_range_entry(array &$range_buckets, int &$range_entries, string $field, mixed $value, string $id): void
     {
-        $path = $this->range_entry_path($field, $value);
-        $range_buckets[ $path ] = ( $range_buckets[ $path ] ?? '' ) . $this->encode_index_object(
+        $key = $this->range_key($value);
+        $value_key = $this->value_key($value);
+        $range_buckets[ $field ][] = $key . "\t" . $value_key . "\t" . $this->encode_index_object(
             array(
-                'key'    => $this->range_key($value),
+                'key'    => $key,
                 'value'  => $value,
                 'ids'    => array( $id ),
                 'remove' => array(),
             )
         );
+        $range_entries++;
     }
 
     /**
-     * @param array<string, string> $range_buckets
+     * @param array<string, list<string>> $range_buckets
+     * @param array<string, list<string>> $range_chunks
      */
-    private function append_range_buckets(array $range_buckets): void
+    private function flush_range_chunks(array $range_buckets, array &$range_chunks): void
     {
-        foreach ($range_buckets as $path => $contents) {
-            AtomicFilesystem::ensure_directory(dirname($path));
-            if (false === @file_put_contents($path, $contents, FILE_APPEND)) {
-                throw new StorageException('Could not write range index: ' . $path);
+        foreach ($range_buckets as $field => $entries) {
+            sort($entries, SORT_STRING);
+            $chunk = $this->range_chunk_path($field, count($range_chunks[ $field ] ?? array()));
+            AtomicFilesystem::write_atomic($chunk, implode('', $entries));
+            $range_chunks[ $field ][] = $chunk;
+        }
+    }
+
+    /**
+     * @param array<string, list<string>> $range_chunks
+     */
+    private function write_range_chunks(array $range_chunks): void
+    {
+        foreach ($range_chunks as $field => $chunks) {
+            $this->merge_range_chunks($field, $chunks);
+        }
+    }
+
+    /**
+     * @param list<string> $chunks
+     */
+    private function merge_range_chunks(string $field, array $chunks): void
+    {
+        $handles = array();
+        $heads = array();
+
+        foreach ($chunks as $index => $chunk) {
+            $handle = @fopen($chunk, 'rb');
+            if (false === $handle) {
+                throw new StorageException('Could not read range index chunk: ' . $chunk);
+            }
+
+            $handles[ $index ] = $handle;
+            $line = fgets($handle);
+            if (false !== $line) {
+                $heads[ $index ] = $line;
             }
         }
+
+        $contents = '';
+        $offset = 0;
+        $line_count = 0;
+        $checkpoints = array();
+
+        try {
+            while (array() !== $heads) {
+                $selected = $this->smallest_range_chunk_line($heads);
+                $line = $heads[ $selected ];
+                [ $key, $encoded ] = $this->range_chunk_line_parts($line);
+
+                if (0 === $line_count % self::RANGE_SPARSE_STRIDE) {
+                    $checkpoints[] = array(
+                        'key'    => $key,
+                        'offset' => $offset,
+                    );
+                }
+
+                $contents .= $encoded;
+                $offset += strlen($encoded);
+                $line_count++;
+
+                $next = fgets($handles[ $selected ]);
+                if (false === $next) {
+                    unset($heads[ $selected ]);
+                } else {
+                    $heads[ $selected ] = $next;
+                }
+            }
+        } finally {
+            foreach ($handles as $handle) {
+                fclose($handle);
+            }
+        }
+
+        AtomicFilesystem::write_atomic($this->range_field_root($field), $contents);
+        AtomicFilesystem::write_atomic(
+            $this->range_sparse_index_path($field),
+            $this->encode_index_object(
+                array(
+                    'stride'      => self::RANGE_SPARSE_STRIDE,
+                    'checkpoints' => $checkpoints,
+                )
+            )
+        );
+
+        foreach ($chunks as $chunk) {
+            @unlink($chunk);
+        }
+    }
+
+    /**
+     * @param array<int, string> $heads
+     */
+    private function smallest_range_chunk_line(array $heads): int
+    {
+        $selected = array_key_first($heads);
+        if (null === $selected) {
+            throw new StorageException('Cannot merge empty range index chunk set.');
+        }
+
+        foreach ($heads as $index => $line) {
+            if (strcmp($line, $heads[ $selected ]) < 0) {
+                $selected = $index;
+            }
+        }
+
+        return $selected;
+    }
+
+    /**
+     * @return array{0: string, 1: string}
+     */
+    private function range_chunk_line_parts(string $line): array
+    {
+        $first = strpos($line, "\t");
+        $second = false === $first ? false : strpos($line, "\t", $first + 1);
+        if (false === $first || false === $second) {
+            throw new StorageException('Malformed range index chunk.');
+        }
+
+        return array(
+            substr($line, 0, $first),
+            substr($line, $second + 1),
+        );
     }
 
     /**
@@ -1122,7 +1365,7 @@ final class DocStoreIndexManager
             return;
         }
 
-        $path = $this->range_entry_path($field, $value);
+        $path = $this->range_delta_field_root($field);
         AtomicFilesystem::ensure_directory(dirname($path));
         $line = $this->encode_index_object(
             array(
@@ -1180,22 +1423,14 @@ final class DocStoreIndexManager
     /**
      * @param array<string, array{path: string, field: string, key: string, value: mixed, ids: array<string, true>}> $buckets
      */
-    private function bucket_value_count(array $buckets): int
+    private function bucket_id_count(array $buckets): int
     {
-        return count($buckets);
-    }
-
-    /**
-     * @param array<string, string> $range_buckets
-     */
-    private function range_bucket_bytes(array $range_buckets): int
-    {
-        $bytes = 0;
-        foreach ($range_buckets as $contents) {
-            $bytes += strlen($contents);
+        $count = 0;
+        foreach ($buckets as $bucket) {
+            $count += count($bucket['ids']);
         }
 
-        return $bytes;
+        return $count;
     }
 
     private function assert_field(string $field): void

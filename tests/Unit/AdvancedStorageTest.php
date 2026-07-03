@@ -181,6 +181,7 @@ final class AdvancedStorageTest extends TestCase
             ->field('metric')
             ->field('score')->sync();
 
+        $this->assertFileExists($store->collection_root() . '/.storh/indexes/entries/range/' . bin2hex('title') . '.idx.jsonc');
         $this->assertSame('index_scan', $store->query()->where('score')->in(array( 1, 3 ))->explain()['plan']);
         $this->assertSame(2, $store->query()->where('active')->eq(true)->count());
         $this->assertSame(1, $store->query()->where('active')->eq(true)->orderBy('score')->limit(1)->count());
@@ -206,6 +207,9 @@ final class AdvancedStorageTest extends TestCase
 
         $store->put(array( 'title' => 'Beta Prime', 'active' => false, 'score' => 20, 'nullable' => 'updated' ), $ids[1]);
         $this->assertSame('Beta Prime', $store->get($ids[1])?->data()['title'] ?? null);
+        $this->assertSame(1, $store->query()->where('title')->eq('Beta Prime')->count());
+        $this->assertSame(0, $store->query()->where('title')->eq('Beta')->count());
+        $this->assertFileExists($store->collection_root() . '/.storh/indexes/entries/range/' . bin2hex('title') . '.delta.jsonl');
 
         AtomicFilesystem::ensure_directory(dirname($store->path_for_id($ids[4])));
         file_put_contents($store->path_for_id($ids[4]), '{ broken');
@@ -300,6 +304,20 @@ final class AdvancedStorageTest extends TestCase
         $this->assertCount(260, $records);
         $this->assertSame($ids[0], $records[0]->id());
         $this->assertSame($ids[259], $records[259]->id());
+    }
+
+    public function test_range_sparse_index_reads_duplicate_keys_across_checkpoints(): void
+    {
+        $ids = $this->fixed_ids(300);
+        $store = new DocPerFileStore($this->root, 'chunked-range-index', $this->id_generator($ids));
+        foreach ($ids as $index => $_) {
+            $store->put(array( 'enabled' => true, 'position' => $index ));
+        }
+
+        $store->indexes()->field('enabled')->range()->sync();
+
+        $this->assertSame(300, $store->query()->where('enabled')->eq(true)->count());
+        $this->assertSame(300, $store->query()->where('enabled')->gte(true)->count());
     }
 
     public function test_doc_store_can_add_indexes_after_no_index_writes(): void
