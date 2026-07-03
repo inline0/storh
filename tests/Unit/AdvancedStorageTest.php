@@ -188,6 +188,9 @@ final class AdvancedStorageTest extends TestCase
         $this->assertSame(1, $store->query()->where('score')->in(array( 1, 3 ))->limit(1)->count());
         $this->assertSame(1, $store->query()->where('metric')->eq(1)->count());
         $this->assertSame(1, $store->query()->where('metric')->eq(1.0)->count());
+        $this->assertSame(2, $store->query()->where('active')->eq(true)->where('score')->in(array( 1, 3 ))->count());
+        $this->assertSame(0, $store->query()->where('active')->eq(false)->where('score')->eq(1)->count());
+        $this->assertSame(array(), $store->indexes()->candidate_ids($store->query()->where('active')->eq(false)->where('score')->eq(1)));
         $this->assertSame(2, $store->query()->where('title')->prefix('A')->orWhere(static fn($query) => $query->where('title')->eq('Beta'))->count());
         $this->assertSame(0, $store->query()->where('score')->gt(99)->count());
         $this->assertNull($store->indexes()->candidate_ids($store->query()));

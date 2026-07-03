@@ -107,6 +107,14 @@ function bench_doc(string $root, int $dataset): array
         $store->query()->where('publishedAt')->between(1_700_000_000_010, 1_700_000_000_200)->get();
     });
 
+    $indexed_compound_miss = timed(static function () use ($store): void {
+        $store->query()->where('kind')->eq('post')->where('bucket')->eq(4)->get();
+    });
+
+    $indexed_compound_miss_count = timed(static function () use ($store): void {
+        $store->query()->where('kind')->eq('post')->where('bucket')->eq(4)->count();
+    });
+
     $indexed_count = timed(static function () use ($store): void {
         $store->query()->where('kind')->eq('page')->count();
     });
@@ -139,6 +147,8 @@ function bench_doc(string $root, int $dataset): array
         'index_build',
         'indexed',
         'indexed_range',
+        'indexed_compound_miss',
+        'indexed_compound_miss_count',
         'indexed_count',
         'indexed_numeric_count',
         'indexed_range_count',

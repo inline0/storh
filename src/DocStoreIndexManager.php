@@ -255,16 +255,34 @@ final class DocStoreIndexManager
     public function candidate_count(QueryBuilder $query): ?int
     {
         $groups = $query->groups();
-        if (1 !== count($groups) || 1 !== count($groups[0])) {
-            return null;
+        if (1 === count($groups) && 1 === count($groups[0])) {
+            return $this->candidate_count_for_condition($groups[0][0], $query->limit_value());
         }
 
-        $condition = $this->best_condition($groups[0]);
-        if (null === $condition) {
-            return null;
+        $all_candidates = array();
+        foreach ($groups as $group) {
+            $group_ids = $this->candidate_ids_for_group($group, null, true);
+            if (null === $group_ids) {
+                return null;
+            }
+
+            foreach ($group_ids as $id) {
+                $all_candidates[ $id ] = true;
+            }
         }
 
+        $count = count($all_candidates);
         $limit = $query->limit_value();
+
+        return null === $limit ? $count : min($count, $limit);
+    }
+
+    private function candidate_count_for_condition(QueryCondition $condition, ?int $limit): ?int
+    {
+        if (! $this->indexed_condition_supported($condition)) {
+            return null;
+        }
+
         $count = match ($condition->operator()) {
             'eq' => $this->count_for_value($condition->field(), $condition->value(), $limit),
             'in' => is_array($condition->value())
@@ -333,10 +351,58 @@ final class DocStoreIndexManager
      * @param list<QueryCondition> $group
      * @return null|list<string>
      */
-    private function candidate_ids_for_group(array $group, ?int $limit = null): ?array
+    private function candidate_ids_for_group(array $group, ?int $limit = null, bool $require_all_conditions = false): ?array
     {
-        $condition = $this->best_condition($group);
-        if (null === $condition) {
+        $candidate_sets = array();
+        foreach ($group as $condition) {
+            $ids = $this->indexed_condition_ids($condition, $limit);
+            if (null === $ids) {
+                if ($require_all_conditions) {
+                    return null;
+                }
+
+                continue;
+            }
+
+            $candidate_sets[] = $ids;
+        }
+
+        if (array() === $candidate_sets) {
+            return null;
+        }
+
+        if (1 === count($candidate_sets)) {
+            return $candidate_sets[0];
+        }
+
+        usort($candidate_sets, static fn(array $left, array $right): int => count($left) <=> count($right));
+
+        $ids = array_fill_keys($candidate_sets[0], true);
+        for ($index = 1; $index < count($candidate_sets); $index++) {
+            if (array() === $ids) {
+                return array();
+            }
+
+            $next = array_fill_keys($candidate_sets[ $index ], true);
+            foreach ($ids as $id => $_) {
+                if (! isset($next[ $id ])) {
+                    unset($ids[ $id ]);
+                }
+            }
+        }
+
+        $ids = array_keys($ids);
+        sort($ids);
+
+        return $ids;
+    }
+
+    /**
+     * @return null|list<string>
+     */
+    private function indexed_condition_ids(QueryCondition $condition, ?int $limit = null): ?array
+    {
+        if (! $this->indexed_condition_supported($condition)) {
             return null;
         }
 
@@ -344,7 +410,11 @@ final class DocStoreIndexManager
             return $this->ids_for_value($condition->field(), $condition->value(), $limit);
         }
 
-        if ('in' === $condition->operator() && is_array($condition->value())) {
+        if ('in' === $condition->operator()) {
+            if (! is_array($condition->value())) {
+                return array();
+            }
+
             $ids = array();
             foreach ($condition->value() as $value) {
                 foreach ($this->ids_for_value($condition->field(), $value, $limit) as $id) {
@@ -358,7 +428,26 @@ final class DocStoreIndexManager
             return array_keys($ids);
         }
 
-        return $this->ids_for_range_condition($condition);
+        if (in_array($condition->operator(), array( 'gt', 'gte', 'lt', 'lte', 'between', 'prefix' ), true)) {
+            return $this->ids_for_range_condition($condition);
+        }
+
+        return null;
+    }
+
+    private function indexed_condition_supported(QueryCondition $condition): bool
+    {
+        $definition = $this->definitions()[ $condition->field() ] ?? null;
+        if (null === $definition) {
+            return false;
+        }
+
+        if (in_array($condition->operator(), array( 'eq', 'in' ), true)) {
+            return true;
+        }
+
+        return $definition['range']
+            && in_array($condition->operator(), array( 'gt', 'gte', 'lt', 'lte', 'between', 'prefix' ), true);
     }
 
     /**
@@ -1166,29 +1255,21 @@ final class DocStoreIndexManager
             throw new StorageException('Malformed equality index: ' . $path);
         }
 
-        $ids = array();
         $position = $ids_offset + strlen($ids_marker);
-        while (true) {
-            $open = strpos($contents, '"', $position);
-            $end = strpos($contents, ']', $position);
-            if (false === $open || (false !== $end && $end < $open)) {
-                break;
-            }
-
-            $close = strpos($contents, '"', $open + 1);
-            if (false === $close) {
-                throw new StorageException('Malformed equality index: ' . $path);
-            }
-
-            $id = substr($contents, $open + 1, $close - $open - 1);
-            if (UuidV7::is_valid($id)) {
-                $ids[] = $id;
-            }
-
-            $position = $close + 1;
+        $end = strpos($contents, ']', $position);
+        if (false === $end) {
+            throw new StorageException('Malformed equality index: ' . $path);
         }
 
-        return $ids;
+        if ($end === $position) {
+            return array();
+        }
+
+        if ('"' !== $contents[ $position ] || '"' !== $contents[ $end - 1 ]) {
+            throw new StorageException('Malformed equality index: ' . $path);
+        }
+
+        return explode('","', substr($contents, $position + 1, $end - $position - 2));
     }
 
     private function count_ids_from_value_file(string $path, string $expected_key, ?int $limit = null): int
@@ -1300,11 +1381,8 @@ final class DocStoreIndexManager
                         break;
                     }
 
-                    $id = substr($buffer, $open + 1, $close - $open - 1);
-                    if (UuidV7::is_valid($id)) {
-                        $ids[] = $id;
-                        $count++;
-                    }
+                    $ids[] = substr($buffer, $open + 1, $close - $open - 1);
+                    $count++;
 
                     $position = $close + 1;
                 }
@@ -1333,7 +1411,7 @@ final class DocStoreIndexManager
         $ids = array();
         $items = isset($entry['ids']) && is_array($entry['ids']) ? $entry['ids'] : array();
         foreach ($items as $id) {
-            if (is_string($id) && UuidV7::is_valid($id)) {
+            if (is_string($id)) {
                 $ids[] = $id;
                 if (null !== $limit && count($ids) >= $limit) {
                     return $ids;
