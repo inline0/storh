@@ -51,13 +51,19 @@ final class QueryCondition
             $exists = true;
             $actual = $id;
         } else {
-            $exists = array_key_exists($this->field, $data);
-            $actual = $exists ? $data[ $this->field ] : null;
+            $actual = $data[ $this->field ] ?? null;
+            $exists = null !== $actual || array_key_exists($this->field, $data);
+        }
+
+        if ('eq' === $this->operator) {
+            return $exists && $actual === $this->value;
+        }
+
+        if ('neq' === $this->operator) {
+            return ! $exists || $actual !== $this->value;
         }
 
         return match ($this->operator) {
-            'eq' => $exists && $actual === $this->value,
-            'neq' => ! $exists || $actual !== $this->value,
             'in' => $exists && is_array($this->value) && in_array($actual, $this->value, true),
             'notIn' => ! $exists || is_array($this->value) && ! in_array($actual, $this->value, true),
             'gt' => $exists && self::compare($actual, $this->value) > 0,
