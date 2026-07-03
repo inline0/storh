@@ -103,6 +103,10 @@ function bench_doc(string $root, int $dataset): array
         $store->query()->where('kind')->eq('page')->limit(100)->get();
     });
 
+    $indexed_range = timed(static function () use ($store): void {
+        $store->query()->where('publishedAt')->between(1_700_000_000_010, 1_700_000_000_200)->get();
+    });
+
     $full = timed(static function () use ($store): void {
         iterator_to_array($store->stream(RecordQuery::all()->where_equal('kind', 'page')->limit(100)));
     });
@@ -115,7 +119,7 @@ function bench_doc(string $root, int $dataset): array
         $bulk_store->putStream(rows($dataset));
     });
 
-    return compact('put', 'get', 'stream', 'delete', 'index_build', 'indexed', 'full', 'bulk_put');
+    return compact('put', 'get', 'stream', 'delete', 'index_build', 'indexed', 'indexed_range', 'full', 'bulk_put');
 }
 
 /**

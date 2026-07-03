@@ -394,6 +394,9 @@ final class DocStoreIndexManager
             return array();
         }
 
+        $operator = $condition->operator();
+        $expected = $condition->value();
+        $second_expected = $condition->second_value();
         try {
             while (false !== ( $line = fgets($handle) )) {
                 $value_object = $this->decode_index_line($line);
@@ -403,8 +406,7 @@ final class DocStoreIndexManager
 
                 $value = $value_object['value'] ?? null;
                 $key = isset($value_object['key']) && is_string($value_object['key']) ? $value_object['key'] : $this->range_key($value);
-                $record = new StorageRecord(UuidV7::min_for_timestamp_ms(0), array($condition->field() => $value));
-                if (! $condition->matches($record)) {
+                if (! $this->range_value_matches($operator, $value, $expected, $second_expected)) {
                     continue;
                 }
 
@@ -479,6 +481,20 @@ final class DocStoreIndexManager
         sort($result);
 
         return null === $limit ? $result : array_slice($result, 0, $limit);
+    }
+
+    private function range_value_matches(string $operator, mixed $value, mixed $expected, mixed $second_expected): bool
+    {
+        return match ($operator) {
+            'gt' => QueryCondition::compare($value, $expected) > 0,
+            'gte' => QueryCondition::compare($value, $expected) >= 0,
+            'lt' => QueryCondition::compare($value, $expected) < 0,
+            'lte' => QueryCondition::compare($value, $expected) <= 0,
+            'between' => QueryCondition::compare($value, $expected) >= 0
+                && QueryCondition::compare($value, $second_expected) <= 0,
+            'prefix' => is_string($value) && is_string($expected) && str_starts_with($value, $expected),
+            default => false,
+        };
     }
 
     private function manifest_path(): string
