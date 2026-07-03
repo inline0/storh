@@ -637,6 +637,9 @@ JSONC
 
         $repaired = new LogQueue($this->root, 'torn-log-queue', $this->id_generator(array( $ids[1] )));
         $this->assertSame(array( 'pending' => 1, 'processing' => 0, 'done' => 0 ), $repaired->counts());
+        $replayed = $repaired->claim();
+        $this->assertSame('one', $replayed?->data()['task'] ?? null);
+        $this->assertSame(1, $repaired->requeue_timed_out(0));
 
         $repaired->enqueue(array( 'task' => 'two' ));
 

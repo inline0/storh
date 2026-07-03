@@ -25,7 +25,7 @@ final class LogQueue
 
     private int $log_offset = 0;
 
-    /** @var array<string, string> */
+    /** @var array<string, array<string, mixed>> */
     private array $payloads = array();
 
     /** @var array<string, true> */
@@ -720,9 +720,7 @@ final class LogQueue
         $ts = isset($event['ts']) && is_int($event['ts']) ? $event['ts'] : time();
 
         if ('enqueue' === $op) {
-            $payload = isset($event['payload']) && is_array($event['payload']) ? $event['payload'] : array();
-            /** @var array<string, mixed> $payload */
-            $this->payloads[ $id ] = $this->encode_payload($payload);
+            $this->payloads[ $id ] = $this->payload_from_value($event['payload'] ?? array());
             $this->pending[ $id ] = true;
             unset($this->processing[ $id ], $this->done[ $id ]);
             $this->pending_order[] = $id;
@@ -788,39 +786,37 @@ final class LogQueue
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
      */
-    private function encode_payload(array $payload): string
+    private function payload_for_id(string $id): array
     {
-        return json_encode(
-            $payload,
-            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
-        );
+        return $this->payloads[ $id ] ?? array();
     }
 
     /**
      * @return array<string, mixed>
      */
-    private function payload_for_id(string $id): array
+    private function payload_from_value(mixed $value): array
     {
-        $encoded = $this->payloads[ $id ] ?? null;
-        if (null === $encoded) {
+        if (! is_array($value)) {
             return array();
         }
 
-        $decoded = json_decode($encoded, true, 512, JSON_THROW_ON_ERROR);
-        if (! is_array($decoded)) {
-            return array();
-        }
+        foreach ($value as $key => $_) {
+            if (! is_string($key)) {
+                $payload = array();
+                foreach ($value as $inner_key => $field) {
+                    if (is_string($inner_key)) {
+                        $payload[ $inner_key ] = $field;
+                    }
+                }
 
-        $payload = array();
-        foreach ($decoded as $key => $value) {
-            if (is_string($key)) {
-                $payload[ $key ] = $value;
+                return $payload;
             }
         }
 
-        return $payload;
+        /** @var array<string, mixed> $value */
+        return $value;
     }
 
     private function compact_pending_order(): void
