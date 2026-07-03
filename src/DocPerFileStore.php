@@ -150,6 +150,7 @@ final class DocPerFileStore implements FileStoreInterface
         $count = 0;
         $indexes = $this->active_indexes();
         $has_indexes = null !== $indexes;
+        $this->forget_written_record_cache();
 
         foreach ($records as $record) {
             $id   = isset($record['id']) && is_string($record['id']) ? $record['id'] : null;
@@ -169,7 +170,6 @@ final class DocPerFileStore implements FileStoreInterface
             $directory = $this->record_directory_for_id($id);
             $path = $directory . '/' . $id . '.jsonc';
             $this->write_record_file($directory, $path, $id, $data);
-            $this->remember_written_record($id, $path, $data, false);
 
             if ($has_indexes) {
                 $indexes->update_record($id, $data, $old?->data());
@@ -715,13 +715,10 @@ final class DocPerFileStore implements FileStoreInterface
      */
     private function write_record_file(string $directory, string $path, string $id, array $data): void
     {
-        $contents = json_encode(
-            array(
-                'id'   => $id,
-                'data' => $data,
-            ),
+        $contents = '{"id":"' . $id . '","data":' . json_encode(
+            $data,
             JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
-        ) . "\n";
+        ) . "}\n";
 
         $this->ensure_known_directory($directory);
         $temp = $directory . '/.' . $id . '.jsonc.' . $this->temp_prefix . '.' . ++$this->temp_counter . '.tmp';
@@ -781,6 +778,12 @@ final class DocPerFileStore implements FileStoreInterface
 
         AtomicFilesystem::ensure_directory($directory);
         $this->known_directories[ $directory ] = true;
+    }
+
+    private function forget_written_record_cache(): void
+    {
+        $this->record_path_cache = null;
+        $this->record_data_cache = null;
     }
 
     /**
