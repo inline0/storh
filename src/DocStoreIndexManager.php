@@ -371,9 +371,11 @@ final class DocStoreIndexManager
         }
 
         $entry = AtomicFilesystem::read_jsonc_object($root);
-        $ids = $this->ids_for_index_key($entry, $this->value_key($value), $limit);
+        if (($entry['key'] ?? null) !== $this->value_key($value)) {
+            return array();
+        }
 
-        return $ids;
+        return $this->ids_from_value_entry($entry, $limit);
     }
 
     /**
@@ -496,7 +498,7 @@ final class DocStoreIndexManager
 
     private function eq_value_root(string $field, mixed $value): string
     {
-        return $this->entries_root() . '/eq/' . $this->field_key($field) . '.jsonc';
+        return $this->entries_root() . '/eq/' . $this->field_key($field) . '/' . $this->value_key($value) . '.jsonc';
     }
 
     private function eq_entry_path(string $field, mixed $value): string
@@ -542,7 +544,7 @@ final class DocStoreIndexManager
     }
 
     /**
-     * @param array<string, array{path: string, field: string, values: array<string, array{value: mixed, ids: array<string, true>}>}> $buckets
+     * @param array<string, array{path: string, field: string, key: string, value: mixed, ids: array<string, true>}> $buckets
      * @param array<string, array{field: string, unique: bool, range: bool}> $definitions
      * @param array<string, mixed> $data
      */
@@ -572,7 +574,7 @@ final class DocStoreIndexManager
     }
 
     /**
-     * @param array<string, array{path: string, field: string, values: array<string, array{value: mixed, ids: array<string, true>}>}> $buckets
+     * @param array<string, array{path: string, field: string, key: string, value: mixed, ids: array<string, true>}> $buckets
      * @param array<string, string> $range_buckets
      * @param array<string, array{field: string, unique: bool, range: bool}> $definitions
      * @param array<string, mixed> $data
@@ -632,68 +634,57 @@ final class DocStoreIndexManager
     }
 
     /**
-     * @param array<string, array{path: string, field: string, values: array<string, array{value: mixed, ids: array<string, true>}>}> $buckets
+     * @param array<string, array{path: string, field: string, key: string, value: mixed, ids: array<string, true>}> $buckets
      */
     private function collect_index_entry(array &$buckets, string $path, string $field, string $value_key, mixed $value, string $id): void
     {
         $buckets[ $path ] ??= array(
-            'path'   => $path,
-            'field'  => $field,
-            'values' => array(),
-        );
-
-        $buckets[ $path ]['values'][ $value_key ] ??= array(
+            'path'  => $path,
+            'field' => $field,
+            'key'   => $value_key,
             'value' => $value,
             'ids'   => array(),
         );
-        $buckets[ $path ]['values'][ $value_key ]['ids'][ $id ] = true;
+
+        $buckets[ $path ]['ids'][ $id ] = true;
     }
 
     /**
-     * @param array<string, array{path: string, field: string, values: array<string, array{value: mixed, ids: array<string, true>}>}> $buckets
+     * @param array<string, array{path: string, field: string, key: string, value: mixed, ids: array<string, true>}> $buckets
      */
     private function merge_index_buckets(array $buckets): void
     {
         foreach ($buckets as $bucket) {
-            $values = is_file($bucket['path'])
-                ? $this->values_from_field_entry(AtomicFilesystem::read_jsonc_object($bucket['path']))
+            $ids = is_file($bucket['path'])
+                ? array_fill_keys($this->ids_from_value_entry(AtomicFilesystem::read_jsonc_object($bucket['path'])), true)
                 : array();
 
-            foreach ($bucket['values'] as $key => $value_entry) {
-                $values[ $key ] ??= array(
-                    'value' => $value_entry['value'],
-                    'ids'   => array(),
-                );
-
-                foreach ($value_entry['ids'] as $id => $_) {
-                    $values[ $key ]['ids'][ $id ] = true;
-                }
+            foreach ($bucket['ids'] as $id => $_) {
+                $ids[ $id ] = true;
             }
 
-            $this->write_field_index($bucket['path'], $bucket['field'], $values);
+            $this->write_value_index($bucket['path'], $bucket['field'], $bucket['key'], $bucket['value'], $ids);
         }
     }
 
     /**
-     * @param array<string, array{value: mixed, ids: array<string, true>}> $values
+     * @param array<string, true> $ids
      */
-    private function write_field_index(string $path, string $field, array $values): void
+    private function write_value_index(string $path, string $field, string $key, mixed $value, array $ids): void
     {
-        ksort($values);
-        $encoded = array();
-        foreach ($values as $key => $value_entry) {
-            $ids = array_keys($value_entry['ids']);
-            sort($ids);
-
-            $encoded[ $key ] = array(
-                'value' => $value_entry['value'],
-                'ids'   => $ids,
-            );
-        }
+        $encoded_ids = array_keys($ids);
+        sort($encoded_ids);
 
         AtomicFilesystem::write_atomic(
             $path,
-            $this->encode_index_object(array( 'field' => $field, 'values' => $encoded ))
+            $this->encode_index_object(
+                array(
+                    'field' => $field,
+                    'key'   => $key,
+                    'value' => $value,
+                    'ids'   => $encoded_ids,
+                )
+            )
         );
     }
 
@@ -709,60 +700,18 @@ final class DocStoreIndexManager
             return;
         }
 
-        $values = $this->values_from_field_entry($entry);
-        if (! isset($values[ $value_key ])) {
+        if (($entry['key'] ?? null) !== $value_key) {
             return;
         }
 
-        unset($values[ $value_key ]['ids'][ $id ]);
-        if (array() === $values[ $value_key ]['ids']) {
-            unset($values[ $value_key ]);
-        }
-
-        if (array() === $values) {
+        $ids = array_fill_keys($this->ids_from_value_entry($entry), true);
+        unset($ids[ $id ]);
+        if (array() === $ids) {
             @unlink($path);
             return;
         }
 
-        $this->write_field_index($path, $field, $values);
-    }
-
-    /**
-     * @param array<string, mixed> $entry
-     * @return array<string, array{value: mixed, ids: array<string, true>}>
-     */
-    private function values_from_field_entry(array $entry): array
-    {
-        $values = array();
-        $items = isset($entry['values']) && is_array($entry['values']) ? $entry['values'] : array();
-        foreach ($items as $key => $value_entry) {
-            if (! is_string($key) || ! is_array($value_entry)) {
-                continue;
-            }
-
-            $value_object = $this->string_keyed($value_entry);
-            $values[ $key ] = array(
-                'value' => $value_object['value'] ?? null,
-                'ids'   => array_fill_keys($this->ids_from_value_entry($value_object), true),
-            );
-        }
-
-        return $values;
-    }
-
-    /**
-     * @param array<string, mixed> $entry
-     * @return list<string>
-     */
-    private function ids_for_index_key(array $entry, string $key, ?int $limit = null): array
-    {
-        $values = isset($entry['values']) && is_array($entry['values']) ? $entry['values'] : array();
-        $value_entry = $values[ $key ] ?? null;
-        if (! is_array($value_entry)) {
-            return array();
-        }
-
-        return $this->ids_from_value_entry($this->string_keyed($value_entry), $limit);
+        $this->write_value_index($path, $field, $value_key, $entry['value'] ?? null, $ids);
     }
 
     /**
@@ -859,16 +808,11 @@ final class DocStoreIndexManager
     }
 
     /**
-     * @param array<string, array{path: string, field: string, values: array<string, array{value: mixed, ids: array<string, true>}>}> $buckets
+     * @param array<string, array{path: string, field: string, key: string, value: mixed, ids: array<string, true>}> $buckets
      */
     private function bucket_value_count(array $buckets): int
     {
-        $count = 0;
-        foreach ($buckets as $bucket) {
-            $count += count($bucket['values']);
-        }
-
-        return $count;
+        return count($buckets);
     }
 
     /**

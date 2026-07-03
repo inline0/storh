@@ -22,7 +22,8 @@ Index types:
 - unique indexes for fields like `slug`
 - range indexes for numeric, string, boolean, and null scalar values
 
-Writes update index entries after the record file is atomically replaced.
+Equality and unique indexes are split by field value, so point lookups read only
+the matching value file. Writes update index entries after the record file is atomically replaced.
 Deletes remove matching index entries. `reindex()` rebuilds every configured
 index from the record files.
 

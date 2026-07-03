@@ -71,6 +71,10 @@ final class AdvancedStorageTest extends TestCase
         $this->assertSame('index_scan', $store->query()->where('status')->eq('published')->explain()['plan']);
         $this->assertSame('home', $store->query()->where('slug')->eq('home')->first()?->data()['slug'] ?? null);
         $this->assertSame(2, $store->query()->where('status')->in(array( 'draft', 'archived' ))->count());
+        $statusIndexes = glob(
+            $store->collection_root() . '/.storh/indexes/entries/eq/' . bin2hex('status') . '/*.jsonc'
+        ) ?: array();
+        $this->assertCount(3, $statusIndexes);
 
         $range = $store->query()
             ->where('publishedAt')->between(10, 35)
