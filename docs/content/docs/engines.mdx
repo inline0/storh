@@ -1,0 +1,46 @@
+---
+title: Engines
+description: Choose between DocStore, SegmentedLog, and Queue.
+---
+
+# Engines
+
+## DocStore
+
+`DocStore` is for point reads and simple scans over durable records. It writes
+one JSONC file per record:
+
+```php
+$store = new Storh\DocStore($root, 'articles');
+$record = $store->put(['slug' => 'hello', 'published' => true]);
+$same = $store->get($record->id());
+```
+
+Record files are sharded by the first four UUID characters:
+
+```text
+articles/data/01/8b/018bcfe5-6800-7000-8000-000000000000.jsonc
+```
+
+## SegmentedLog
+
+`SegmentedLog` is for append-heavy records, cursor reads, and time-range reads.
+Records are written to active NDJSON segments. Full segments roll to sealed
+segments with sparse indexes.
+
+```php
+$events = new Storh\SegmentedLog($root, 'events');
+$events->put(['type' => 'user.created']);
+$events->compact();
+```
+
+## Queue
+
+`Queue` is for simple durable work queues. Enqueue writes to `pending`, claim
+moves one job to `processing`, and complete moves it to `done` or deletes it.
+
+```php
+$queue = new Storh\Queue($root, 'mail');
+$queue->enqueue(['to' => 'person@example.test']);
+$job = $queue->claim();
+```

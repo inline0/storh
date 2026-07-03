@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="storh">
+  <rect width="128" height="128" rx="20" fill="#f4f7fb"/>
+  <path d="M30 28h68v20H50v16h42v20H50v16h48v20H30z" fill="#20242a"/>
+  <path d="M22 18h84v12H22z" fill="#0c7f6f"/>
+</svg>

@@ -1,0 +1,60 @@
+---
+title: API
+description: Public classes and their main methods.
+---
+
+# API
+
+## `StorageRoot`
+
+- `StorageRoot::at(string $root): StorageRoot`
+- `StorageRoot::resolve(string $root, string $namespace = 'runtime-storage'): string`
+- `path(string $namespace = 'runtime-storage'): string`
+- `root(): string`
+
+## `DocStore`
+
+Alias of `DocPerFileStore`.
+
+- `put(array $data, ?string $id = null): StorageRecord`
+- `get(string $id): ?StorageRecord`
+- `delete(string $id): void`
+- `stream(?RecordQuery $query = null): Generator`
+- `path_for_id(string $id): string`
+
+## `SegmentedLog`
+
+Alias of `SegmentedLogStore`.
+
+- `put(array $data, ?string $id = null): StorageRecord`
+- `get(string $id): ?StorageRecord`
+- `delete(string $id): void`
+- `stream(?RecordQuery $query = null): Generator`
+- `compact(): void`
+- `recover(): void`
+- `state_index(): array`
+
+## `Queue`
+
+Alias of `DirectoryQueue`.
+
+- `enqueue(array $payload, ?string $id = null): string`
+- `claim(): ?StorageRecord`
+- `complete(string $id, bool $keep_done = true): void`
+- `requeue_timed_out(int $timeout_seconds): int`
+- `counts(): array`
+
+## `RecordQuery`
+
+- `RecordQuery::all(): RecordQuery`
+- `after(string $id): RecordQuery`
+- `time_range_ms(?int $from_ms, ?int $until_ms): RecordQuery`
+- `where_equal(string $field, mixed $value): RecordQuery`
+- `limit(int $limit): RecordQuery`
+- `continue_on_error(callable $handler): RecordQuery`
+- `on_segment_open(callable $handler): RecordQuery`
+
+## `StorageRecord`
+
+- `id(): string`
+- `data(): array`

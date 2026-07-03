@@ -1,0 +1,24 @@
+---
+title: Atomicity & Recovery
+description: How storh handles atomic writes, torn records, and compaction leftovers.
+---
+
+# Atomicity & Recovery
+
+`AtomicFilesystem::write_atomic()` writes to a temporary file and renames it over
+the target path. Temporary files left behind by crashes are cleaned up when
+stores initialize.
+
+The segmented log writes each line as:
+
+```text
+<byte-length>\t<crc32b>\t<json>\n
+```
+
+Reads verify the byte length and checksum. Recovery scans each segment and
+truncates the file at the last complete valid line, which removes torn trailing
+writes.
+
+Compaction writes new `compact-*` segment files and then updates the manifest.
+Old sealed segments are intentionally left in place so readers already streaming
+from them stay valid.

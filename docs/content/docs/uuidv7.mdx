@@ -1,0 +1,26 @@
+---
+title: UUIDv7
+description: UUIDv7 ids make records sortable and time-addressable.
+---
+
+# UUIDv7
+
+storh uses UUIDv7 ids by default. They sort by timestamp, making them useful for
+cursor pagination and time-range scans.
+
+```php
+$id = Storh\UuidV7::generate();
+
+Storh\UuidV7::assert_valid($id);
+$timestampMs = Storh\UuidV7::timestamp_ms($id);
+```
+
+For range queries, storh derives lower and upper UUID bounds from millisecond
+timestamps:
+
+```php
+$query = Storh\RecordQuery::all()->time_range_ms(
+    1_700_000_000_000,
+    1_700_000_060_000,
+);
+```

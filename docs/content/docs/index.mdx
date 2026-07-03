@@ -1,0 +1,36 @@
+---
+title: Introduction
+description: storh is a standalone, framework-agnostic file datastore for PHP records.
+---
+
+# storh
+
+storh is a standalone PHP datastore built around files: JSONC documents, an
+append-only segmented log, and an atomic directory queue. It stores records with
+UUIDv7 ids, supports streaming reads and cursor or time-range queries, and uses
+atomic filesystem operations instead of a database server.
+
+Callers provide a directory. storh does not discover application paths, read
+global constants, or require a framework adapter.
+
+## Engines
+
+- `DocStore` stores one JSONC file per record with prefix-sharded paths.
+- `SegmentedLog` appends length and checksum guarded records to NDJSON segments.
+- `Queue` claims jobs with atomic renames between directory lanes.
+
+The extracted class names remain available as `DocPerFileStore`,
+`SegmentedLogStore`, and `DirectoryQueue`.
+
+## Requirements
+
+- PHP 8.2 or later
+- `ext-json`
+- a local or mounted filesystem with atomic rename semantics inside a directory
+
+## Where to next
+
+- [Install](/docs/install)
+- [Quick Start](/docs/quick-start)
+- [Engines](/docs/engines)
+- [Scaling & Limits](/docs/scaling-limits)

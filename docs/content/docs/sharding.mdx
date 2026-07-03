@@ -1,0 +1,20 @@
+---
+title: Sharding
+description: Prefix sharding keeps large collections out of single hot directories.
+---
+
+# Sharding
+
+storh shards point-addressed files by UUID prefix:
+
+```text
+data/01/8b/<uuid>.jsonc
+index/01/8b/<uuid>.jsonc
+```
+
+The first four UUID characters spread records across two directory levels while
+preserving lexicographic order. This keeps point reads and writes stable as a
+collection grows.
+
+The segmented log uses the same sharding for its state index. Segment files live
+under `segments/` and are bounded by `max_segment_bytes`.

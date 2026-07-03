@@ -1,0 +1,34 @@
+---
+title: Queries
+description: Stream records with cursors, time ranges, limits, and field equality filters.
+---
+
+# Queries
+
+`RecordQuery` is immutable. Each modifier returns a cloned query:
+
+```php
+$query = Storh\RecordQuery::all()
+    ->after($lastSeenId)
+    ->time_range_ms($fromMs, $untilMs)
+    ->where_equal('kind', 'page')
+    ->limit(100);
+
+foreach ($store->stream($query) as $record) {
+    // Records are yielded lazily.
+}
+```
+
+`after()` and `time_range_ms()` use UUID ordering. `where_equal()` compares a
+top-level data field with `===` and accepts scalar values or `null`.
+
+Use `continue_on_error()` when a scan should skip corrupt records and collect
+the failure:
+
+```php
+$query = Storh\RecordQuery::all()->continue_on_error(
+    static function (string $location, Throwable $error): void {
+        error_log($location . ': ' . $error->getMessage());
+    },
+);
+```

@@ -1,0 +1,24 @@
+---
+title: Install
+description: Install storh with Composer.
+---
+
+# Install
+
+```bash
+composer require storh/storh
+```
+
+storh has no Composer runtime dependencies. It requires PHP 8.2+ and `ext-json`.
+
+Use a directory your PHP process can create, read, write, rename within, and
+delete from:
+
+```php
+use Storh\StorageRoot;
+
+$root = StorageRoot::resolve(__DIR__ . '/var/storage', 'app');
+```
+
+`StorageRoot` only normalizes the supplied path and sanitizes the namespace. It
+does not inspect the host application.

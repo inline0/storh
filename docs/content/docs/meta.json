@@ -1,0 +1,16 @@
+{
+  "title": "Documentation",
+  "pages": [
+    "index",
+    "install",
+    "quick-start",
+    "engines",
+    "jsonc",
+    "uuidv7",
+    "queries",
+    "atomicity",
+    "sharding",
+    "scaling-limits",
+    "api"
+  ]
+}

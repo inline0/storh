@@ -1,0 +1,23 @@
+---
+title: JSONC
+description: storh reads JSON documents with comments and trailing commas.
+---
+
+# JSONC
+
+storh storage files are JSON objects. Reads accept line comments, block
+comments, and trailing commas. Writes emit stable pretty JSON with a trailing
+newline.
+
+```jsonc
+{
+  // Application-owned fields live under data.
+  "id": "018bcfe5-6800-7000-8000-000000000000",
+  "data": {
+    "title": "Home",
+  },
+}
+```
+
+`Jsonc::decode_object()` rejects non-object documents and malformed input.
+`Jsonc::encode_object()` writes arrays as object documents.
