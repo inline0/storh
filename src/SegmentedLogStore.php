@@ -1356,7 +1356,10 @@ final class SegmentedLogStore implements FileStoreInterface
      */
     private function encode_line(array $envelope): string
     {
-        $json = json_encode($envelope, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+        $json = json_encode(
+            $envelope,
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
+        );
 
         return strlen($json) . "\t" . hash('crc32b', $json) . "\t" . $json . "\n";
     }

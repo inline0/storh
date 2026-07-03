@@ -516,7 +516,7 @@ final class DocPerFileStore implements FileStoreInterface
                     $handle,
                     json_encode(
                         array( 'id' => $record->id(), 'data' => $record->data() ),
-                        JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR
+                        JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
                     ) . "\n",
                     $path
                 );
@@ -725,7 +725,7 @@ final class DocPerFileStore implements FileStoreInterface
                 'id'   => $id,
                 'data' => $data,
             ),
-            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
         ) . "\n";
 
         $this->ensure_known_directory($directory);

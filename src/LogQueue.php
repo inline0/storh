@@ -646,7 +646,10 @@ final class LogQueue
      */
     private function encode_line(array $event): string
     {
-        $json = json_encode($event, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+        $json = json_encode(
+            $event,
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
+        );
 
         return strlen($json) . "\t" . hash('crc32b', $json) . "\t" . $json . "\n";
     }

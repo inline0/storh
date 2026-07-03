@@ -96,7 +96,7 @@ function bench_doc(string $root, int $dataset): array
     });
 
     $index_build = timed(static function () use ($store): void {
-        $store->indexes()->field('kind')->field('publishedAt')->range()->sync();
+        $store->indexes()->field('kind')->field('bucket')->field('publishedAt')->range()->sync();
     });
 
     $indexed = timed(static function () use ($store): void {
@@ -109,6 +109,10 @@ function bench_doc(string $root, int $dataset): array
 
     $indexed_count = timed(static function () use ($store): void {
         $store->query()->where('kind')->eq('page')->count();
+    });
+
+    $indexed_numeric_count = timed(static function () use ($store): void {
+        $store->query()->where('bucket')->eq(5)->count();
     });
 
     $indexed_range_count = timed(static function () use ($store): void {
@@ -136,6 +140,7 @@ function bench_doc(string $root, int $dataset): array
         'indexed',
         'indexed_range',
         'indexed_count',
+        'indexed_numeric_count',
         'indexed_range_count',
         'full',
         'bulk_put'
@@ -332,6 +337,7 @@ function row(int $i): array
     return array(
         'kind'        => 0 === $i % 2 ? 'page' : 'post',
         'status'      => 0 === $i % 3 ? 'draft' : 'published',
+        'bucket'      => $i % 10,
         'slug'        => 'item-' . $i,
         'publishedAt' => 1_700_000_000_000 + $i,
     );

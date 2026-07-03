@@ -411,8 +411,8 @@ final class DocStoreIndexManager
         $seen = array();
 
         foreach ($values as $value) {
-            if (! $this->countable_value($value)) {
-                return null;
+            if (! $this->indexable($value)) {
+                continue;
             }
 
             $key = $this->value_key($value);
@@ -443,9 +443,7 @@ final class DocStoreIndexManager
 
         $root = $this->eq_value_root($field, $value);
         if (is_file($root)) {
-            return $this->countable_value($value)
-                ? $this->count_ids_from_value_file($root, $this->value_key($value), $limit)
-                : null;
+            return $this->count_ids_from_value_file($root, $this->value_key($value), $limit);
         }
 
         $definition = $this->definitions()[ $field ] ?? null;
@@ -455,12 +453,6 @@ final class DocStoreIndexManager
 
         return 0;
     }
-
-    private function countable_value(mixed $value): bool
-    {
-        return is_string($value) || is_bool($value) || null === $value;
-    }
-
     /**
      * @return list<string>
      */
@@ -713,7 +705,7 @@ final class DocStoreIndexManager
 
     private function value_key(mixed $value): string
     {
-        return hash('sha256', json_encode($value, JSON_THROW_ON_ERROR));
+        return hash('sha256', serialize($value));
     }
 
     private function range_key(mixed $value): string
@@ -1114,7 +1106,10 @@ final class DocStoreIndexManager
      */
     private function encode_index_object(array $data): string
     {
-        return json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR) . "\n";
+        return json_encode(
+            $data,
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
+        ) . "\n";
     }
 
     /**

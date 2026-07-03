@@ -114,6 +114,7 @@ JSONC
     public function test_jsonc_covers_empty_objects_numeric_keys_and_escaped_strings(): void
     {
         $this->assertSame("{}\n", Jsonc::encode_object(array()));
+        $this->assertStringContainsString('1.0', Jsonc::encode_object(array( 'float' => 1.0 )));
         $this->assertSame(array( 'quote' => 'a"b', 'path' => 'c\\d' ), Jsonc::decode_object('{"quote":"a\"b","path":"c\\\\d",}'));
 
         try {

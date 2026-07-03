@@ -167,9 +167,9 @@ final class AdvancedStorageTest extends TestCase
         $store = new DocPerFileStore($this->root, 'indexed', $this->id_generator($ids), Cache::memory(100));
         $store->putMany(
             array(
-                array( 'title' => 'Alpha', 'active' => true, 'score' => 1, 'nullable' => null ),
-                array( 'title' => 'Beta', 'active' => false, 'score' => 2, 'nullable' => null ),
-                array( 'title' => 'Gamma', 'active' => true, 'score' => 3, 'nullable' => 'x' ),
+                array( 'title' => 'Alpha', 'active' => true, 'score' => 1, 'metric' => 1, 'nullable' => null ),
+                array( 'title' => 'Beta', 'active' => false, 'score' => 2, 'metric' => 1.0, 'nullable' => null ),
+                array( 'title' => 'Gamma', 'active' => true, 'score' => 3, 'metric' => 2, 'nullable' => 'x' ),
             )
         );
 
@@ -178,16 +178,23 @@ final class AdvancedStorageTest extends TestCase
             ->field('title')->range()
             ->field('active')->range()
             ->field('nullable')->unique()
+            ->field('metric')
             ->field('score')->sync();
 
         $this->assertSame('index_scan', $store->query()->where('score')->in(array( 1, 3 ))->explain()['plan']);
         $this->assertSame(2, $store->query()->where('active')->eq(true)->count());
         $this->assertSame(1, $store->query()->where('active')->eq(true)->orderBy('score')->limit(1)->count());
         $this->assertSame(1, $store->query()->where('score')->in(array( 1, 3 ))->limit(1)->count());
+        $this->assertSame(1, $store->query()->where('metric')->eq(1)->count());
+        $this->assertSame(1, $store->query()->where('metric')->eq(1.0)->count());
         $this->assertSame(2, $store->query()->where('title')->prefix('A')->orWhere(static fn($query) => $query->where('title')->eq('Beta'))->count());
         $this->assertSame(0, $store->query()->where('score')->gt(99)->count());
         $this->assertNull($store->indexes()->candidate_ids($store->query()));
         $this->assertSame(array(), $store->indexes()->candidate_ids($store->query()->where('score')->eq(array( 'bad' ))));
+        $reopened = new DocPerFileStore($this->root, 'indexed');
+        $this->assertSame(1, $reopened->query()->where('metric')->eq(1.0)->count());
+        $this->assertSame(5, $reopened->reindex()['fields']);
+        $this->assertSame(1, $reopened->query()->where('metric')->eq(1.0)->count());
         $store->indexes()->field('builder-a')->field('builder-b')->sync(false);
 
         try {
