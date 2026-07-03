@@ -1,0 +1,66 @@
+{
+    "name": "storh/storh",
+    "description": "File-first records for PHP: JSONC document store, append-only segmented log, and atomic directory queue. Zero dependencies.",
+    "type": "library",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "inline0",
+            "homepage": "https://github.com/inline0"
+        }
+    ],
+    "homepage": "https://github.com/inline0/storh",
+    "support": {
+        "issues": "https://github.com/inline0/storh/issues",
+        "source": "https://github.com/inline0/storh"
+    },
+    "keywords": [
+        "php",
+        "storage",
+        "datastore",
+        "jsonc",
+        "document-store",
+        "append-only-log",
+        "queue",
+        "uuidv7",
+        "file-storage",
+        "zero-dependency"
+    ],
+    "require": {
+        "php": "^8.2",
+        "ext-json": "*"
+    },
+    "require-dev": {
+        "phpstan/phpstan": "^2.0",
+        "phpunit/phpunit": "^13.1",
+        "squizlabs/php_codesniffer": "^3.11"
+    },
+    "autoload": {
+        "psr-4": {
+            "Storh\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Storh\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "process-timeout": 0,
+        "sort-packages": true
+    },
+    "scripts": {
+        "test": "phpunit",
+        "test:unit": "phpunit --testsuite=unit",
+        "test:coverage": "phpunit --coverage-text --colors=never",
+        "analyse": "phpstan analyse --configuration=phpstan.neon.dist --memory-limit=512M",
+        "cs": "phpcs --warning-severity=0",
+        "cs:fix": "phpcbf",
+        "verify": [
+            "@analyse",
+            "@cs",
+            "@test"
+        ]
+    }
+}

@@ -1,0 +1,9 @@
+/vendor/
+/.phpunit.cache/
+/.phpstan.cache/
+/build/
+composer.lock
+.DS_Store
+node_modules/
+docs/node_modules/
+docs/.next/
