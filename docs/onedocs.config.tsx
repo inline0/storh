@@ -16,7 +16,7 @@ const iconClass = "h-5 w-5 text-fd-primary";
 export default defineConfig({
   title: "storh",
   description:
-    "File-first records for PHP: JSONC documents, append-only segmented logs, and atomic directory queues with UUIDv7 ids.",
+    "File-first records for PHP: JSONC documents, append-only segmented logs, and log-backed queues with UUIDv7 ids.",
   logo: {
     light: "/logo-light.svg",
     dark: "/logo-dark.svg",
@@ -46,9 +46,9 @@ export default defineConfig({
         icon: <Rows3 className={iconClass} />,
       },
       {
-        title: "Directory Queue",
+        title: "Log Queue",
         description:
-          "Jobs move atomically between pending, processing, and done lanes using filesystem renames.",
+          "Jobs move through pending, processing, and done states using compact append-only queue events.",
         icon: <ListChecks className={iconClass} />,
       },
       {

@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  File-first records for PHP: JSONC documents, append-only segmented logs, and atomic directory queues.
+  File-first records for PHP: JSONC documents, append-only segmented logs, and log-backed queues.
 </p>
 
 <p align="center">
@@ -25,7 +25,7 @@ that want durable local records without a database server. It provides:
 
 - a JSONC document store with one file per record
 - an append-only segmented log with cursor and time-range reads
-- an atomic directory queue
+- an append-only log-backed queue
 - Prisma/Drizzle-style fluent querying, secondary indexes, schema validation,
   caching, bulk JSONL import/export, maintenance APIs, benchmarks, and a CLI
 - UUIDv7 ids, UUID-tail sharding, atomic writes, torn-write recovery, retention,
@@ -98,9 +98,9 @@ path. It is best for point reads and modest field scans.
 It is best for append-heavy workflows, cursor pagination, time-range scans, and
 compaction.
 
-`Queue` stores jobs in sharded `pending`, `processing`, and `done` lanes. Claims
-and completions are atomic directory renames, with same-process claim caching for
-jobs enqueued by the current queue instance.
+`Queue` stores job events in an append-only log and keeps pending, processing,
+and done state in memory. Claims, completions, requeues, and purges append
+bounded events instead of creating one file per job.
 
 ## Querying and Indexes
 

@@ -1170,7 +1170,6 @@ final class SegmentedLogStore implements FileStoreInterface
      */
     private function replace_state_index(array $state): void
     {
-        $this->delete_directory($this->state_index_root());
         $this->cache->clear_prefix($this->state_cache_prefix());
         $this->state = $state;
     }
@@ -1502,11 +1501,6 @@ final class SegmentedLogStore implements FileStoreInterface
     private function manifest_path(): string
     {
         return $this->collection_root() . '/manifest.jsonc';
-    }
-
-    private function state_index_root(): string
-    {
-        return $this->collection_root() . '/index';
     }
 
     private function delete_state_entry(string $id): void

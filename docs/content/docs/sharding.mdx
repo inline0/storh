@@ -16,7 +16,5 @@ leading characters. Tail sharding uses entropy bytes instead, spreading new
 document files across 256 buckets while stream order remains sorted by record id
 in memory.
 
-DocStore still reads older prefix-sharded records and moves them to the current
-tail-sharded layout when they are replaced. The segmented log keeps state in a
-derived in-memory index; segment files live under `segments/` and are bounded by
-`max_segment_bytes`.
+The segmented log keeps state in a derived in-memory index; segment files live
+under `segments/` and are bounded by `max_segment_bytes`.

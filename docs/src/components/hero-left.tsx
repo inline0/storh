@@ -8,7 +8,7 @@ export function HeroLeft() {
         storh
       </h1>
       <p className="max-w-2xl text-lg leading-8 text-fd-muted-foreground md:text-xl">
-        JSONC documents, append-only segmented logs, and atomic directory queues
+        JSONC documents, append-only segmented logs, and log-backed queues
         for applications that want durable local storage without a database
         server.
       </p>

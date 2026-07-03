@@ -78,10 +78,6 @@ final class DocPerFileStore implements FileStoreInterface
             $this->record_data_cache[ $id ] = $data;
         }
 
-        if (! $generated) {
-            $this->unlink_legacy_record_if_replaced($id, $path);
-        }
-
         $indexes->update_record($id, $data, $old?->data());
         $this->cache_record($record, $path);
 
@@ -109,7 +105,7 @@ final class DocPerFileStore implements FileStoreInterface
     public function get(string $id): ?StorageRecord
     {
         UuidV7::assert_valid($id);
-        $path = $this->existing_record_path($id) ?? $this->record_path_for_id($id);
+        $path = $this->record_path_for_id($id);
 
         if (isset($this->record_data_cache[ $id ]) && is_file($path)) {
             return new StorageRecord($id, $this->record_data_cache[ $id ]);
@@ -134,13 +130,11 @@ final class DocPerFileStore implements FileStoreInterface
     public function delete(string $id): void
     {
         UuidV7::assert_valid($id);
-        $path = $this->existing_record_path($id) ?? $this->record_path_for_id($id);
+        $path = $this->record_path_for_id($id);
         $old  = is_file($path) ? $this->get($id) : null;
 
-        foreach ($this->record_paths_for_id($id) as $record_path) {
-            if (is_file($record_path) && ! @unlink($record_path)) {
-                throw new StorageException('Could not delete storage record: ' . $id);
-            }
+        if (is_file($path) && ! @unlink($path)) {
+            throw new StorageException('Could not delete storage record: ' . $id);
         }
         if (null !== $this->record_path_cache) {
             unset($this->record_path_cache[ $id ]);
@@ -466,31 +460,25 @@ final class DocPerFileStore implements FileStoreInterface
 
         foreach ($iterator as $file) {
             if ($file instanceof \SplFileInfo && 'jsonc' === $file->getExtension()) {
-                $id = basename($file->getPathname(), '.jsonc');
-                if (36 === strlen($id)) {
-                    $current_path = $root . '/' . substr($id, 24, 2) . '/' . $id . '.jsonc';
-                    if (! isset($paths[ $id ]) || $file->getPathname() === $current_path) {
-                        $paths[ $id ] = $file->getPathname();
-                    }
-                    continue;
-                }
-
-                $paths[ $file->getPathname() ] = $file->getPathname();
+                $paths[] = $file->getPathname();
             }
         }
 
-        ksort($paths);
+        sort($paths);
 
-        return array_values($paths);
+        return $paths;
     }
 
-    private function record_from_file(string $path, string $fallback_id): StorageRecord
+    private function record_from_file(string $path, string $expected_id): StorageRecord
     {
         $decoded = $this->read_record_object($path);
-        $id      = isset($decoded['id']) && is_string($decoded['id']) ? $decoded['id'] : $fallback_id;
+        $id      = isset($decoded['id']) && is_string($decoded['id']) ? $decoded['id'] : '';
         $data    = isset($decoded['data']) && is_array($decoded['data']) ? $decoded['data'] : array();
 
         UuidV7::assert_valid($id);
+        if ($id !== $expected_id) {
+            throw new StorageException('Storage record id does not match its path.');
+        }
 
         /** @var array<string, mixed> $data */
         return new StorageRecord($id, $data);
@@ -591,48 +579,6 @@ final class DocPerFileStore implements FileStoreInterface
                 'hash'   => '',
             )
         );
-    }
-
-    /**
-     * @return list<string>
-     */
-    private function legacy_paths_for_id(string $id): array
-    {
-        return array(
-            $this->data_root() . '/' . substr($id, 24, 2) . '/' . substr($id, 26, 2) . '/' . $id . '.jsonc',
-            $this->data_root() . '/' . substr($id, 0, 2) . '/' . substr($id, 2, 2) . '/' . $id . '.jsonc',
-        );
-    }
-
-    private function existing_record_path(string $id): ?string
-    {
-        foreach ($this->record_paths_for_id($id) as $path) {
-            if (is_file($path)) {
-                return $path;
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * @return list<string>
-     */
-    private function record_paths_for_id(string $id): array
-    {
-        $path = $this->record_path_for_id($id);
-        $legacy = $this->legacy_paths_for_id($id);
-
-        return array_values(array_unique(array_merge(array($path), $legacy)));
-    }
-
-    private function unlink_legacy_record_if_replaced(string $id, string $path): void
-    {
-        foreach ($this->legacy_paths_for_id($id) as $legacy) {
-            if ($legacy !== $path && is_file($legacy) && ! @unlink($legacy)) {
-                throw new StorageException('Could not replace legacy storage record: ' . $id);
-            }
-        }
     }
 
     /**

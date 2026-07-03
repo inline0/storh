@@ -85,20 +85,13 @@ final class DirectoryQueue
         $source = $this->queue_record_path('processing', $id);
 
         if (! $keep_done) {
-            if (! @unlink($source)) {
-                @unlink($this->legacy_queue_record_path('processing', $id));
-            }
+            @unlink($source);
             return;
         }
 
         $target = $this->queue_record_path('done', $id, true);
         if (! @rename($source, $target)) {
-            $legacy = $this->legacy_queue_record_path('processing', $id);
-            if ($legacy !== $source && @rename($legacy, $target)) {
-                return;
-            }
-
-            if (! file_exists($source) && ! file_exists($legacy)) {
+            if (! file_exists($source)) {
                 return;
             }
 
@@ -232,11 +225,6 @@ final class DirectoryQueue
         return $this->queue_root() . '/' . $lane;
     }
 
-    private function legacy_queue_record_path(string $lane, string $id): string
-    {
-        return $this->lane_path($lane) . '/' . $id . '.jsonc';
-    }
-
     private function queue_record_path(string $lane, string $id, bool $ensure_directory = false): string
     {
         $directory = $this->lane_path($lane) . '/' . $this->queue_shard($id);
@@ -258,7 +246,7 @@ final class DirectoryQueue
     private function lane_files(string $lane, bool $files_only = true): array
     {
         $root  = $this->lane_path($lane);
-        $files = glob($root . '/*.jsonc') ?: array();
+        $files = array();
         foreach (glob($root . '/*', GLOB_ONLYDIR) ?: array() as $directory) {
             foreach (glob($directory . '/*.jsonc') ?: array() as $file) {
                 $files[] = $file;
@@ -306,18 +294,21 @@ final class DirectoryQueue
         $this->pending_claim_offset = 0;
     }
 
-    private function record_from_file(string $path, string $fallback_id, bool $use_cache = true): StorageRecord
+    private function record_from_file(string $path, string $expected_id, bool $use_cache = true): StorageRecord
     {
         if ($use_cache) {
-            $cached = $this->cached_record_from_file($path, $fallback_id);
+            $cached = $this->cached_record_from_file($path, $expected_id);
             if ($cached instanceof StorageRecord) {
                 return $cached;
             }
         }
 
         $data = $this->read_queue_record($path);
-        $id   = isset($data['id']) && is_string($data['id']) ? $data['id'] : $fallback_id;
+        $id   = isset($data['id']) && is_string($data['id']) ? $data['id'] : '';
         UuidV7::assert_valid($id);
+        if ($id !== $expected_id) {
+            throw new StorageException('Queue job id does not match its path.');
+        }
 
         $payload = isset($data['payload']) && is_array($data['payload']) ? $data['payload'] : array();
         /** @var array<string, mixed> $payload */

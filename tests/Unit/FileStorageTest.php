@@ -8,6 +8,7 @@ use Storh\AtomicFilesystem;
 use Storh\DirectoryQueue;
 use Storh\DocPerFileStore;
 use Storh\Jsonc;
+use Storh\LogQueue;
 use Storh\RecordQuery;
 use Storh\SegmentedLogStore;
 use Storh\StorageException;
@@ -235,7 +236,7 @@ JSONC
 
         $this->assertInstanceOf(DocPerFileStore::class, $docs);
         $this->assertInstanceOf(SegmentedLogStore::class, $log);
-        $this->assertInstanceOf(DirectoryQueue::class, $queue);
+        $this->assertInstanceOf(LogQueue::class, $queue);
     }
 
     public function test_doc_per_file_store_crud_streaming_query_sharding_and_corrupt_doc_recovery(): void
@@ -288,26 +289,6 @@ JSONC
         $store->delete($ids[1]);
         $store->delete($ids[4]);
         $this->assertNull($store->get($ids[1]));
-    }
-
-    public function test_doc_per_file_store_reads_and_replaces_legacy_prefix_sharded_records(): void
-    {
-        $ids   = $this->fixed_ids();
-        $store = new DocPerFileStore($this->root, 'legacy-docs', $this->id_generator($ids));
-        $legacy = $this->legacy_doc_path($store, $ids[0]);
-        AtomicFilesystem::ensure_directory(dirname($legacy));
-        file_put_contents(
-            $legacy,
-            Jsonc::encode_object(array( 'id' => $ids[0], 'data' => array( 'title' => 'Legacy' ) ))
-        );
-
-        $this->assertSame('Legacy', $store->get($ids[0])?->data()['title'] ?? null);
-
-        $store->put(array( 'title' => 'Moved' ), $ids[0]);
-
-        $this->assertFileDoesNotExist($legacy);
-        $this->assertFileExists($store->path_for_id($ids[0]));
-        $this->assertSame('Moved', $store->get($ids[0])?->data()['title'] ?? null);
     }
 
     public function test_doc_per_file_store_throws_on_corrupt_doc_without_error_handler(): void
@@ -593,23 +574,6 @@ JSONC
         $this->assertSame(array( 'pending' => 0, 'processing' => 8, 'done' => 0 ), $queue->counts());
     }
 
-    public function test_directory_queue_claims_legacy_flat_pending_files(): void
-    {
-        $ids   = $this->fixed_ids();
-        $queue = new DirectoryQueue($this->root, 'legacy-queue');
-        AtomicFilesystem::write_atomic(
-            $this->root . '/legacy-queue/pending/' . $ids[0] . '.jsonc',
-            Jsonc::encode_object(array( 'id' => $ids[0], 'payload' => array( 'task' => 'legacy' ) ))
-        );
-
-        $claimed = $queue->claim();
-
-        $this->assertSame($ids[0], $claimed?->id());
-        $this->assertSame('legacy', $claimed?->data()['task'] ?? null);
-        $queue->complete($ids[0]);
-        $this->assertSame(array( 'pending' => 0, 'processing' => 0, 'done' => 1 ), $queue->counts());
-    }
-
     public function test_directory_queue_verify_reads_disk_instead_of_claim_cache(): void
     {
         $ids   = $this->fixed_ids();
@@ -621,6 +585,42 @@ JSONC
         $this->assertIsString($contents);
         file_put_contents($path, str_repeat('{', strlen($contents)));
 
+        $this->assertFalse($queue->verify()['ok']);
+    }
+
+    public function test_log_queue_claim_complete_requeue_counts_and_verify(): void
+    {
+        $ids   = $this->fixed_ids();
+        $queue = new LogQueue($this->root, 'log-queue', $this->id_generator($ids));
+
+        $queue->enqueue(array( 'task' => 'one' ));
+        $queue->enqueue(array( 'task' => 'two' ));
+        $this->assertSame(array( 'pending' => 2, 'processing' => 0, 'done' => 0 ), $queue->counts());
+
+        $claimed = $queue->claim();
+        $this->assertSame($ids[0], $claimed?->id());
+        $this->assertSame('one', $claimed?->data()['task'] ?? null);
+        $this->assertSame(array( 'pending' => 1, 'processing' => 1, 'done' => 0 ), $queue->counts());
+
+        $this->assertSame(1, $queue->requeue_timed_out(0));
+        $this->assertSame(array( 'pending' => 2, 'processing' => 0, 'done' => 0 ), $queue->counts());
+
+        $claimed_again = $queue->claim();
+        $this->assertSame($ids[1], $claimed_again?->id());
+        $queue->complete($ids[1]);
+        $this->assertSame(array( 'pending' => 1, 'processing' => 0, 'done' => 1 ), $queue->counts());
+        $this->assertTrue($queue->verify()['ok']);
+        $this->assertTrue($queue->health()['ok']);
+        $this->assertGreaterThan(0, $queue->stats()['bytes']);
+        $this->assertSame(1, $queue->purgeDone());
+        $this->assertSame(array( 'pending' => 1, 'processing' => 0, 'done' => 0 ), $queue->counts());
+
+        $delete = $queue->claim();
+        $this->assertSame($ids[0], $delete?->id());
+        $queue->complete($ids[0], false);
+        $this->assertSame(array( 'pending' => 0, 'processing' => 0, 'done' => 0 ), $queue->counts());
+
+        file_put_contents($this->root . '/log-queue/queue.log', "broken\n", FILE_APPEND);
         $this->assertFalse($queue->verify()['ok']);
     }
 
@@ -711,38 +711,21 @@ JSONC
 
         $this->assertSame('third', $store->get($ids[2])?->data()['value'] ?? null);
         $this->assertArrayHasKey($ids[2], $store->state_index());
-        $this->assertDirectoryDoesNotExist($this->root . '/active-index/index');
-        $this->assertFileDoesNotExist($this->root . '/active-index/state.index.jsonc');
     }
 
-    public function test_segmented_log_recovers_derived_state_and_ignores_legacy_state_entries(): void
+    public function test_segmented_log_recovers_derived_state(): void
     {
         $ids   = $this->fixed_ids();
         $store = new SegmentedLogStore($this->root, 'state-recover', 4096, 2, $this->id_generator($ids));
         $store->put(array( 'value' => 'first' ));
         $store->put(array( 'value' => 'second' ));
 
-        TestFilesystem::remove_path($this->root . '/state-recover/index');
         $this->assertSame('second', $store->get($ids[1])?->data()['value'] ?? null);
         $this->assertNull($store->get($ids[4]));
-
-        AtomicFilesystem::ensure_directory(dirname($this->state_entry_path('state-recover', $ids[0])));
-        AtomicFilesystem::write_atomic($this->state_entry_path('state-recover', $ids[0]), "{}\n");
         $this->assertSame('first', $store->get($ids[0])?->data()['value'] ?? null);
 
-        AtomicFilesystem::write_atomic(
-            $this->state_entry_path('state-recover', $ids[1]),
-            Jsonc::encode_object(
-                array(
-                        'deleted' => false,
-                        'file'    => $this->active_segment_file('state-recover'),
-                        'offset'  => 0,
-                    )
-            )
-        );
         $store->recover();
 
-        $this->assertDirectoryDoesNotExist($this->root . '/state-recover/index');
         $this->assertSame('second', $store->get($ids[1])?->data()['value'] ?? null);
     }
 
@@ -846,14 +829,6 @@ JSONC
         unlink($index_files[0]);
         $this->assertNotSame(array(), iterator_to_array($store->stream(RecordQuery::all()->after($ids[0])->limit(1))));
 
-        TestFilesystem::remove_path($this->root . '/branch-log/index');
-        $this->assertNotSame(array(), $store->state_index());
-
-        AtomicFilesystem::ensure_directory($this->root . '/branch-log/index');
-        file_put_contents($this->root . '/branch-log/index/not-json.txt', 'ignored');
-        $this->assertNotSame(array(), $store->state_index());
-
-        TestFilesystem::remove_path($this->root . '/branch-log/index');
         $this->assertNotSame(array(), $store->state_index());
         $this->assertSame(0, $this->invoke_private($store, 'seek_offset_for', array( array( 'file' => 'active.ndjson' ), $ids[0] )));
         $this->assertSame(array(), $this->invoke_private($store, 'segment_offsets', array( 'missing.ndjson' )));
@@ -862,12 +837,8 @@ JSONC
         $this->assertNull($this->invoke_private($empty_store, 'roll_active_segment'));
 
         mkdir($this->root . '/leftover-clean/segments.compact-leftover', 0777, true);
-        mkdir($this->root . '/leftover-clean/index.rebuild-leftover', 0777, true);
-        mkdir($this->root . '/leftover-clean/index.backup-leftover', 0777, true);
         new SegmentedLogStore($this->root, 'leftover-clean', 4096);
         $this->assertDirectoryDoesNotExist($this->root . '/leftover-clean/segments.compact-leftover');
-        $this->assertDirectoryDoesNotExist($this->root . '/leftover-clean/index.rebuild-leftover');
-        $this->assertDirectoryDoesNotExist($this->root . '/leftover-clean/index.backup-leftover');
     }
 
     public function test_segmented_log_covers_compaction_manifest_and_state_edge_branches(): void
@@ -932,10 +903,7 @@ JSONC
         $this->assertContains('manual.ndjson', $opened);
         $this->assertSame(array(), $this->invoke_private($manifest_store, 'build_state_index'));
 
-        AtomicFilesystem::ensure_directory($this->root . '/manifest-branches/index');
-        file_put_contents($this->root . '/manifest-branches/index/not-json.txt', 'ignored');
         $manifest_store->recover();
-        $this->assertFileDoesNotExist($this->root . '/manifest-branches/index/not-json.txt');
         $this->assertSame(array(), $this->invoke_private($manifest_store, 'write_compacted_segments', array( array( array( 'records' => 1 ) ) )));
         file_put_contents(
             $this->root . '/manifest-branches/segments/noop.ndjson',
@@ -1165,19 +1133,9 @@ JSONC
         return $values;
     }
 
-    private function state_entry_path(string $collection, string $id): string
-    {
-        return $this->root . '/' . $collection . '/index/' . substr($id, 0, 2) . '/' . substr($id, 2, 2) . '/' . $id . '.jsonc';
-    }
-
     private function doc_shard_fragment(string $id): string
     {
         return '/data/' . substr($id, 24, 2) . '/';
-    }
-
-    private function legacy_doc_path(DocPerFileStore $store, string $id): string
-    {
-        return $store->collection_root() . '/data/' . substr($id, 0, 2) . '/' . substr($id, 2, 2) . '/' . $id . '.jsonc';
     }
 
     private function queue_record_path(string $queue, string $lane, string $id): string

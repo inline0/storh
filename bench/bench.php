@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 use Storh\Cache;
 use Storh\CacheValidation;
-use Storh\DirectoryQueue;
 use Storh\DocPerFileStore;
+use Storh\Queue;
 use Storh\RecordQuery;
 use Storh\SegmentedLogStore;
 use Storh\UuidV7;
@@ -137,7 +137,7 @@ function bench_log(string $root, int $dataset): array
  */
 function bench_queue(string $root, int $dataset): array
 {
-    $queue = new DirectoryQueue($root, 'queue');
+    $queue = new Queue($root, 'queue');
     $claimed = array();
 
     $enqueue = timed(static function () use ($queue, $dataset): void {

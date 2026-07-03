@@ -1,6 +1,6 @@
 {
     "name": "storh/storh",
-    "description": "File-first records for PHP: JSONC document store, append-only segmented log, and atomic directory queue. Zero dependencies.",
+    "description": "File-first records for PHP: JSONC document store, append-only segmented log, and log-backed queue. Zero dependencies.",
     "type": "library",
     "license": "MIT",
     "authors": [
