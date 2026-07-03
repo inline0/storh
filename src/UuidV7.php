@@ -10,6 +10,8 @@ final class UuidV7
 
     private static string $last_timestamp_hex = '';
 
+    private static string $last_timestamp_prefix = '';
+
     private static string $last_entropy = '';
 
     /** @var list<string> */
@@ -27,20 +29,29 @@ final class UuidV7
             if ('' === self::$last_timestamp_hex) {
                 self::$last_timestamp_hex = self::timestamp_hex($timestamp_ms);
             }
+            if ('' === self::$last_timestamp_prefix) {
+                self::$last_timestamp_prefix = substr(self::$last_timestamp_hex, 0, 8) . '-' . substr(self::$last_timestamp_hex, 8, 4) . '-';
+            }
+            $timestamp_prefix = self::$last_timestamp_prefix;
             self::$last_entropy = self::increment_entropy(self::$last_entropy);
         } else {
-            self::$last_timestamp_ms  = $timestamp_ms;
-            self::$last_timestamp_hex = self::timestamp_hex($timestamp_ms);
-            self::$last_entropy       = random_bytes(10);
+            self::$last_timestamp_ms     = $timestamp_ms;
+            self::$last_timestamp_hex    = self::timestamp_hex($timestamp_ms);
+            $timestamp_prefix            = substr(self::$last_timestamp_hex, 0, 8) . '-' . substr(self::$last_timestamp_hex, 8, 4) . '-';
+            self::$last_timestamp_prefix = $timestamp_prefix;
+            self::$last_entropy          = random_bytes(10);
         }
 
-        $time_hex = self::$last_timestamp_hex;
         $entropy  = self::$last_entropy;
-        $byte_hex = self::byte_hex();
+        if (array() === self::$byte_hex) {
+            for ($value = 0; $value < 256; $value++) {
+                self::$byte_hex[] = str_pad(dechex($value), 2, '0', STR_PAD_LEFT);
+            }
+        }
+        $byte_hex = self::$byte_hex;
 
-        return substr($time_hex, 0, 8)
-            . '-' . substr($time_hex, 8, 4)
-            . '-' . $byte_hex[ 0x70 | ( ord($entropy[0]) & 0x0f ) ] . $byte_hex[ ord($entropy[1]) ]
+        return $timestamp_prefix
+            . $byte_hex[ 0x70 | ( ord($entropy[0]) & 0x0f ) ] . $byte_hex[ ord($entropy[1]) ]
             . '-' . $byte_hex[ 0x80 | ( ord($entropy[2]) & 0x3f ) ] . $byte_hex[ ord($entropy[3]) ]
             . '-' . bin2hex(substr($entropy, 4, 6));
     }
@@ -81,6 +92,7 @@ final class UuidV7
     {
         self::$last_timestamp_ms  = -1;
         self::$last_timestamp_hex = '';
+        self::$last_timestamp_prefix = '';
         self::$last_entropy       = '';
     }
 
@@ -116,21 +128,5 @@ final class UuidV7
             . '-' . substr($hex, 12, 4)
             . '-' . substr($hex, 16, 4)
             . '-' . substr($hex, 20, 12);
-    }
-
-    /**
-     * @return list<string>
-     */
-    private static function byte_hex(): array
-    {
-        if (array() !== self::$byte_hex) {
-            return self::$byte_hex;
-        }
-
-        for ($value = 0; $value < 256; $value++) {
-            self::$byte_hex[] = str_pad(dechex($value), 2, '0', STR_PAD_LEFT);
-        }
-
-        return self::$byte_hex;
     }
 }
