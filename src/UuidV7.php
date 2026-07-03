@@ -84,21 +84,17 @@ final class UuidV7
 
     private static function increment_entropy(string $entropy): string
     {
-        $bytes = array();
-        foreach (str_split($entropy) as $byte) {
-            $bytes[] = ord($byte);
-        }
-
-        for ($index = count($bytes) - 1; $index >= 0; $index--) {
-            if ($bytes[ $index ] < 255) {
-                $bytes[ $index ]++;
-                break;
+        for ($index = strlen($entropy) - 1; $index >= 0; $index--) {
+            $byte = ord($entropy[ $index ]);
+            if ($byte < 255) {
+                $entropy[ $index ] = chr($byte + 1);
+                return $entropy;
             }
 
-            $bytes[ $index ] = 0;
+            $entropy[ $index ] = "\0";
         }
 
-        return pack('C*', ...$bytes);
+        return $entropy;
     }
 
     private static function format_hex(string $hex): string

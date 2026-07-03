@@ -52,6 +52,10 @@ try {
         $results['results']['cache'] = bench_cache($root, $dataset, $cache_validation);
     }
 
+    if ('all' === $engine || 'uuid' === $engine) {
+        $results['results']['uuid'] = bench_uuid($dataset);
+    }
+
     if (! is_dir(dirname($output))) {
         mkdir(dirname($output), 0777, true);
     }
@@ -272,6 +276,28 @@ function bench_cache(string $root, int $dataset, string $cache_validation): arra
     });
 
     return compact('cold', 'warm');
+}
+
+/**
+ * @return array<string, float>
+ */
+function bench_uuid(int $dataset): array
+{
+    UuidV7::reset_for_tests();
+    $monotonic = timed(static function () use ($dataset): void {
+        for ($i = 0; $i < $dataset; $i++) {
+            UuidV7::generate(1_700_000_000_000);
+        }
+    });
+
+    UuidV7::reset_for_tests();
+    $spread = timed(static function () use ($dataset): void {
+        for ($i = 0; $i < $dataset; $i++) {
+            UuidV7::generate(1_700_000_000_000 + $i);
+        }
+    });
+
+    return compact('monotonic', 'spread');
 }
 
 /**

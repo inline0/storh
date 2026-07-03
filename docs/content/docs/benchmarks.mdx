@@ -13,6 +13,7 @@ composer bench -- --dataset=100000 --engine=doc
 composer bench -- --dataset=100000 --engine=log
 composer bench -- --dataset=100000 --engine=queue
 composer bench -- --dataset=100000 --engine=cache --cache-validation=trust
+composer bench -- --dataset=1000000 --engine=uuid
 composer bench:range -- --datasets=1000,10000,50000,100000
 composer bench:range -- --datasets=100000 --engines=cache --memory-limit=512M
 composer bench:compare build/bench-main.json build/bench-current.json
@@ -24,6 +25,7 @@ Covered targets:
 - indexed versus non-indexed DocStore query
 - SegmentedLog append, streaming append, cursor reads, time-range reads, compaction
 - Queue enqueue, bulk enqueue, claim, bulk claim, complete, bulk complete, requeue
+- UUIDv7 monotonic and timestamp-spread generation
 - torn trailing line recovery
 - cold versus warm cache reads with hash, stat, or trusted validation
 
