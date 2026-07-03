@@ -36,6 +36,10 @@ final class DocPerFileStore implements FileStoreInterface
     /** @var array<string, array<string, mixed>>|null */
     private ?array $record_data_cache = null;
 
+    private ?string $last_record_content_path = null;
+
+    private ?string $last_record_content_hash = null;
+
     private ?bool $index_manifest_exists = null;
 
     public function __construct(
@@ -693,7 +697,10 @@ final class DocPerFileStore implements FileStoreInterface
         $exists = is_file($path);
         $mtime  = $exists ? (int) filemtime($path) : 0;
         $size   = $exists ? (int) filesize($path) : -1;
-        $hash   = $exists && CacheValidation::HASH === $this->cache_validation ? (string) sha1_file($path) : '';
+        $hash   = '';
+        if ($exists && CacheValidation::HASH === $this->cache_validation) {
+            $hash = (string) sha1_file($path);
+        }
 
         if (
             $exists !== $cached_exists ||
@@ -722,14 +729,26 @@ final class DocPerFileStore implements FileStoreInterface
         $path ??= $this->record_path_for_id($record->id());
         clearstatcache(true, $path);
         $exists = is_file($path);
+        $mtime  = $exists ? (int) filemtime($path) : 0;
+        $size   = $exists ? (int) filesize($path) : -1;
+        $hash   = '';
+
+        if ($exists && CacheValidation::HASH === $this->cache_validation) {
+            if ($this->last_record_content_path === $path && null !== $this->last_record_content_hash) {
+                $hash = $this->last_record_content_hash;
+            } else {
+                $hash = (string) sha1_file($path);
+            }
+        }
+
         $this->cache->set(
             $this->cache_key($record->id()),
             array(
                 true,
                 $path,
-                $exists ? (int) filemtime($path) : 0,
-                $exists ? (int) filesize($path) : -1,
-                $exists && CacheValidation::HASH === $this->cache_validation ? (string) sha1_file($path) : '',
+                $mtime,
+                $size,
+                $hash,
                 $record->data(),
             )
         );
@@ -800,6 +819,9 @@ final class DocPerFileStore implements FileStoreInterface
             @unlink($temp);
             throw new StorageException('Could not atomically replace storage file: ' . $path);
         }
+
+        $this->last_record_content_path = $path;
+        $this->last_record_content_hash = CacheValidation::HASH === $this->cache_validation ? sha1($contents) : null;
     }
 
     /**
@@ -811,6 +833,9 @@ final class DocPerFileStore implements FileStoreInterface
         if (false === $contents) {
             throw new StorageException('Could not read storage file: ' . $path);
         }
+
+        $this->last_record_content_path = $path;
+        $this->last_record_content_hash = CacheValidation::HASH === $this->cache_validation ? sha1($contents) : null;
 
         try {
             $decoded = json_decode($contents, true, 512, JSON_THROW_ON_ERROR);

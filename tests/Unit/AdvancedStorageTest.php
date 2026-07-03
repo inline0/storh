@@ -665,6 +665,24 @@ final class AdvancedStorageTest extends TestCase
         }
     }
 
+    public function test_hash_cache_detects_external_changes_after_cold_read(): void
+    {
+        $ids = $this->fixed_ids(1);
+        $writer = new DocPerFileStore($this->root, 'hash-docs', $this->id_generator($ids));
+        $writer->put(array( 'value' => 'initial' ));
+
+        $cache = Cache::memory(10);
+        $reader = new DocPerFileStore($this->root, 'hash-docs', cache: $cache);
+        $this->assertSame('initial', $reader->get($ids[0])?->data()['value'] ?? null);
+
+        AtomicFilesystem::write_atomic(
+            $reader->path_for_id($ids[0]),
+            Jsonc::encode_object(array( 'id' => $ids[0], 'data' => array( 'value' => 'changed' ) ))
+        );
+
+        $this->assertSame('changed', $reader->get($ids[0])?->data()['value'] ?? null);
+    }
+
     public function test_cli_and_bench_scripts_run(): void
     {
         $store = new DocPerFileStore($this->root, 'cli', $this->id_generator($this->fixed_ids(2)));
