@@ -331,6 +331,20 @@ final class DocPerFileStore implements FileStoreInterface
         return $this->index_manifest_exists;
     }
 
+    private function indexed_count(QueryBuilder $query): ?int
+    {
+        if ($query->has_ordering() || null !== $query->cursor_id()) {
+            return null;
+        }
+
+        $groups = $query->groups();
+        if (1 !== count($groups) || 1 !== count($groups[0])) {
+            return null;
+        }
+
+        return $this->active_indexes()?->candidate_count($query);
+    }
+
     /**
      * @return list<StorageRecord>
      */
@@ -365,6 +379,19 @@ final class DocPerFileStore implements FileStoreInterface
         }
 
         return $records;
+    }
+
+    public function count_records(QueryBuilder $query): int
+    {
+        $indexed_count = $this->indexed_count($query);
+        if (null !== $indexed_count) {
+            return $indexed_count;
+        }
+
+        $count = count($this->query_records($query));
+        $limit = $query->limit_value();
+
+        return null === $limit ? $count : min($count, $limit);
     }
 
     /**

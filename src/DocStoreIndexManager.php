@@ -241,6 +241,35 @@ final class DocStoreIndexManager
         return $ids;
     }
 
+    public function candidate_count(QueryBuilder $query): ?int
+    {
+        $groups = $query->groups();
+        if (1 !== count($groups) || 1 !== count($groups[0])) {
+            return null;
+        }
+
+        $condition = $this->best_condition($groups[0]);
+        if (null === $condition) {
+            return null;
+        }
+
+        $limit = $query->limit_value();
+        $count = match ($condition->operator()) {
+            'eq' => $this->count_for_value($condition->field(), $condition->value(), $limit),
+            'in' => is_array($condition->value())
+                ? $this->count_for_values($condition->field(), $condition->value(), $limit)
+                : 0,
+            'gt', 'gte', 'lt', 'lte', 'between', 'prefix' => count($this->ids_for_range_condition($condition)),
+            default => null,
+        };
+
+        if (null === $count) {
+            return null;
+        }
+
+        return null === $limit ? $count : min($count, $limit);
+    }
+
     /**
      * @return array{store: string, plan: string, indexes: list<array<string, mixed>>, groups: int}
      */
@@ -371,6 +400,65 @@ final class DocStoreIndexManager
         }
 
         return $this->ids_from_value_file($root, $this->value_key($value), $limit);
+    }
+
+    /**
+     * @param array<mixed> $values
+     */
+    private function count_for_values(string $field, array $values, ?int $limit = null): ?int
+    {
+        $count = 0;
+        $seen = array();
+
+        foreach ($values as $value) {
+            if (! $this->countable_value($value)) {
+                return null;
+            }
+
+            $key = $this->value_key($value);
+            if (isset($seen[ $key ])) {
+                continue;
+            }
+
+            $seen[ $key ] = true;
+            $value_count = $this->count_for_value($field, $value, null === $limit ? null : $limit - $count);
+            if (null === $value_count) {
+                return null;
+            }
+
+            $count += $value_count;
+            if (null !== $limit && $count >= $limit) {
+                return $limit;
+            }
+        }
+
+        return $count;
+    }
+
+    private function count_for_value(string $field, mixed $value, ?int $limit = null): ?int
+    {
+        if (! $this->indexable($value)) {
+            return 0;
+        }
+
+        $root = $this->eq_value_root($field, $value);
+        if (is_file($root)) {
+            return $this->countable_value($value)
+                ? $this->count_ids_from_value_file($root, $this->value_key($value), $limit)
+                : null;
+        }
+
+        $definition = $this->definitions()[ $field ] ?? null;
+        if (null !== $definition && $definition['range']) {
+            return null;
+        }
+
+        return 0;
+    }
+
+    private function countable_value(mixed $value): bool
+    {
+        return is_string($value) || is_bool($value) || null === $value;
     }
 
     /**
@@ -784,6 +872,7 @@ final class DocStoreIndexManager
                     'field' => $field,
                     'key'   => $key,
                     'value' => $value,
+                    'count' => count($encoded_ids),
                     'ids'   => $encoded_ids,
                 )
             )
@@ -865,6 +954,47 @@ final class DocStoreIndexManager
         }
 
         return $ids;
+    }
+
+    private function count_ids_from_value_file(string $path, string $expected_key, ?int $limit = null): int
+    {
+        $contents = @file_get_contents($path);
+        if (false === $contents) {
+            throw new StorageException('Could not read equality index: ' . $path);
+        }
+
+        $key_marker = '"key":"' . $expected_key . '"';
+        $key_offset = strpos($contents, $key_marker);
+        if (false === $key_offset) {
+            return 0;
+        }
+
+        $ids_marker = ',"ids":[';
+        $ids_offset = strpos($contents, $ids_marker, $key_offset + strlen($key_marker));
+        if (false === $ids_offset) {
+            throw new StorageException('Malformed equality index: ' . $path);
+        }
+
+        $count_marker = ',"count":';
+        $count_offset = strpos($contents, $count_marker, $key_offset + strlen($key_marker));
+        if (false === $count_offset || $count_offset > $ids_offset) {
+            throw new StorageException('Malformed equality index: ' . $path);
+        }
+
+        $start = $count_offset + strlen($count_marker);
+        $end = $start;
+        $length = strlen($contents);
+        while ($end < $length && ctype_digit($contents[ $end ])) {
+            $end++;
+        }
+
+        if ($end === $start) {
+            throw new StorageException('Malformed equality index: ' . $path);
+        }
+
+        $count = (int) substr($contents, $start, $end - $start);
+
+        return null === $limit ? $count : min($count, $limit);
     }
 
     /**

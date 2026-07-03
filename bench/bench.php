@@ -107,6 +107,14 @@ function bench_doc(string $root, int $dataset): array
         $store->query()->where('publishedAt')->between(1_700_000_000_010, 1_700_000_000_200)->get();
     });
 
+    $indexed_count = timed(static function () use ($store): void {
+        $store->query()->where('kind')->eq('page')->count();
+    });
+
+    $indexed_range_count = timed(static function () use ($store): void {
+        $store->query()->where('publishedAt')->between(1_700_000_000_010, 1_700_000_000_200)->count();
+    });
+
     $full = timed(static function () use ($store): void {
         iterator_to_array($store->stream(RecordQuery::all()->where_equal('kind', 'page')->limit(100)));
     });
@@ -119,7 +127,19 @@ function bench_doc(string $root, int $dataset): array
         $bulk_store->putStream(rows($dataset));
     });
 
-    return compact('put', 'get', 'stream', 'delete', 'index_build', 'indexed', 'indexed_range', 'full', 'bulk_put');
+    return compact(
+        'put',
+        'get',
+        'stream',
+        'delete',
+        'index_build',
+        'indexed',
+        'indexed_range',
+        'indexed_count',
+        'indexed_range_count',
+        'full',
+        'bulk_put'
+    );
 }
 
 /**

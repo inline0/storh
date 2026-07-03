@@ -141,6 +141,10 @@ final class QueryBuilder
 
     public function count(): int
     {
+        if ($this->store instanceof DocPerFileStore) {
+            return $this->store->count_records($this);
+        }
+
         return count($this->get());
     }
 

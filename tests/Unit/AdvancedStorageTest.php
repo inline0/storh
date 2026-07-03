@@ -71,6 +71,7 @@ final class AdvancedStorageTest extends TestCase
         $this->assertSame('index_scan', $store->query()->where('status')->eq('published')->explain()['plan']);
         $this->assertSame('home', $store->query()->where('slug')->eq('home')->first()?->data()['slug'] ?? null);
         $this->assertSame(2, $store->query()->where('status')->in(array( 'draft', 'archived' ))->count());
+        $this->assertSame(1, $store->query()->where('status')->eq('published')->where('featured')->eq(false)->count());
         $statusIndexes = glob(
             $store->collection_root() . '/.storh/indexes/entries/eq/' . bin2hex('status') . '/*.jsonc'
         ) ?: array();
@@ -181,6 +182,8 @@ final class AdvancedStorageTest extends TestCase
 
         $this->assertSame('index_scan', $store->query()->where('score')->in(array( 1, 3 ))->explain()['plan']);
         $this->assertSame(2, $store->query()->where('active')->eq(true)->count());
+        $this->assertSame(1, $store->query()->where('active')->eq(true)->orderBy('score')->limit(1)->count());
+        $this->assertSame(1, $store->query()->where('score')->in(array( 1, 3 ))->limit(1)->count());
         $this->assertSame(2, $store->query()->where('title')->prefix('A')->orWhere(static fn($query) => $query->where('title')->eq('Beta'))->count());
         $this->assertSame(0, $store->query()->where('score')->gt(99)->count());
         $this->assertNull($store->indexes()->candidate_ids($store->query()));
