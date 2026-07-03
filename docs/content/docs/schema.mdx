@@ -1,0 +1,31 @@
+---
+title: Schema
+description: Optional collection schemas for validation and index declaration.
+---
+
+# Schema
+
+Schemas are optional. They validate writes and can declare indexes at the same
+time.
+
+```php
+$schema = Schema::collection('posts')
+    ->string('slug')->unique()
+    ->string('status')->index()
+    ->int('publishedAt')->range()
+    ->bool('featured')
+    ->required(['slug', 'status']);
+
+$posts = new DocStore($root, 'posts', schema: $schema);
+```
+
+Supported field types:
+
+- `string`
+- `int`
+- `float`
+- `bool`
+- `mixed`
+
+Schema indexes are synced when the store is constructed. If the schema changes,
+the index manifest changes and indexes are rebuilt from existing records.

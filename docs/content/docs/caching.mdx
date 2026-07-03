@@ -1,0 +1,29 @@
+---
+title: Caching
+description: Read-through memory and optional APCu caching.
+---
+
+# Caching
+
+storh ships with small cache backends and no runtime dependency:
+
+```php
+use Storh\Cache;
+
+$docs = new Storh\DocStore($root, 'pages', cache: Cache::memory(maxEntries: 10000));
+$docs = new Storh\DocStore($root, 'pages', cache: Cache::apcu('storh.pages'));
+```
+
+Cache layers:
+
+- decoded DocStore records
+- missing-record negative lookups
+- segmented-log manifests
+- segmented-log state entries
+- sparse segment indexes
+
+Cached file reads validate existence, mtime, size, and content hash before
+returning a value, so external file changes are detected.
+
+`Cache::apcu()` is optional. If APCu is unavailable or disabled for the current
+SAPI, it behaves as a no-op backend.

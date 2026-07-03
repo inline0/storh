@@ -50,10 +50,15 @@
         "process-timeout": 0,
         "sort-packages": true
     },
+    "bin": [
+        "bin/storh"
+    ],
     "scripts": {
         "test": "phpunit",
         "test:unit": "phpunit --testsuite=unit",
         "test:coverage": "phpunit --coverage-text --colors=never",
+        "bench": "php bench/bench.php",
+        "bench:compare": "php bench/compare.php",
         "analyse": "phpstan analyse --configuration=phpstan.neon.dist --memory-limit=512M",
         "cs": "phpcs --warning-severity=0",
         "cs:fix": "phpcbf",

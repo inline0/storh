@@ -1,0 +1,554 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Storh\Tests\Unit;
+
+use PHPUnit\Framework\TestCase;
+use Storh\AtomicFilesystem;
+use Storh\Cache;
+use Storh\DirectoryQueue;
+use Storh\DocPerFileStore;
+use Storh\Jsonc;
+use Storh\MemoryCache;
+use Storh\RecordQuery;
+use Storh\Schema;
+use Storh\SegmentedLogStore;
+use Storh\StorageException;
+use Storh\Tests\Support\TestFilesystem;
+use Storh\UuidV7;
+
+final class AdvancedStorageTest extends TestCase
+{
+    private string $root = '';
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        UuidV7::reset_for_tests();
+        $this->root = sys_get_temp_dir() . '/storh-advanced-' . getmypid() . '-' . bin2hex(random_bytes(4));
+        mkdir($this->root, 0777, true);
+    }
+
+    protected function tearDown(): void
+    {
+        TestFilesystem::remove_path($this->root);
+        TestFilesystem::remove_path($this->root . '-bench.json');
+
+        parent::tearDown();
+    }
+
+    public function test_doc_store_query_builder_indexes_schema_cache_bulk_and_maintenance(): void
+    {
+        $ids = $this->fixed_ids(12);
+        $schema = Schema::collection('posts')
+            ->string('slug')->unique()
+            ->string('status')->index()
+            ->int('publishedAt')->range()
+            ->bool('featured')->required(array( 'slug', 'status' ));
+
+        $store = new DocPerFileStore(
+            $this->root,
+            'posts',
+            $this->id_generator($ids),
+            Cache::memory(100),
+            $schema
+        );
+
+        $records = $store->putMany(
+            array(
+                array( 'slug' => 'home', 'status' => 'published', 'publishedAt' => 10, 'featured' => true ),
+                array( 'slug' => 'about', 'status' => 'draft', 'publishedAt' => 20, 'featured' => false ),
+                array( 'slug' => 'news', 'status' => 'published', 'publishedAt' => 30, 'featured' => false ),
+                array( 'slug' => 'notes', 'status' => 'archived', 'publishedAt' => 40, 'featured' => true ),
+            )
+        );
+
+        $this->assertSame($ids[0], $records[0]->id());
+        $this->assertSame('index_scan', $store->query()->where('status')->eq('published')->explain()['plan']);
+        $this->assertSame('home', $store->query()->where('slug')->eq('home')->first()?->data()['slug'] ?? null);
+        $this->assertSame(2, $store->query()->where('status')->in(array( 'draft', 'archived' ))->count());
+
+        $range = $store->query()
+            ->where('publishedAt')->between(10, 35)
+            ->where('status')->neq('draft')
+            ->orderBy('publishedAt', 'desc')
+            ->limit(2)
+            ->get();
+        $this->assertSame(array( 'news', 'home' ), array_map(static fn($record): string => $record->data()['slug'], $range));
+
+        $or = $store->query()
+            ->where('slug')->prefix('ho')
+            ->orWhere(static fn($query) => $query->where('featured')->eq(true))
+            ->orderBy('id')
+            ->get();
+        $this->assertSame(array( 'home', 'notes' ), array_map(static fn($record): string => $record->data()['slug'], $or));
+
+        $filtered = $store->query()
+            ->where('missing')->missing()
+            ->where('slug')->notIn(array( 'about' ))
+            ->where('publishedAt')->gte(10)
+            ->where('publishedAt')->lte(40)
+            ->cursor($ids[0])
+            ->page(2)
+            ->get();
+        $this->assertSame(array( 'news', 'notes' ), array_map(static fn($record): string => $record->data()['slug'], $filtered));
+
+        $this->assertSame('published', $store->get($ids[0])?->data()['status'] ?? null);
+        AtomicFilesystem::write_atomic(
+            $store->path_for_id($ids[0]),
+            Jsonc::encode_object(
+                array(
+                    'id'   => $ids[0],
+                    'data' => array(
+                        'slug'        => 'home',
+                        'status'      => 'changed',
+                        'publishedAt' => 10,
+                        'featured'    => true,
+                    ),
+                )
+            )
+        );
+        $this->assertSame('changed', $store->get($ids[0])?->data()['status'] ?? null);
+
+        try {
+            $store->put(array( 'slug' => 'home', 'status' => 'published', 'publishedAt' => 50, 'featured' => false ));
+            $this->fail('Expected unique index violation.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('Unique index', $exception->getMessage());
+        }
+
+        try {
+            $store->put(array( 'slug' => 'bad', 'publishedAt' => 60, 'featured' => true ));
+            $this->fail('Expected schema validation failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('required', $exception->getMessage());
+        }
+
+        $export = $this->root . '/export/posts.jsonl';
+        $this->assertSame(4, $store->exportJsonl($export));
+
+        $imported = new DocPerFileStore($this->root, 'imported', cache: Cache::memory());
+        $this->assertSame(4, $imported->importJsonl($export));
+        $this->assertSame(4, $imported->stats()['records']);
+        $this->assertTrue($store->health()['ok']);
+        $this->assertTrue($store->verify()['ok']);
+        $this->assertSame(3, $store->reindex()['fields']);
+        $this->assertTrue($store->repair()['ok']);
+        $this->assertTrue($store->compact()['ok']);
+    }
+
+    public function test_doc_store_index_builder_and_health_edge_cases(): void
+    {
+        $ids = $this->fixed_ids(6);
+        $store = new DocPerFileStore($this->root, 'indexed', $this->id_generator($ids), Cache::memory(100));
+        $store->putMany(
+            array(
+                array( 'title' => 'Alpha', 'active' => true, 'score' => 1, 'nullable' => null ),
+                array( 'title' => 'Beta', 'active' => false, 'score' => 2, 'nullable' => null ),
+                array( 'title' => 'Gamma', 'active' => true, 'score' => 3, 'nullable' => 'x' ),
+            )
+        );
+
+        $manager = $store->indexes();
+        $manager
+            ->field('title')->range()
+            ->field('active')->range()
+            ->field('nullable')->unique()
+            ->field('score')->sync();
+
+        $this->assertSame('index_scan', $store->query()->where('score')->in(array( 1, 3 ))->explain()['plan']);
+        $this->assertSame(2, $store->query()->where('active')->eq(true)->count());
+        $this->assertSame(2, $store->query()->where('title')->prefix('A')->orWhere(static fn($query) => $query->where('title')->eq('Beta'))->count());
+        $this->assertSame(0, $store->query()->where('score')->gt(99)->count());
+        $this->assertNull($store->indexes()->candidate_ids($store->query()));
+        $this->assertSame(array(), $store->indexes()->candidate_ids($store->query()->where('score')->eq(array( 'bad' ))));
+        $store->indexes()->field('builder-a')->field('builder-b')->sync(false);
+
+        try {
+            $manager->field('');
+            $this->fail('Expected empty index field failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('field', $exception->getMessage());
+        }
+
+        $store->put(array( 'title' => 'Beta Prime', 'active' => false, 'score' => 20, 'nullable' => 'updated' ), $ids[1]);
+        $this->assertSame('Beta Prime', $store->get($ids[1])?->data()['title'] ?? null);
+
+        file_put_contents($store->path_for_id($ids[4]), '{ broken');
+        $this->assertFalse($store->health()['ok']);
+        $this->assertSame(1, $store->stats()['corrupt']);
+
+        try {
+            $store->importJsonl($this->root . '/missing.jsonl');
+            $this->fail('Expected missing import file failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('import', $exception->getMessage());
+        }
+
+        $badJsonl = $this->root . '/bad.jsonl';
+        file_put_contents($badJsonl, "\"not-object\"\n");
+        try {
+            $store->importJsonl($badJsonl);
+            $this->fail('Expected invalid JSONL row failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('JSONL', $exception->getMessage());
+        }
+
+        $jsonl = $this->root . '/blank.jsonl';
+        file_put_contents($jsonl, "\n" . json_encode(array( 'ok' => true ), JSON_THROW_ON_ERROR) . "\n");
+        $this->assertSame(1, $store->importJsonl($jsonl));
+
+        $exportDirectory = $this->root . '/export-directory';
+        mkdir($exportDirectory);
+        try {
+            $store->exportJsonl($exportDirectory);
+            $this->fail('Expected export open failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('export', $exception->getMessage());
+        }
+
+        $missingId = $ids[5];
+        $this->assertNull($store->get($missingId));
+        $this->assertNull($store->get($missingId));
+
+        $store->indexes()->define_field('arrayUnique', unique: true)->sync(false);
+        $store->indexes()->validate_unique(null, array( 'arrayUnique' => array( 'not' => 'indexable' ) ));
+        $store->indexes()->remove_record($ids[0], array( 'arrayUnique' => array( 'not' => 'indexable' ) ));
+    }
+
+    public function test_index_manifest_and_range_defensive_paths(): void
+    {
+        $ids = $this->fixed_ids(4);
+        $store = new DocPerFileStore($this->root, 'defensive-index', $this->id_generator($ids));
+        $store->indexes()->define_field('direct')->sync(false);
+        $store->indexes()->field('rangeField')->range()->sync();
+        $store->indexes()->field('missingRange')->range()->sync(false);
+        $this->assertSame(array(), $store->query()->where('missingRange')->gt(1)->get());
+
+        $manifest = $store->collection_root() . '/.storh/indexes/manifest.jsonc';
+        \Storh\AtomicFilesystem::write_atomic(
+            $manifest,
+            Jsonc::encode_object(
+                array(
+                    'fields' => array(
+                        array( 'field' => 'rangeField', 'range' => true ),
+                        array( 'field' => 123 ),
+                    ),
+                )
+            )
+        );
+        $this->assertArrayHasKey('rangeField', $store->indexes()->definitions());
+
+        $rangeRoot = $store->collection_root() . '/.storh/indexes/entries/range/' . bin2hex('rangeField');
+        mkdir($rangeRoot . '/manual', 0777, true);
+        file_put_contents($rangeRoot . '/manual/not-json.txt', 'ignored');
+        \Storh\AtomicFilesystem::write_atomic(
+            $rangeRoot . '/manual/empty.jsonc',
+            Jsonc::encode_object(array( 'field' => 'rangeField', 'value' => 10 ))
+        );
+        $this->assertSame(array(), $store->query()->where('rangeField')->gt(1)->get());
+
+        $reflection = new \ReflectionMethod($store->indexes(), 'range_key');
+        $this->assertStringStartsWith('z-', (string) $reflection->invoke($store->indexes(), array( 'not' => 'scalar' )));
+    }
+
+    public function test_query_builder_all_operators_without_indexes(): void
+    {
+        $store = new DocPerFileStore($this->root, 'operators', $this->id_generator($this->fixed_ids(5)));
+        $store->put(array( 'name' => 'alpha', 'score' => 10, 'active' => true ));
+        $store->put(array( 'name' => 'beta', 'score' => 20, 'active' => false ));
+        $store->put(array( 'name' => 'alpine', 'score' => 30 ));
+
+        $this->assertSame(2, $store->query()->where('name')->prefix('al')->count());
+        $this->assertSame(2, $store->query()->where('score')->gt(10)->count());
+        $this->assertSame(1, $store->query()->where('score')->lt(20)->count());
+        $this->assertSame(2, $store->query()->where('active')->exists()->count());
+        $this->assertSame(1, $store->query()->where('active')->missing()->count());
+        $this->assertSame(1, $store->query()->where('id')->eq($store->query()->first()?->id())->count());
+        $this->assertSame(1, $store->query()->andWhere(static fn($query) => $query->where('score')->eq(10))->count());
+        $this->assertSame('full_scan', $store->query()->where('name')->eq('alpha')->explain()['plan']);
+        $this->assertSame('full_scan', ( new SegmentedLogStore($this->root, 'query-log') )->query()->explain()['plan']);
+        $this->assertSame(1, $store->query()->limit(1)->limit_value());
+        $cursor = $store->query()->first()?->id() ?? $this->fixed_ids(1)[0];
+        $this->assertSame($cursor, $store->query()->cursor($cursor)->cursor_id());
+
+        try {
+            $store->query()->orderBy('name', 'sideways');
+            $this->fail('Expected order direction failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('direction', $exception->getMessage());
+        }
+
+        try {
+            $store->query()->limit(0);
+            $this->fail('Expected query limit failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('limit', $exception->getMessage());
+        }
+
+        try {
+            $store->query()->andWhere(static fn() => null);
+            $this->fail('Expected andWhere callback failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('andWhere', $exception->getMessage());
+        }
+
+        try {
+            $store->query()->orWhere(static fn() => null);
+            $this->fail('Expected orWhere callback failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('orWhere', $exception->getMessage());
+        }
+
+        try {
+            new \Storh\QueryCondition('', 'eq', 'x');
+            $this->fail('Expected empty query field failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('field', $exception->getMessage());
+        }
+
+        $condition = new \Storh\QueryCondition('name', 'between', 'a', 'z');
+        $this->assertSame('z', $condition->second_value());
+        $this->assertSame(0, \Storh\QueryCondition::compare(null, null));
+        $this->assertLessThan(0, \Storh\QueryCondition::compare(false, true));
+        $this->assertNotSame(0, \Storh\QueryCondition::compare(array( 'a' ), array( 'b' )));
+
+        try {
+            ( new \Storh\QueryCondition('name', 'unknown') )->matches(new \Storh\StorageRecord($this->fixed_ids(1)[0], array()));
+            $this->fail('Expected unknown operator failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('operator', $exception->getMessage());
+        }
+    }
+
+    public function test_schema_edge_cases_and_type_validation(): void
+    {
+        try {
+            Schema::collection('');
+            $this->fail('Expected empty collection failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('collection', $exception->getMessage());
+        }
+
+        $schema = Schema::collection('typed')
+            ->float('rating')->required()
+            ->mixed('meta')->required_fields(array( 'rating', 'meta' ));
+        $schema->define('extra', 'mixed');
+        Schema::collection('chain')->string('a')->int('b')->float('c')->bool('d');
+        Schema::collection('chain-two')->int('a')->string('b');
+        $schema->validate(array( 'rating' => 4, 'meta' => array( 'ok' => true ) ));
+
+        try {
+            $schema->validate(array( 'rating' => 'bad', 'meta' => null ));
+            $this->fail('Expected schema type failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('rating', $exception->getMessage());
+        }
+
+        try {
+            new DocPerFileStore($this->root, 'wrong', schema: Schema::collection('other'));
+            $this->fail('Expected schema collection mismatch.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('Schema collection', $exception->getMessage());
+        }
+
+        try {
+            Schema::collection('bad')->string('');
+            $this->fail('Expected empty schema field failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('field', $exception->getMessage());
+        }
+    }
+
+    public function test_segmented_log_bulk_query_retention_partition_cache_and_maintenance(): void
+    {
+        $ids = $this->fixed_ids(10);
+        $store = new SegmentedLogStore(
+            $this->root,
+            'events',
+            512,
+            1,
+            $this->id_generator($ids),
+            Cache::memory(),
+            'daily',
+            1_700_000_000_000
+        );
+
+        $store->appendMany(
+            array(
+                array( 'type' => 'old', 'value' => 1, 'blob' => str_repeat('x', 120) ),
+                array( 'type' => 'new', 'value' => 2, 'blob' => str_repeat('x', 120) ),
+                array( 'type' => 'new', 'value' => 3, 'blob' => str_repeat('x', 120) ),
+            )
+        );
+
+        $this->assertDirectoryExists($this->root . '/events/partitions/2023-11-14');
+        $this->assertSame(2, $store->query()->where('type')->eq('new')->count());
+        $this->assertGreaterThanOrEqual(1, $store->stats()['segments']);
+        $this->assertTrue($store->health()['ok']);
+        $this->assertTrue($store->verify()['ok']);
+        $this->assertTrue($store->repair()['ok']);
+        $store->delete($ids[2]);
+        $this->assertGreaterThanOrEqual(1, $store->stats()['deleted']);
+
+        $deleted = $store->retain()->olderThanMs(UuidV7::timestamp_ms($ids[0]))->compact();
+        $this->assertSame(1, $deleted);
+        $this->assertNull($store->get($ids[0]));
+
+        $monthly = new SegmentedLogStore($this->root, 'monthly', 4096, 2, partition: 'monthly', partition_timestamp_ms: 1_700_000_000_000);
+        $monthly->put(array( 'ok' => true ));
+        $this->assertDirectoryExists($this->root . '/monthly/partitions/2023-11');
+        $this->assertGreaterThanOrEqual(0, $monthly->retain()->olderThanDays(1)->compact());
+
+        try {
+            new SegmentedLogStore($this->root, 'bad-partition', partition: 'yearly');
+            $this->fail('Expected partition failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('partition', $exception->getMessage());
+        }
+
+        try {
+            $monthly->retain()->olderThanDays(0);
+            $this->fail('Expected retention day failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('Retention', $exception->getMessage());
+        }
+
+        try {
+            $monthly->retain()->compact();
+            $this->fail('Expected retention cutoff failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('cutoff', $exception->getMessage());
+        }
+
+        $corrupt = new SegmentedLogStore($this->root, 'verify-corrupt', 4096);
+        $corrupt->put(array( 'ok' => true ));
+        $manifest = Jsonc::decode_object((string) file_get_contents($this->root . '/verify-corrupt/manifest.jsonc'));
+        $active = $manifest['active']['file'] ?? '';
+        $this->assertIsString($active);
+        file_put_contents($this->root . '/verify-corrupt/segments/' . $active, "broken\n", FILE_APPEND);
+        $this->assertFalse($corrupt->verify()['ok']);
+    }
+
+    public function test_queue_purge_stats_verify_and_repair(): void
+    {
+        $ids = $this->fixed_ids(4);
+        $queue = new DirectoryQueue($this->root, 'queue', $this->id_generator($ids));
+        $queue->enqueue(array( 'task' => 'a' ));
+        $queue->enqueue(array( 'task' => 'b' ));
+
+        $first = $queue->claim();
+        $this->assertNotNull($first);
+        $queue->complete($first->id());
+        touch($this->root . '/queue/done/' . $first->id() . '.jsonc', time() - 100);
+
+        $second = $queue->claim();
+        $this->assertNotNull($second);
+        touch($this->root . '/queue/processing/' . $second->id() . '.jsonc', time() - 100);
+
+        $this->assertSame(1, $queue->purgeDone(10));
+        $this->assertSame(1, $queue->repair(10)['requeued']);
+        $this->assertTrue($queue->verify()['ok']);
+        $this->assertTrue($queue->health()['ok']);
+        $this->assertSame(array( 'pending' => 1, 'processing' => 0, 'done' => 0 ), $queue->counts());
+        $this->assertGreaterThan(0, $queue->stats()['bytes']);
+        $this->assertSame(0, $queue->purgeDone());
+        $recent = $queue->claim();
+        $this->assertNotNull($recent);
+        $queue->complete($recent->id());
+        $this->assertSame(0, $queue->purgeDone(1000));
+
+        file_put_contents($this->root . '/queue/pending/' . $ids[3] . '.jsonc', '{ broken');
+        $this->assertFalse($queue->verify()['ok']);
+    }
+
+    public function test_cache_factories_and_eviction(): void
+    {
+        $memory = new MemoryCache(1);
+        $memory->set('a', 1);
+        $memory->set('b', 2);
+
+        $this->assertNull($memory->get('a'));
+        $this->assertSame(2, $memory->get('b'));
+        $memory->clear_prefix('b');
+        $this->assertNull($memory->get('b'));
+        $memory->set('expires', true, 1);
+        sleep(2);
+        $this->assertNull($memory->get('expires'));
+
+        $ordered = new MemoryCache(2);
+        $ordered->set('a', 1);
+        $ordered->set('b', 2);
+        $this->assertSame(1, $ordered->get('a'));
+        $ordered->set('c', 3);
+        $this->assertNull($ordered->get('b'));
+
+        try {
+            new MemoryCache(0);
+            $this->fail('Expected memory cache size failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('cache', $exception->getMessage());
+        }
+
+        $null = Cache::null();
+        $null->set('x', true);
+        $null->delete('x');
+        $null->clear_prefix('x');
+        $this->assertNull($null->get('x'));
+
+        $apcu = Cache::apcu('storh-test');
+        $apcu->set('x', 'y');
+        $apcu->delete('x');
+        $apcu->clear_prefix('x');
+        $this->assertTrue(true);
+    }
+
+    public function test_cli_and_bench_scripts_run(): void
+    {
+        $store = new DocPerFileStore($this->root, 'cli', $this->id_generator($this->fixed_ids(2)));
+        $store->put(array( 'kind' => 'page' ));
+
+        $output = array();
+        $code = 0;
+        exec(PHP_BINARY . ' bin/storh stats ' . escapeshellarg($this->root) . ' cli doc', $output, $code);
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString('"records": 1', implode("\n", $output));
+
+        $benchOutput = $this->root . '-bench.json';
+        $output = array();
+        exec(PHP_BINARY . ' bench/bench.php --dataset=5 --engine=doc --output=' . escapeshellarg($benchOutput), $output, $code);
+        $this->assertSame(0, $code);
+        $this->assertFileExists($benchOutput);
+
+        $output = array();
+        exec(PHP_BINARY . ' bench/compare.php ' . escapeshellarg($benchOutput) . ' ' . escapeshellarg($benchOutput), $output, $code);
+        $this->assertSame(0, $code);
+        $this->assertNotSame(array(), $output);
+    }
+
+    /**
+     * @param list<string> $values
+     * @return callable(): string
+     */
+    private function id_generator(array $values): callable
+    {
+        $index = 0;
+
+        return static function () use ($values, &$index): string {
+            return $values[ $index++ ] ?? UuidV7::generate(1_700_001_000_000 + $index);
+        };
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function fixed_ids(int $count): array
+    {
+        return array_map(
+            static fn(int $index): string => UuidV7::generate(1_700_000_000_000 + $index),
+            range(0, $count - 1)
+        );
+    }
+}

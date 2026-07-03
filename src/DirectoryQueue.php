@@ -94,6 +94,24 @@ final class DirectoryQueue
         return $count;
     }
 
+    public function purgeDone(int $olderThanSeconds = 0): int
+    {
+        $count = 0;
+        $now   = time();
+
+        foreach ($this->lane_files('done') as $path) {
+            if ($olderThanSeconds > 0 && $now - filemtime($path) < $olderThanSeconds) {
+                continue;
+            }
+
+            if (@unlink($path)) {
+                $count++;
+            }
+        }
+
+        return $count;
+    }
+
     /**
      * @return array{pending: int, processing: int, done: int}
      */
@@ -103,6 +121,69 @@ final class DirectoryQueue
             'pending'    => count($this->lane_files('pending')),
             'processing' => count($this->lane_files('processing')),
             'done'       => count($this->lane_files('done')),
+        );
+    }
+
+    /**
+     * @return array{pending: int, processing: int, done: int, bytes: int}
+     */
+    public function stats(): array
+    {
+        $counts = $this->counts();
+        $bytes  = 0;
+        foreach (array( 'pending', 'processing', 'done' ) as $lane) {
+            foreach ($this->lane_files($lane) as $path) {
+                $bytes += is_file($path) ? (int) filesize($path) : 0;
+            }
+        }
+
+        return array(
+            'pending'    => $counts['pending'],
+            'processing' => $counts['processing'],
+            'done'       => $counts['done'],
+            'bytes'      => $bytes,
+        );
+    }
+
+    /**
+     * @return array{ok: bool, errors: list<string>, stats: array<string, int>}
+     */
+    public function health(): array
+    {
+        return $this->verify();
+    }
+
+    /**
+     * @return array{ok: bool, errors: list<string>, stats: array<string, int>}
+     */
+    public function verify(): array
+    {
+        $errors = array();
+        foreach (array( 'pending', 'processing', 'done' ) as $lane) {
+            foreach ($this->lane_files($lane) as $path) {
+                try {
+                    $this->record_from_file($path, basename($path, '.jsonc'));
+                } catch (\Throwable $throwable) {
+                    $errors[] = $lane . '/' . basename($path) . ': ' . $throwable->getMessage();
+                }
+            }
+        }
+
+        return array(
+            'ok'     => array() === $errors,
+            'errors' => $errors,
+            'stats'  => $this->stats(),
+        );
+    }
+
+    /**
+     * @return array{ok: bool, requeued: int}
+     */
+    public function repair(int $processingTimeoutSeconds = 3600): array
+    {
+        return array(
+            'ok'       => true,
+            'requeued' => $this->requeue_timed_out($processingTimeoutSeconds),
         );
     }
 

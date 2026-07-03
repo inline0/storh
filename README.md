@@ -26,7 +26,10 @@ that want durable local records without a database server. It provides:
 - a JSONC document store with one file per record
 - an append-only segmented log with cursor and time-range reads
 - an atomic directory queue
-- UUIDv7 ids, prefix sharding, atomic writes, torn-write recovery, and compaction
+- Prisma/Drizzle-style fluent querying, secondary indexes, schema validation,
+  caching, bulk JSONL import/export, maintenance APIs, benchmarks, and a CLI
+- UUIDv7 ids, prefix sharding, atomic writes, torn-write recovery, retention,
+  and compaction
 
 The caller provides a base directory. storh does not discover application paths
 or depend on a framework.
@@ -38,31 +41,44 @@ composer require storh/storh
 ```
 
 ```php
+use Storh\Cache;
 use Storh\DocStore;
 use Storh\Queue;
-use Storh\RecordQuery;
+use Storh\Schema;
 use Storh\SegmentedLog;
 use Storh\StorageRoot;
 
 $root = StorageRoot::resolve(__DIR__ . '/var/storh', 'app');
 
-$docs = new DocStore($root, 'pages');
+$schema = Schema::collection('pages')
+    ->string('slug')->unique()
+    ->string('kind')->index()
+    ->int('publishedAt')->range()
+    ->required(['slug', 'kind']);
+
+$docs = new DocStore($root, 'pages', cache: Cache::memory(), schema: $schema);
 $home = $docs->put([
+    'slug' => 'home',
     'kind' => 'page',
     'title' => 'Home',
+    'publishedAt' => time(),
 ]);
 
 echo $docs->get($home->id())?->data()['title'];
 
+$pages = $docs
+    ->query()
+    ->where('kind')->eq('page')
+    ->where('publishedAt')->gte(time() - 86400)
+    ->orderBy('publishedAt', 'desc')
+    ->limit(50)
+    ->get();
+
 $events = new SegmentedLog($root, 'events');
-$events->put([
+$events->appendMany([[
     'type' => 'page.saved',
     'pageId' => $home->id(),
-]);
-
-foreach ($events->stream(RecordQuery::all()->limit(100)) as $event) {
-    // Process records lazily.
-}
+]]);
 
 $queue = new Queue($root, 'jobs');
 $queue->enqueue(['task' => 'render', 'pageId' => $home->id()]);
@@ -84,6 +100,46 @@ compaction.
 
 `Queue` stores jobs in `pending`, `processing`, and `done` lanes. Claims and
 completions are atomic directory renames.
+
+## Querying and Indexes
+
+`DocStore` exposes a fluent query builder:
+
+```php
+$docs
+    ->query()
+    ->where('slug')->prefix('ho')
+    ->orWhere(fn ($q) => $q->where('kind')->eq('post'))
+    ->orderBy('id')
+    ->page(100)
+    ->get();
+```
+
+Indexes are file-backed and rebuildable:
+
+```php
+$docs->indexes()
+    ->field('slug')->unique()
+    ->field('kind')
+    ->field('publishedAt')->range()
+    ->sync();
+
+$docs->reindex();
+$docs->query()->where('slug')->eq('home')->explain();
+```
+
+## Operations
+
+```bash
+vendor/bin/storh stats var/storh pages doc
+vendor/bin/storh verify var/storh events log
+vendor/bin/storh compact var/storh events log
+vendor/bin/storh reindex var/storh pages
+
+composer bench
+composer bench -- --dataset=100000 --engine=doc
+composer bench:compare build/bench-main.json build/bench-current.json
+```
 
 ## Scaling & Limits
 

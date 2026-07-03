@@ -1,0 +1,127 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use Storh\DirectoryQueue;
+use Storh\DocPerFileStore;
+use Storh\SegmentedLogStore;
+
+require dirname(__DIR__) . '/vendor/autoload.php';
+
+$args = $_SERVER['argv'];
+array_shift($args);
+$command = array_shift($args) ?? 'help';
+
+try {
+    match ($command) {
+        'stats' => print_json(command_stats($args)),
+        'verify' => print_json(command_verify($args)),
+        'compact' => print_json(command_compact($args)),
+        'reindex' => print_json(command_reindex($args)),
+        default => print_help(),
+    };
+} catch (Throwable $throwable) {
+    fwrite(STDERR, $throwable->getMessage() . PHP_EOL);
+    exit(1);
+}
+
+/**
+ * @param list<string> $args
+ * @return array<string, mixed>
+ */
+function command_stats(array $args): array
+{
+    [$root, $collection, $engine] = command_target($args, 'doc');
+
+    return store_for($root, $collection, $engine)->stats();
+}
+
+/**
+ * @param list<string> $args
+ * @return array<string, mixed>
+ */
+function command_verify(array $args): array
+{
+    [$root, $collection, $engine] = command_target($args, 'doc');
+
+    return store_for($root, $collection, $engine)->verify();
+}
+
+/**
+ * @param list<string> $args
+ * @return array<string, mixed>
+ */
+function command_compact(array $args): array
+{
+    [$root, $collection, $engine] = command_target($args, 'log');
+    $store = store_for($root, $collection, $engine);
+
+    if ($store instanceof SegmentedLogStore) {
+        $store->compact();
+        return $store->stats();
+    }
+
+    if ($store instanceof DocPerFileStore) {
+        return $store->compact();
+    }
+
+    return $store->stats();
+}
+
+/**
+ * @param list<string> $args
+ * @return array<string, mixed>
+ */
+function command_reindex(array $args): array
+{
+    [$root, $collection] = command_target($args, 'doc');
+
+    return ( new DocPerFileStore($root, $collection) )->reindex();
+}
+
+/**
+ * @param list<string> $args
+ * @return array{0: string, 1: string, 2: string}
+ */
+function command_target(array $args, string $defaultEngine): array
+{
+    $root = $args[0] ?? null;
+    if (null === $root || '' === trim($root)) {
+        throw new RuntimeException('Usage: storh <stats|verify|compact|reindex> <root> [collection] [doc|log|queue]');
+    }
+
+    return array($root, $args[1] ?? 'default', $args[2] ?? $defaultEngine);
+}
+
+function store_for(string $root, string $collection, string $engine): DocPerFileStore|SegmentedLogStore|DirectoryQueue
+{
+    return match ($engine) {
+        'doc' => new DocPerFileStore($root, $collection),
+        'log' => new SegmentedLogStore($root, $collection),
+        'queue' => new DirectoryQueue($root, $collection),
+        default => throw new RuntimeException('Unknown engine: ' . $engine),
+    };
+}
+
+/**
+ * @param array<string, mixed> $data
+ */
+function print_json(array $data): void
+{
+    echo json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . PHP_EOL;
+}
+
+function print_help(): void
+{
+    echo <<<'TXT'
+storh
+
+Usage:
+  storh stats <root> [collection] [doc|log|queue]
+  storh verify <root> [collection] [doc|log|queue]
+  storh compact <root> [collection] [doc|log]
+  storh reindex <root> [collection]
+
+TXT;
+}

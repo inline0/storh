@@ -1,0 +1,42 @@
+---
+title: Query Builder
+description: Fluent Prisma/Drizzle-style querying over storh records.
+---
+
+# Query Builder
+
+`DocStore` and `SegmentedLog` expose `query()`. `DocStore` can use secondary
+indexes; `SegmentedLog` applies the same predicates over streamed records.
+
+```php
+$records = $docs
+    ->query()
+    ->where('kind')->eq('page')
+    ->where('status')->in(['draft', 'published'])
+    ->where('publishedAt')->between($from, $until)
+    ->orderBy('publishedAt', 'desc')
+    ->limit(50)
+    ->get();
+```
+
+Useful terminal methods:
+
+```php
+$docs->query()->where('slug')->eq('home')->first();
+$docs->query()->where('kind')->eq('page')->count();
+$docs->query()->cursor($lastId)->page(100)->get();
+$docs->query()->where('slug')->eq('home')->explain();
+```
+
+Operators:
+
+- `eq`, `neq`
+- `in`, `notIn`
+- `gt`, `gte`, `lt`, `lte`, `between`
+- `exists`, `missing`
+- `prefix`
+- `andWhere`, `orWhere`
+- `orderBy`, `limit`, `cursor`, `page`
+
+`andWhere` and `orWhere` use callbacks because `and` and `or` are reserved PHP
+keywords.

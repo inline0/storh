@@ -1,0 +1,42 @@
+---
+title: Maintenance & CLI
+description: Stats, health checks, repair, compaction, and command-line tools.
+---
+
+# Maintenance & CLI
+
+All engines expose maintenance methods:
+
+```php
+$store->stats();
+$store->health();
+$store->verify();
+$store->repair();
+```
+
+DocStore adds:
+
+```php
+$docs->reindex();
+$docs->compact(); // no-op report for API symmetry
+```
+
+SegmentedLog adds:
+
+```php
+$log->compact();
+$log->recover();
+$log->state_index();
+```
+
+CLI:
+
+```bash
+vendor/bin/storh stats var/storh pages doc
+vendor/bin/storh verify var/storh events log
+vendor/bin/storh compact var/storh events log
+vendor/bin/storh reindex var/storh pages
+```
+
+The CLI prints stable JSON so it can be used from cron jobs and deployment
+health checks.

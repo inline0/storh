@@ -1,0 +1,31 @@
+---
+title: Benchmarks
+description: Benchmark harness and comparison reports.
+---
+
+# Benchmarks
+
+The benchmark harness writes stable JSON and a human-readable report.
+
+```bash
+composer bench
+composer bench -- --dataset=100000 --engine=doc
+composer bench -- --dataset=100000 --engine=log
+composer bench -- --dataset=10000 --engine=queue
+composer bench:compare build/bench-main.json build/bench-current.json
+```
+
+Covered targets:
+
+- DocStore put/get/delete/stream
+- indexed versus non-indexed DocStore query
+- SegmentedLog append, cursor reads, time-range reads, compaction
+- Queue enqueue, claim, complete, requeue
+- torn trailing line recovery
+- cold versus warm cache reads
+
+Default output path:
+
+```text
+build/bench-current.json
+```

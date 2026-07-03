@@ -1,0 +1,41 @@
+---
+title: Bulk Data
+description: Bulk writes, JSONL import/export, partitioning, and retention.
+---
+
+# Bulk Data
+
+DocStore bulk APIs:
+
+```php
+$docs->putMany([
+    ['slug' => 'home', 'kind' => 'page'],
+    ['slug' => 'about', 'kind' => 'page'],
+]);
+
+$docs->exportJsonl(__DIR__ . '/pages.jsonl');
+$docs->importJsonl(__DIR__ . '/pages.jsonl');
+```
+
+SegmentedLog bulk APIs:
+
+```php
+$log->appendMany([
+    ['type' => 'page.saved'],
+    ['type' => 'page.rendered'],
+]);
+```
+
+Optional partitions:
+
+```php
+$daily = new Storh\SegmentedLog($root, 'events', partition: 'daily');
+$monthly = new Storh\SegmentedLog($root, 'events', partition: 'monthly');
+```
+
+Retention:
+
+```php
+$deleted = $log->retain()->olderThanDays(90)->compact();
+$queue->purgeDone(olderThanSeconds: 86400);
+```

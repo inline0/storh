@@ -1,0 +1,39 @@
+---
+title: Indexes
+description: File-backed equality, unique, and range indexes for DocStore.
+---
+
+# Indexes
+
+`DocStore` indexes are stored beside the collection under `.storh/indexes`.
+They are ordinary files and can be rebuilt from records.
+
+```php
+$docs->indexes()
+    ->field('slug')->unique()
+    ->field('kind')
+    ->field('publishedAt')->range()
+    ->sync();
+```
+
+Index types:
+
+- equality indexes for fields like `kind` or `status`
+- unique indexes for fields like `slug`
+- range indexes for numeric, string, boolean, and null scalar values
+
+Writes update index entries after the record file is atomically replaced.
+Deletes remove matching index entries. `reindex()` rebuilds every configured
+index from the record files.
+
+```php
+$docs->reindex();
+
+$plan = $docs
+    ->query()
+    ->where('slug')->eq('home')
+    ->explain();
+```
+
+`explain()` returns `index_scan` when the planner can use a configured index and
+`full_scan` otherwise.

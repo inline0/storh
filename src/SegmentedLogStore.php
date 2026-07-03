@@ -9,12 +9,19 @@ final class SegmentedLogStore implements FileStoreInterface
     /** @var callable(): string */
     private mixed $id_generator;
 
+    private readonly string $collection_path;
+
+    private CacheInterface $cache;
+
     public function __construct(
         private readonly string $root,
         private readonly string $collection,
         private readonly int $max_segment_bytes = 1048576,
         private readonly int $sparse_index_interval = 64,
-        ?callable $id_generator = null
+        ?callable $id_generator = null,
+        ?CacheInterface $cache = null,
+        ?string $partition = null,
+        ?int $partition_timestamp_ms = null
     ) {
         if ($this->max_segment_bytes < 256) {
             throw new StorageException('Segment size must be at least 256 bytes.');
@@ -24,7 +31,9 @@ final class SegmentedLogStore implements FileStoreInterface
             throw new StorageException('Sparse index interval must be at least 1.');
         }
 
-        $this->id_generator = $id_generator ?? static fn(): string => UuidV7::generate();
+        $this->id_generator   = $id_generator ?? static fn(): string => UuidV7::generate();
+        $this->cache          = $cache ?? Cache::null();
+        $this->collection_path = $this->partitioned_collection($collection, $partition, $partition_timestamp_ms);
         $this->initialize();
     }
 
@@ -49,6 +58,24 @@ final class SegmentedLogStore implements FileStoreInterface
         );
 
         return new StorageRecord($id, $data);
+    }
+
+    /**
+     * @param iterable<array<string, mixed>> $records
+     * @return list<StorageRecord>
+     */
+    public function appendMany(iterable $records): array
+    {
+        $stored = array();
+        foreach ($records as $record) {
+            $id   = isset($record['id']) && is_string($record['id']) ? $record['id'] : null;
+            $data = isset($record['data']) && is_array($record['data']) ? $record['data'] : $record;
+
+            /** @var array<string, mixed> $data */
+            $stored[] = $this->put($data, $id);
+        }
+
+        return $stored;
     }
 
     public function get(string $id): ?StorageRecord
@@ -206,6 +233,97 @@ final class SegmentedLogStore implements FileStoreInterface
         }
 
         return $this->read_state_index();
+    }
+
+    public function query(): QueryBuilder
+    {
+        return new QueryBuilder($this);
+    }
+
+    public function retain(): SegmentedLogRetention
+    {
+        return new SegmentedLogRetention($this);
+    }
+
+    /**
+     * @return array{segments: int, records: int, deleted: int, bytes: int}
+     */
+    public function stats(): array
+    {
+        $segments = $this->all_segments();
+        $bytes    = 0;
+        foreach ($segments as $segment) {
+            $file = isset($segment['file']) && is_string($segment['file']) ? $segment['file'] : '';
+            $path = '' === $file ? '' : $this->segment_path($file);
+            $bytes += is_file($path) ? (int) filesize($path) : 0;
+        }
+
+        $state   = $this->state_index();
+        $deleted = 0;
+        foreach ($state as $entry) {
+            if ($entry['deleted']) {
+                $deleted++;
+            }
+        }
+
+        return array(
+            'segments' => count($segments),
+            'records'  => count(iterator_to_array($this->stream())),
+            'deleted'  => $deleted,
+            'bytes'    => $bytes,
+        );
+    }
+
+    /**
+     * @return array{ok: bool, errors: list<string>, stats: array<string, int>}
+     */
+    public function health(): array
+    {
+        return $this->verify();
+    }
+
+    /**
+     * @return array{ok: bool, errors: list<string>, stats: array<string, int>}
+     */
+    public function verify(): array
+    {
+        $errors = array();
+        try {
+            iterator_to_array($this->stream());
+        } catch (\Throwable $throwable) {
+            $errors[] = $throwable->getMessage();
+        }
+
+        try {
+            $stats = $this->stats();
+        } catch (\Throwable $throwable) {
+            $errors[] = $throwable->getMessage();
+            $stats = array(
+                'segments' => count($this->all_segments()),
+                'records'  => 0,
+                'deleted'  => 0,
+                'bytes'    => 0,
+            );
+        }
+
+        return array(
+            'ok'     => array() === $errors,
+            'errors' => $errors,
+            'stats'  => $stats,
+        );
+    }
+
+    /**
+     * @return array{ok: bool, stats: array<string, int>}
+     */
+    public function repair(): array
+    {
+        $this->recover();
+
+        return array(
+            'ok'    => true,
+            'stats' => $this->stats(),
+        );
     }
 
     private function initialize(): void
@@ -594,7 +712,7 @@ final class SegmentedLogStore implements FileStoreInterface
      */
     private function manifest(): array
     {
-        return AtomicFilesystem::read_jsonc_object($this->manifest_path());
+        return $this->read_cached_jsonc_object($this->manifest_path(), 'log:manifest:' . $this->collection_path);
     }
 
     /**
@@ -706,7 +824,7 @@ final class SegmentedLogStore implements FileStoreInterface
             return 0;
         }
 
-        $index  = AtomicFilesystem::read_jsonc_object($path);
+        $index  = $this->read_cached_jsonc_object($path, 'log:sparse:' . $this->collection_path . ':' . basename($path));
         $offset = 0;
         $entries = isset($index['entries']) && is_array($index['entries']) ? $index['entries'] : array();
         foreach ($entries as $entry) {
@@ -816,7 +934,7 @@ final class SegmentedLogStore implements FileStoreInterface
      */
     private function read_state_entry_file(string $path): ?array
     {
-        $entry = AtomicFilesystem::read_jsonc_object($path);
+        $entry = $this->read_cached_jsonc_object($path, 'log:state:' . $this->collection_path . ':' . basename($path));
         if (! isset($entry['file'], $entry['offset']) || ! is_string($entry['file']) || ! is_int($entry['offset'])) {
             return null;
         }
@@ -1157,7 +1275,7 @@ final class SegmentedLogStore implements FileStoreInterface
 
     private function collection_root(): string
     {
-        return rtrim($this->root, '/\\') . '/' . $this->collection;
+        return rtrim($this->root, '/\\') . '/' . $this->collection_path;
     }
 
     private function segments_root(): string
@@ -1261,5 +1379,59 @@ final class SegmentedLogStore implements FileStoreInterface
                 $this->delete_directory($directory);
             }
         }
+    }
+
+    private function partitioned_collection(string $collection, ?string $partition, ?int $timestamp_ms): string
+    {
+        if (null === $partition) {
+            return $collection;
+        }
+
+        $timestamp_ms ??= (int) floor(microtime(true) * 1000);
+        $seconds = intdiv($timestamp_ms, 1000);
+
+        return match ($partition) {
+            'daily' => $collection . '/partitions/' . gmdate('Y-m-d', $seconds),
+            'monthly' => $collection . '/partitions/' . gmdate('Y-m', $seconds),
+            default => throw new StorageException('Unsupported log partition: ' . $partition),
+        };
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function read_cached_jsonc_object(string $path, string $key): array
+    {
+        clearstatcache(true, $path);
+        $mtime  = is_file($path) ? (int) filemtime($path) : 0;
+        $size   = is_file($path) ? (int) filesize($path) : -1;
+        $hash   = is_file($path) ? (string) sha1_file($path) : '';
+        $cached = $this->cache->get($key);
+
+        if (
+            is_array($cached) &&
+            isset($cached['mtime'], $cached['size'], $cached['hash'], $cached['data']) &&
+            $cached['mtime'] === $mtime &&
+            $cached['size'] === $size &&
+            $cached['hash'] === $hash &&
+            is_array($cached['data'])
+        ) {
+            /** @var array<string, mixed> $data */
+            $data = $cached['data'];
+            return $data;
+        }
+
+        $data = AtomicFilesystem::read_jsonc_object($path);
+        $this->cache->set(
+            $key,
+            array(
+                'mtime' => $mtime,
+                'size'  => $size,
+                'hash'  => $hash,
+                'data'  => $data,
+            )
+        );
+
+        return $data;
     }
 }

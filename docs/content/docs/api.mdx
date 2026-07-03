@@ -17,9 +17,20 @@ description: Public classes and their main methods.
 Alias of `DocPerFileStore`.
 
 - `put(array $data, ?string $id = null): StorageRecord`
+- `putMany(iterable $records): array`
 - `get(string $id): ?StorageRecord`
 - `delete(string $id): void`
 - `stream(?RecordQuery $query = null): Generator`
+- `query(): QueryBuilder`
+- `indexes(): DocStoreIndexManager`
+- `reindex(): array`
+- `stats(): array`
+- `health(): array`
+- `verify(): array`
+- `repair(): array`
+- `compact(): array`
+- `importJsonl(string $path): int`
+- `exportJsonl(string $path): int`
 - `path_for_id(string $id): string`
 
 ## `SegmentedLog`
@@ -27,12 +38,19 @@ Alias of `DocPerFileStore`.
 Alias of `SegmentedLogStore`.
 
 - `put(array $data, ?string $id = null): StorageRecord`
+- `appendMany(iterable $records): array`
 - `get(string $id): ?StorageRecord`
 - `delete(string $id): void`
 - `stream(?RecordQuery $query = null): Generator`
+- `query(): QueryBuilder`
+- `retain(): SegmentedLogRetention`
 - `compact(): void`
 - `recover(): void`
 - `state_index(): array`
+- `stats(): array`
+- `health(): array`
+- `verify(): array`
+- `repair(): array`
 
 ## `Queue`
 
@@ -42,7 +60,52 @@ Alias of `DirectoryQueue`.
 - `claim(): ?StorageRecord`
 - `complete(string $id, bool $keep_done = true): void`
 - `requeue_timed_out(int $timeout_seconds): int`
+- `purgeDone(int $olderThanSeconds = 0): int`
 - `counts(): array`
+- `stats(): array`
+- `health(): array`
+- `verify(): array`
+- `repair(int $processingTimeoutSeconds = 3600): array`
+
+## `QueryBuilder`
+
+- `where(string $field): QueryFieldBuilder`
+- `andWhere(callable $callback): QueryBuilder`
+- `orWhere(callable $callback): QueryBuilder`
+- `orderBy(string $field, string $direction = 'asc'): QueryBuilder`
+- `limit(int $limit): QueryBuilder`
+- `cursor(string $id): QueryBuilder`
+- `page(int $size): QueryBuilder`
+- `get(): array`
+- `first(): ?StorageRecord`
+- `count(): int`
+- `explain(): array`
+
+## `DocStoreIndexManager`
+
+- `field(string $field): DocStoreIndexFieldBuilder`
+- `define_field(string $field, bool $unique = false, bool $range = false): DocStoreIndexManager`
+- `apply_schema(Schema $schema): DocStoreIndexManager`
+- `sync(bool $rebuild = true): void`
+- `rebuild(): array`
+- `definitions(): array`
+
+## `Schema`
+
+- `Schema::collection(string $collection): Schema`
+- `string(string $field): SchemaFieldBuilder`
+- `int(string $field): SchemaFieldBuilder`
+- `float(string $field): SchemaFieldBuilder`
+- `bool(string $field): SchemaFieldBuilder`
+- `mixed(string $field): SchemaFieldBuilder`
+- `required(array $fields): Schema`
+- `validate(array $data): void`
+
+## `Cache`
+
+- `Cache::memory(int $maxEntries = 10000): CacheInterface`
+- `Cache::apcu(string $prefix = 'storh'): CacheInterface`
+- `Cache::null(): CacheInterface`
 
 ## `RecordQuery`
 
