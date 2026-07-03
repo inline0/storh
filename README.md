@@ -28,7 +28,7 @@ that want durable local records without a database server. It provides:
 - an atomic directory queue
 - Prisma/Drizzle-style fluent querying, secondary indexes, schema validation,
   caching, bulk JSONL import/export, maintenance APIs, benchmarks, and a CLI
-- UUIDv7 ids, prefix sharding, atomic writes, torn-write recovery, retention,
+- UUIDv7 ids, UUID-tail sharding, atomic writes, torn-write recovery, retention,
   and compaction
 
 The caller provides a base directory. storh does not discover application paths
@@ -91,7 +91,7 @@ if (null !== $job) {
 
 ## Engines
 
-`DocStore` writes each record as a JSONC object under a UUID-prefix-sharded
+`DocStore` writes each record as a JSONC object under a UUID-tail-sharded
 path. It is best for point reads and modest field scans.
 
 `SegmentedLog` appends records to length and checksum guarded NDJSON segments.

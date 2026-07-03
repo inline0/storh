@@ -197,12 +197,13 @@ function bench_recovery(string $root, int $dataset): array
 function bench_cache(string $root, int $dataset, string $cache_validation): array
 {
     $cache = Cache::memory($dataset + 10);
-    $store = new DocPerFileStore($root, 'cache', cache: $cache, cache_validation: $cache_validation);
+    $writer = new DocPerFileStore($root, 'cache', cache: $cache, cache_validation: $cache_validation);
     $ids   = array();
     for ($i = 0; $i < $dataset; $i++) {
-        $ids[] = $store->put(row($i))->id();
+        $ids[] = $writer->put(row($i))->id();
     }
 
+    $store = new DocPerFileStore($root, 'cache', cache: $cache, cache_validation: $cache_validation);
     $cache->clear_prefix('doc:cache:');
     $cold = timed(static function () use ($store, $ids): void {
         foreach ($ids as $id) {

@@ -16,10 +16,11 @@ $record = $store->put(['slug' => 'hello', 'published' => true]);
 $same = $store->get($record->id());
 ```
 
-Record files are sharded by the first four UUID characters:
+Record files are sharded by UUID tail characters so UUIDv7 write bursts spread
+across directories:
 
 ```text
-articles/data/01/8b/018bcfe5-6800-7000-8000-000000000000.jsonc
+articles/data/2d/018bcfe5-6800-7000-8000-2d5dba6274da.jsonc
 ```
 
 ## SegmentedLog

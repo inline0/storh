@@ -9,6 +9,9 @@ final class DocStoreIndexManager
     /** @var array<string, array{field: string, unique: bool, range: bool}> */
     private array $pending = array();
 
+    /** @var array<string, array{field: string, unique: bool, range: bool}>|null */
+    private ?array $definitions_cache = null;
+
     public function __construct(private readonly DocPerFileStore $store)
     {
         $this->pending = $this->definitions();
@@ -61,6 +64,7 @@ final class DocStoreIndexManager
             $this->manifest_path(),
             Jsonc::encode_object(array( 'fields' => array_values($after) ))
         );
+        $this->definitions_cache = $after;
 
         if ($rebuild && $before !== $after) {
             $this->rebuild();
@@ -92,7 +96,13 @@ final class DocStoreIndexManager
      */
     public function definitions(): array
     {
+        if (null !== $this->definitions_cache) {
+            return $this->definitions_cache;
+        }
+
         if (! is_file($this->manifest_path())) {
+            $this->definitions_cache = array();
+
             return array();
         }
 
@@ -112,6 +122,7 @@ final class DocStoreIndexManager
         }
 
         ksort($fields);
+        $this->definitions_cache = $fields;
 
         return $fields;
     }

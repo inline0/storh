@@ -8,7 +8,7 @@ description: Practical limits for file-first storage.
 storh is file-first storage, not a relational query engine.
 
 - Point access is effectively unbounded when the filesystem can handle the file
-  count and the collection uses prefix sharding.
+  count and the collection uses UUID-tail sharding.
 - Segmented-log scans, cursor reads, and time-range reads are comfortable into
   roughly 1M records when segment sizes are configured for the workload.
 - Queue lanes are sharded to avoid very large single directories, but each job

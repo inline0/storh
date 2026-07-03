@@ -177,6 +177,7 @@ final class AdvancedStorageTest extends TestCase
         $store->put(array( 'title' => 'Beta Prime', 'active' => false, 'score' => 20, 'nullable' => 'updated' ), $ids[1]);
         $this->assertSame('Beta Prime', $store->get($ids[1])?->data()['title'] ?? null);
 
+        AtomicFilesystem::ensure_directory(dirname($store->path_for_id($ids[4])));
         file_put_contents($store->path_for_id($ids[4]), '{ broken');
         $this->assertFalse($store->health()['ok']);
         $this->assertSame(1, $store->stats()['corrupt']);

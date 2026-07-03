@@ -15,7 +15,7 @@ global constants, or require a framework adapter.
 
 ## Engines
 
-- `DocStore` stores one JSONC file per record with prefix-sharded paths.
+- `DocStore` stores one JSONC file per record with UUID-tail-sharded paths.
 - `SegmentedLog` appends length and checksum guarded records to NDJSON segments.
 - `Queue` claims jobs with atomic renames between directory lanes.
 

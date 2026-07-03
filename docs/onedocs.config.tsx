@@ -36,7 +36,7 @@ export default defineConfig({
       {
         title: "JSONC Document Store",
         description:
-          "One JSONC file per record, UUIDv7 ids, prefix sharding, atomic replacement, and streaming field filters.",
+          "One JSONC file per record, UUIDv7 ids, UUID-tail sharding, atomic replacement, and streaming field filters.",
         icon: <FileJson className={iconClass} />,
       },
       {
@@ -54,7 +54,7 @@ export default defineConfig({
       {
         title: "UUIDv7 Records",
         description:
-          "Sortable, time-addressable ids for stable cursors, bounded scans, and prefix-sharded storage paths.",
+          "Sortable, time-addressable ids for stable cursors, bounded scans, and shard-friendly storage paths.",
         icon: <Clock3 className={iconClass} />,
       },
       {

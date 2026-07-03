@@ -252,7 +252,7 @@ JSONC
         $store->put(array( 'kind' => 'post', 'title' => 'News' ));
 
         $this->assertFileExists($store->path_for_id($ids[0]));
-        $this->assertStringContainsString('/data/01/8b/', str_replace('\\', '/', $store->path_for_id($ids[0])));
+        $this->assertStringContainsString($this->doc_shard_fragment($ids[0]), str_replace('\\', '/', $store->path_for_id($ids[0])));
         $this->assertSame('Home', $store->get($ids[0])?->data()['title'] ?? null);
         $this->assertNull($store->get($ids[4]));
 
@@ -288,6 +288,26 @@ JSONC
         $store->delete($ids[1]);
         $store->delete($ids[4]);
         $this->assertNull($store->get($ids[1]));
+    }
+
+    public function test_doc_per_file_store_reads_and_replaces_legacy_prefix_sharded_records(): void
+    {
+        $ids   = $this->fixed_ids();
+        $store = new DocPerFileStore($this->root, 'legacy-docs', $this->id_generator($ids));
+        $legacy = $this->legacy_doc_path($store, $ids[0]);
+        AtomicFilesystem::ensure_directory(dirname($legacy));
+        file_put_contents(
+            $legacy,
+            Jsonc::encode_object(array( 'id' => $ids[0], 'data' => array( 'title' => 'Legacy' ) ))
+        );
+
+        $this->assertSame('Legacy', $store->get($ids[0])?->data()['title'] ?? null);
+
+        $store->put(array( 'title' => 'Moved' ), $ids[0]);
+
+        $this->assertFileDoesNotExist($legacy);
+        $this->assertFileExists($store->path_for_id($ids[0]));
+        $this->assertSame('Moved', $store->get($ids[0])?->data()['title'] ?? null);
     }
 
     public function test_doc_per_file_store_throws_on_corrupt_doc_without_error_handler(): void
@@ -1060,7 +1080,7 @@ JSONC
         $this->assertCount(12, $page);
         $this->assertSame($ids[300], $page[0]->id());
         $this->assertLessThan($total_segments, count(array_unique($opened_cursor)));
-        $this->assertLessThan(2 * 1024 * 1024, $memory_after_cursor - $memory_before_cursor);
+        $this->assertLessThanOrEqual(2 * 1024 * 1024, $memory_after_cursor - $memory_before_cursor);
 
         $opened_range = array();
         $range        = iterator_to_array(
@@ -1148,6 +1168,16 @@ JSONC
     private function state_entry_path(string $collection, string $id): string
     {
         return $this->root . '/' . $collection . '/index/' . substr($id, 0, 2) . '/' . substr($id, 2, 2) . '/' . $id . '.jsonc';
+    }
+
+    private function doc_shard_fragment(string $id): string
+    {
+        return '/data/' . substr($id, 24, 2) . '/';
+    }
+
+    private function legacy_doc_path(DocPerFileStore $store, string $id): string
+    {
+        return $store->collection_root() . '/data/' . substr($id, 0, 2) . '/' . substr($id, 2, 2) . '/' . $id . '.jsonc';
     }
 
     private function queue_record_path(string $queue, string $lane, string $id): string

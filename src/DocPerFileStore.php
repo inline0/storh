@@ -11,6 +11,21 @@ final class DocPerFileStore implements FileStoreInterface
 
     private CacheInterface $cache;
 
+    private bool $cache_enabled;
+
+    private ?DocStoreIndexManager $index_manager = null;
+
+    private int $temp_counter = 0;
+
+    /** @var array<string, true> */
+    private array $known_directories = array();
+
+    /** @var array<string, string>|null */
+    private ?array $record_path_cache = null;
+
+    /** @var array<string, array<string, mixed>>|null */
+    private ?array $record_data_cache = null;
+
     public function __construct(
         private readonly string $root,
         private readonly string $collection,
@@ -27,7 +42,12 @@ final class DocPerFileStore implements FileStoreInterface
 
         $this->id_generator = $id_generator ?? static fn(): string => UuidV7::generate();
         $this->cache        = $cache ?? Cache::null();
+        $this->cache_enabled = ! $this->cache instanceof NullCache;
         AtomicFilesystem::cleanup_temp_files($this->collection_root());
+        if (! is_dir($this->data_root())) {
+            $this->record_path_cache = array();
+            $this->record_data_cache = array();
+        }
 
         if (null !== $this->schema) {
             $this->indexes()->apply_schema($this->schema)->sync();
@@ -39,26 +59,31 @@ final class DocPerFileStore implements FileStoreInterface
      */
     public function put(array $data, ?string $id = null): StorageRecord
     {
+        $generated = null === $id;
         $id ??= ( $this->id_generator )();
         UuidV7::assert_valid($id);
         $this->schema?->validate($data);
 
-        $old = $this->get($id);
-        $this->indexes()->validate_unique($id, $data, $old?->data());
+        $old = $generated ? null : $this->get($id);
+        $indexes = $this->indexes();
+        $indexes->validate_unique($id, $data, $old?->data());
 
         $record = new StorageRecord($id, $data);
-        AtomicFilesystem::write_atomic(
-            $this->path_for_id($id),
-            Jsonc::encode_object(
-                array(
-                    'id'   => $id,
-                    'data' => $data,
-                )
-            )
-        );
+        $path = $this->record_path_for_id($id);
+        $this->write_record_file($path, $id, $data);
+        if (null !== $this->record_path_cache) {
+            $this->record_path_cache[ $id ] = $path;
+        }
+        if (null !== $this->record_data_cache) {
+            $this->record_data_cache[ $id ] = $data;
+        }
 
-        $this->indexes()->update_record($id, $data, $old?->data());
-        $this->cache_record($record);
+        if (! $generated) {
+            $this->unlink_legacy_record_if_replaced($id, $path);
+        }
+
+        $indexes->update_record($id, $data, $old?->data());
+        $this->cache_record($record, $path);
 
         return $record;
     }
@@ -84,7 +109,11 @@ final class DocPerFileStore implements FileStoreInterface
     public function get(string $id): ?StorageRecord
     {
         UuidV7::assert_valid($id);
-        $path = $this->path_for_id($id);
+        $path = $this->existing_record_path($id) ?? $this->record_path_for_id($id);
+
+        if (isset($this->record_data_cache[ $id ]) && is_file($path)) {
+            return new StorageRecord($id, $this->record_data_cache[ $id ]);
+        }
 
         $cached = $this->cached_record($id, $path);
         if ($cached instanceof StorageRecord || false === $cached) {
@@ -105,11 +134,19 @@ final class DocPerFileStore implements FileStoreInterface
     public function delete(string $id): void
     {
         UuidV7::assert_valid($id);
-        $path = $this->path_for_id($id);
-        $old  = $this->get($id);
+        $path = $this->existing_record_path($id) ?? $this->record_path_for_id($id);
+        $old  = is_file($path) ? $this->get($id) : null;
 
-        if (is_file($path) && ! @unlink($path)) {
-            throw new StorageException('Could not delete storage record: ' . $id);
+        foreach ($this->record_paths_for_id($id) as $record_path) {
+            if (is_file($record_path) && ! @unlink($record_path)) {
+                throw new StorageException('Could not delete storage record: ' . $id);
+            }
+        }
+        if (null !== $this->record_path_cache) {
+            unset($this->record_path_cache[ $id ]);
+        }
+        if (null !== $this->record_data_cache) {
+            unset($this->record_data_cache[ $id ]);
         }
 
         if (null !== $old) {
@@ -126,6 +163,31 @@ final class DocPerFileStore implements FileStoreInterface
     {
         $query ??= RecordQuery::all();
         $count = 0;
+
+        if (null !== $this->record_path_cache && null !== $this->record_data_cache) {
+            $ids = array_keys($this->record_path_cache);
+            sort($ids);
+            foreach ($ids as $id) {
+                $data = $this->record_data_cache[ $id ] ?? null;
+                if (null === $data) {
+                    continue;
+                }
+
+                $record = new StorageRecord($id, $data);
+                if (! $query->matches($record)) {
+                    continue;
+                }
+
+                yield $record;
+                $count++;
+
+                if (null !== $query->limit_value() && $count >= $query->limit_value()) {
+                    return;
+                }
+            }
+
+            return;
+        }
 
         foreach ($this->record_paths() as $path) {
             $id = basename($path, '.jsonc');
@@ -160,7 +222,9 @@ final class DocPerFileStore implements FileStoreInterface
 
     public function indexes(): DocStoreIndexManager
     {
-        return new DocStoreIndexManager($this);
+        $this->index_manager ??= new DocStoreIndexManager($this);
+
+        return $this->index_manager;
     }
 
     /**
@@ -357,7 +421,15 @@ final class DocPerFileStore implements FileStoreInterface
     {
         UuidV7::assert_valid($id);
 
-        return $this->collection_root() . '/data/' . substr($id, 0, 2) . '/' . substr($id, 2, 2) . '/' . $id . '.jsonc';
+        $this->record_path_cache = null;
+        $this->record_data_cache = null;
+
+        return $this->record_path_for_id($id);
+    }
+
+    private function record_path_for_id(string $id): string
+    {
+        return $this->data_root() . '/' . substr($id, 24, 2) . '/' . $id . '.jsonc';
     }
 
     public function collection_root(): string
@@ -365,14 +437,26 @@ final class DocPerFileStore implements FileStoreInterface
         return rtrim($this->root, '/\\') . '/' . $this->collection;
     }
 
+    private function data_root(): string
+    {
+        return $this->collection_root() . '/data';
+    }
+
     /**
      * @return list<string>
      */
     public function record_paths(): array
     {
-        $root = $this->collection_root() . '/data';
+        $root = $this->data_root();
         if (! is_dir($root)) {
             return array();
+        }
+
+        if (null !== $this->record_path_cache) {
+            $paths = $this->record_path_cache;
+            ksort($paths);
+
+            return array_values($paths);
         }
 
         $paths    = array();
@@ -382,18 +466,27 @@ final class DocPerFileStore implements FileStoreInterface
 
         foreach ($iterator as $file) {
             if ($file instanceof \SplFileInfo && 'jsonc' === $file->getExtension()) {
-                $paths[] = $file->getPathname();
+                $id = basename($file->getPathname(), '.jsonc');
+                if (36 === strlen($id)) {
+                    $current_path = $root . '/' . substr($id, 24, 2) . '/' . $id . '.jsonc';
+                    if (! isset($paths[ $id ]) || $file->getPathname() === $current_path) {
+                        $paths[ $id ] = $file->getPathname();
+                    }
+                    continue;
+                }
+
+                $paths[ $file->getPathname() ] = $file->getPathname();
             }
         }
 
-        sort($paths);
+        ksort($paths);
 
-        return $paths;
+        return array_values($paths);
     }
 
     private function record_from_file(string $path, string $fallback_id): StorageRecord
     {
-        $decoded = AtomicFilesystem::read_jsonc_object($path);
+        $decoded = $this->read_record_object($path);
         $id      = isset($decoded['id']) && is_string($decoded['id']) ? $decoded['id'] : $fallback_id;
         $data    = isset($decoded['data']) && is_array($decoded['data']) ? $decoded['data'] : array();
 
@@ -410,8 +503,17 @@ final class DocPerFileStore implements FileStoreInterface
 
     private function cached_record(string $id, string $path): StorageRecord|false|null
     {
+        if (! $this->cache_enabled) {
+            return null;
+        }
+
         $cached = $this->cache->get($this->cache_key($id));
         if (! is_array($cached) || ! isset($cached['exists'], $cached['mtime'], $cached['size'])) {
+            return null;
+        }
+
+        if (isset($cached['path']) && $cached['path'] !== $path) {
+            $this->cache->delete($this->cache_key($id));
             return null;
         }
 
@@ -450,17 +552,23 @@ final class DocPerFileStore implements FileStoreInterface
         return new StorageRecord($id, $data);
     }
 
-    private function cache_record(StorageRecord $record): void
+    private function cache_record(StorageRecord $record, ?string $path = null): void
     {
-        $path = $this->path_for_id($record->id());
+        if (! $this->cache_enabled) {
+            return;
+        }
+
+        $path ??= $this->record_path_for_id($record->id());
         clearstatcache(true, $path);
+        $exists = is_file($path);
         $this->cache->set(
             $this->cache_key($record->id()),
             array(
                 'exists' => true,
-                'mtime'  => is_file($path) ? (int) filemtime($path) : 0,
-                'size'   => is_file($path) ? (int) filesize($path) : -1,
-                'hash'   => is_file($path) && CacheValidation::HASH === $this->cache_validation ? (string) sha1_file($path) : '',
+                'path'   => $path,
+                'mtime'  => $exists ? (int) filemtime($path) : 0,
+                'size'   => $exists ? (int) filesize($path) : -1,
+                'hash'   => $exists && CacheValidation::HASH === $this->cache_validation ? (string) sha1_file($path) : '',
                 'data'   => $record->data(),
             )
         );
@@ -468,15 +576,136 @@ final class DocPerFileStore implements FileStoreInterface
 
     private function cache_missing(string $id, string $path): void
     {
+        if (! $this->cache_enabled) {
+            return;
+        }
+
         clearstatcache(true, $path);
         $this->cache->set(
             $this->cache_key($id),
             array(
                 'exists' => false,
+                'path'   => $path,
                 'mtime'  => 0,
                 'size'   => -1,
                 'hash'   => '',
             )
         );
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function legacy_paths_for_id(string $id): array
+    {
+        return array(
+            $this->data_root() . '/' . substr($id, 24, 2) . '/' . substr($id, 26, 2) . '/' . $id . '.jsonc',
+            $this->data_root() . '/' . substr($id, 0, 2) . '/' . substr($id, 2, 2) . '/' . $id . '.jsonc',
+        );
+    }
+
+    private function existing_record_path(string $id): ?string
+    {
+        foreach ($this->record_paths_for_id($id) as $path) {
+            if (is_file($path)) {
+                return $path;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function record_paths_for_id(string $id): array
+    {
+        $path = $this->record_path_for_id($id);
+        $legacy = $this->legacy_paths_for_id($id);
+
+        return array_values(array_unique(array_merge(array($path), $legacy)));
+    }
+
+    private function unlink_legacy_record_if_replaced(string $id, string $path): void
+    {
+        foreach ($this->legacy_paths_for_id($id) as $legacy) {
+            if ($legacy !== $path && is_file($legacy) && ! @unlink($legacy)) {
+                throw new StorageException('Could not replace legacy storage record: ' . $id);
+            }
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    private function write_record_file(string $path, string $id, array $data): void
+    {
+        $contents = json_encode(
+            array(
+                'id'   => $id,
+                'data' => $data,
+            ),
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR
+        ) . "\n";
+
+        $directory = dirname($path);
+        $this->ensure_known_directory($directory);
+        $temp = $directory . '/.' . basename($path) . '.' . getmypid() . '.' . ++$this->temp_counter . '.tmp';
+        $handle = @fopen($temp, 'wb');
+        if (false === $handle) {
+            throw new StorageException('Could not open temporary storage file for writing: ' . $temp);
+        }
+
+        try {
+            AtomicFilesystem::write_all($handle, $contents, $temp);
+        } finally {
+            fclose($handle);
+        }
+
+        if (! @rename($temp, $path)) {
+            @unlink($temp);
+            throw new StorageException('Could not atomically replace storage file: ' . $path);
+        }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function read_record_object(string $path): array
+    {
+        $contents = @file_get_contents($path);
+        if (false === $contents) {
+            throw new StorageException('Could not read storage file: ' . $path);
+        }
+
+        try {
+            $decoded = json_decode($contents, true, 512, JSON_THROW_ON_ERROR);
+            if (! is_array($decoded) || ( array() !== $decoded && array_is_list($decoded) )) {
+                throw new StorageException('JSONC document must decode to an object.');
+            }
+
+            $object = array();
+            foreach ($decoded as $key => $value) {
+                if (! is_string($key)) {
+                    throw new StorageException('JSONC document must decode to an object.');
+                }
+
+                $object[ $key ] = $value;
+            }
+
+            return $object;
+        } catch (\JsonException) {
+            return AtomicFilesystem::read_jsonc_object($path);
+        }
+    }
+
+    private function ensure_known_directory(string $directory): void
+    {
+        if (isset($this->known_directories[ $directory ])) {
+            return;
+        }
+
+        AtomicFilesystem::ensure_directory($directory);
+        $this->known_directories[ $directory ] = true;
     }
 }
