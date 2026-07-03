@@ -190,8 +190,10 @@ final class DocPerFileStore implements FileStoreInterface
         UuidV7::assert_valid($id);
         $path = $this->record_path_for_id($id);
 
-        if (isset($this->record_data_cache[ $id ]) && is_file($path)) {
-            return new StorageRecord($id, $this->record_data_cache[ $id ]);
+        if (isset($this->record_data_cache[ $id ])) {
+            if (CacheValidation::TRUST === $this->cache_validation || is_file($path)) {
+                return new StorageRecord($id, $this->record_data_cache[ $id ]);
+            }
         }
 
         $cached = $this->cached_record($id, $path);
@@ -205,6 +207,9 @@ final class DocPerFileStore implements FileStoreInterface
         }
 
         $record = $this->record_from_file($path, $id);
+        if (CacheValidation::TRUST === $this->cache_validation) {
+            $this->remember_trusted_read_record($id, $record->data());
+        }
         $this->cache_record($record);
 
         return $record;
@@ -612,6 +617,8 @@ final class DocPerFileStore implements FileStoreInterface
 
             $data = isset($cached['data']) && is_array($cached['data']) ? $cached['data'] : array();
             /** @var array<string, mixed> $data */
+            $this->remember_trusted_read_record($id, $data);
+
             return new StorageRecord($id, $data);
         }
 
@@ -779,6 +786,23 @@ final class DocPerFileStore implements FileStoreInterface
                 $this->record_data_cache[ $id ] = $data;
             }
         }
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    private function remember_trusted_read_record(string $id, array $data): void
+    {
+        if (CacheValidation::TRUST !== $this->cache_validation) {
+            return;
+        }
+
+        $this->record_data_cache ??= array();
+        if (! isset($this->record_data_cache[ $id ]) && count($this->record_data_cache) >= self::WRITE_CACHE_LIMIT) {
+            return;
+        }
+
+        $this->record_data_cache[ $id ] = $data;
     }
 
     /**
