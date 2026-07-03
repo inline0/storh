@@ -586,9 +586,20 @@ final class AdvancedStorageTest extends TestCase
         $ordered->set('c', 3);
         $this->assertNull($ordered->get('b'));
 
+        $bounded = new MemoryCache(10, 1);
+        $bounded->set('large', str_repeat('x', 1024));
+        $this->assertNull($bounded->get('large'));
+
         try {
             new MemoryCache(0);
             $this->fail('Expected memory cache size failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('cache', $exception->getMessage());
+        }
+
+        try {
+            new MemoryCache(1, 0);
+            $this->fail('Expected memory cache byte size failure.');
         } catch (StorageException $exception) {
             $this->assertStringContainsString('cache', $exception->getMessage());
         }

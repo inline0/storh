@@ -623,22 +623,39 @@ final class DocPerFileStore implements FileStoreInterface
         }
 
         $cached = $this->cache->get($this->cache_key($id));
-        if (! is_array($cached) || ! isset($cached['exists'], $cached['mtime'], $cached['size'])) {
+        if (
+            ! is_array($cached) ||
+            ! array_key_exists(0, $cached) ||
+            ! array_key_exists(1, $cached) ||
+            ! array_key_exists(2, $cached) ||
+            ! array_key_exists(3, $cached) ||
+            ! array_key_exists(4, $cached) ||
+            ! is_bool($cached[0]) ||
+            ! is_string($cached[1]) ||
+            ! is_int($cached[2]) ||
+            ! is_int($cached[3]) ||
+            ! is_string($cached[4])
+        ) {
             return null;
         }
 
-        if (isset($cached['path']) && $cached['path'] !== $path) {
+        $cached_exists = $cached[0];
+        $cached_path   = $cached[1];
+        $cached_mtime  = $cached[2];
+        $cached_size   = $cached[3];
+        $cached_hash   = $cached[4];
+
+        if ($cached_path !== $path) {
             $this->cache->delete($this->cache_key($id));
             return null;
         }
 
         if (CacheValidation::TRUST === $this->cache_validation) {
-            if (false === $cached['exists']) {
+            if (! $cached_exists) {
                 return false;
             }
 
-            $data = isset($cached['data']) && is_array($cached['data']) ? $cached['data'] : array();
-            /** @var array<string, mixed> $data */
+            $data = $this->cached_data($cached[5] ?? null);
             $this->remember_trusted_read_record($id, $data);
 
             return new StorageRecord($id, $data);
@@ -651,21 +668,20 @@ final class DocPerFileStore implements FileStoreInterface
         $hash   = $exists && CacheValidation::HASH === $this->cache_validation ? (string) sha1_file($path) : '';
 
         if (
-            $exists !== $cached['exists'] ||
-            $mtime !== $cached['mtime'] ||
-            $size !== $cached['size'] ||
-            ( CacheValidation::HASH === $this->cache_validation && $exists && ( $cached['hash'] ?? '' ) !== $hash )
+            $exists !== $cached_exists ||
+            $mtime !== $cached_mtime ||
+            $size !== $cached_size ||
+            ( CacheValidation::HASH === $this->cache_validation && $exists && $cached_hash !== $hash )
         ) {
             $this->cache->delete($this->cache_key($id));
             return null;
         }
 
-        if (false === $cached['exists']) {
+        if (! $cached_exists) {
             return false;
         }
 
-        $data = isset($cached['data']) && is_array($cached['data']) ? $cached['data'] : array();
-        /** @var array<string, mixed> $data */
+        $data = $this->cached_data($cached[5] ?? null);
         return new StorageRecord($id, $data);
     }
 
@@ -681,12 +697,12 @@ final class DocPerFileStore implements FileStoreInterface
         $this->cache->set(
             $this->cache_key($record->id()),
             array(
-                'exists' => true,
-                'path'   => $path,
-                'mtime'  => $exists ? (int) filemtime($path) : 0,
-                'size'   => $exists ? (int) filesize($path) : -1,
-                'hash'   => $exists && CacheValidation::HASH === $this->cache_validation ? (string) sha1_file($path) : '',
-                'data'   => $record->data(),
+                true,
+                $path,
+                $exists ? (int) filemtime($path) : 0,
+                $exists ? (int) filesize($path) : -1,
+                $exists && CacheValidation::HASH === $this->cache_validation ? (string) sha1_file($path) : '',
+                $record->data(),
             )
         );
     }
@@ -701,13 +717,32 @@ final class DocPerFileStore implements FileStoreInterface
         $this->cache->set(
             $this->cache_key($id),
             array(
-                'exists' => false,
-                'path'   => $path,
-                'mtime'  => 0,
-                'size'   => -1,
-                'hash'   => '',
+                false,
+                $path,
+                0,
+                -1,
+                '',
             )
         );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function cached_data(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return array();
+        }
+
+        $data = array();
+        foreach ($value as $key => $field) {
+            if (is_string($key)) {
+                $data[ $key ] = $field;
+            }
+        }
+
+        return $data;
     }
 
     /**

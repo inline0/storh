@@ -6,81 +6,170 @@ namespace Storh;
 
 final class MemoryCache implements CacheInterface
 {
-    /** @var array<string, array{value: mixed, expires: int|null, tick: int}> */
-    private array $items = array();
+    /** @var array<string, mixed> */
+    private array $values = array();
+
+    /** @var array<string, int|null> */
+    private array $expires = array();
+
+    /** @var array<string, int> */
+    private array $ticks = array();
+
+    /** @var list<string> */
+    private array $access_keys = array();
+
+    /** @var list<int> */
+    private array $access_ticks = array();
+
+    private int $access_offset = 0;
 
     private int $tick = 0;
 
-    public function __construct(private readonly int $max_entries = 10000)
+    private ?int $max_bytes;
+
+    public function __construct(private readonly int $max_entries = 10000, ?int $max_bytes = null)
     {
         if ($this->max_entries < 1) {
             throw new StorageException('Memory cache max entries must be at least 1.');
         }
+
+        if (null !== $max_bytes && $max_bytes < 1) {
+            throw new StorageException('Memory cache max bytes must be at least 1.');
+        }
+
+        $this->max_bytes = $max_bytes ?? self::default_max_bytes();
     }
 
     public function get(string $key): mixed
     {
-        $item = $this->items[ $key ] ?? null;
-        if (null === $item) {
+        if (! array_key_exists($key, $this->values)) {
             return null;
         }
 
-        if (null !== $item['expires'] && $item['expires'] < time()) {
-            unset($this->items[ $key ]);
+        $expires = $this->expires[ $key ] ?? null;
+        if (null !== $expires && $expires < time()) {
+            $this->delete($key);
             return null;
         }
 
-        $this->items[ $key ]['tick'] = ++$this->tick;
+        $this->touch($key);
 
-        return $item['value'];
+        return $this->values[ $key ];
     }
 
     public function set(string $key, mixed $value, ?int $ttl_seconds = null): void
     {
-        $this->items[ $key ] = array(
-            'value'   => $value,
-            'expires' => null === $ttl_seconds ? null : time() + max(1, $ttl_seconds),
-            'tick'    => ++$this->tick,
-        );
-
-        if (count($this->items) > $this->max_entries) {
-            $this->evict();
-        }
+        $this->values[ $key ]  = $value;
+        $this->expires[ $key ] = null === $ttl_seconds ? null : time() + max(1, $ttl_seconds);
+        $this->touch($key);
+        $this->evict();
     }
 
     public function delete(string $key): void
     {
-        unset($this->items[ $key ]);
+        unset($this->values[ $key ], $this->expires[ $key ], $this->ticks[ $key ]);
     }
 
     public function clear_prefix(string $prefix): void
     {
-        foreach (array_keys($this->items) as $key) {
+        foreach (array_keys($this->values) as $key) {
             if (str_starts_with($key, $prefix)) {
-                unset($this->items[ $key ]);
+                $this->delete($key);
             }
         }
     }
 
+    private function touch(string $key): void
+    {
+        $tick = ++$this->tick;
+        $this->ticks[ $key ] = $tick;
+        $this->access_keys[] = $key;
+        $this->access_ticks[] = $tick;
+    }
+
     private function evict(): void
     {
-        while (count($this->items) > $this->max_entries) {
-            $oldest_key = array_key_first($this->items);
-            // @codeCoverageIgnoreStart
-            if (! is_string($oldest_key)) {
+        while (array() !== $this->values && ( count($this->values) > $this->max_entries || $this->over_memory_budget() )) {
+            $key = $this->next_evictable_key();
+            if (null === $key) {
+                $key = array_key_first($this->values);
+            }
+
+            if (! is_string($key)) {
                 return;
             }
-            // @codeCoverageIgnoreEnd
-            $oldest_tick = $this->items[ $oldest_key ]['tick'];
 
-            foreach ($this->items as $key => $item) {
-                if ($item['tick'] < $oldest_tick) {
-                    $oldest_key  = $key;
-                    $oldest_tick = $item['tick'];
-                }
-            }
-
-            unset($this->items[ $oldest_key ]);
+            $this->delete($key);
         }
+
+        $this->compact_access_order();
+    }
+
+    private function next_evictable_key(): ?string
+    {
+        $count = count($this->access_keys);
+        while ($this->access_offset < $count) {
+            $index = $this->access_offset++;
+            $key   = $this->access_keys[ $index ];
+            $tick  = $this->access_ticks[ $index ];
+
+            if (isset($this->ticks[ $key ]) && $this->ticks[ $key ] === $tick) {
+                return $key;
+            }
+        }
+
+        return null;
+    }
+
+    private function compact_access_order(): void
+    {
+        if ($this->access_offset < 1024 || $this->access_offset * 2 < count($this->access_keys)) {
+            return;
+        }
+
+        $this->access_keys   = array_slice($this->access_keys, $this->access_offset);
+        $this->access_ticks  = array_slice($this->access_ticks, $this->access_offset);
+        $this->access_offset = 0;
+    }
+
+    private function over_memory_budget(): bool
+    {
+        return null !== $this->max_bytes && memory_get_usage() > $this->max_bytes;
+    }
+
+    private static function default_max_bytes(): ?int
+    {
+        $limit = ini_get('memory_limit');
+        if (false === $limit || '-1' === trim($limit)) {
+            return null;
+        }
+
+        $bytes = self::parse_bytes($limit);
+        if (null === $bytes) {
+            return null;
+        }
+
+        return max(1_048_576, (int) floor($bytes * 0.7));
+    }
+
+    private static function parse_bytes(string $value): ?int
+    {
+        $value = trim($value);
+        if ('' === $value) {
+            return null;
+        }
+
+        $unit   = strtolower($value[strlen($value) - 1]);
+        $number = (float) $value;
+        if ($number <= 0) {
+            return null;
+        }
+
+        return match ($unit) {
+            'g' => (int) floor($number * 1024 * 1024 * 1024),
+            'm' => (int) floor($number * 1024 * 1024),
+            'k' => (int) floor($number * 1024),
+            default => (int) floor($number),
+        };
     }
 }

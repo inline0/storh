@@ -6,9 +6,9 @@ namespace Storh;
 
 final class Cache
 {
-    public static function memory(int $maxEntries = 10000): CacheInterface
+    public static function memory(int $maxEntries = 10000, ?int $maxBytes = null): CacheInterface
     {
-        return new MemoryCache($maxEntries);
+        return new MemoryCache($maxEntries, $maxBytes);
     }
 
     public static function apcu(string $prefix = 'storh'): CacheInterface

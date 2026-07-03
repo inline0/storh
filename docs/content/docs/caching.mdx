@@ -16,7 +16,7 @@ $docs = new Storh\DocStore($root, 'pages', cache: Cache::apcu('storh.pages'));
 $docs = new Storh\DocStore(
     $root,
     'pages',
-    cache: Cache::memory(maxEntries: 100000),
+    cache: Cache::memory(maxEntries: 100000, maxBytes: 96 * 1024 * 1024),
     cache_validation: CacheValidation::TRUST
 );
 ```
@@ -38,6 +38,9 @@ Validation modes:
 
 `HASH` is the default and detects external file changes. `TRUST` is the fastest
 mode for single-process or explicit-invalidation workloads.
+
+`Cache::memory()` is bounded by entry count and by bytes. When `maxBytes` is not
+provided, it derives a budget from PHP's `memory_limit`.
 
 `Cache::apcu()` is optional. If APCu is unavailable or disabled for the current
 SAPI, it behaves as a no-op backend.

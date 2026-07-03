@@ -25,7 +25,7 @@ final class LogQueue
 
     private int $log_offset = 0;
 
-    /** @var array<string, array<string, mixed>> */
+    /** @var array<string, string> */
     private array $payloads = array();
 
     /** @var array<string, true> */
@@ -41,6 +41,12 @@ final class LogQueue
     private array $pending_order = array();
 
     private int $pending_offset = 0;
+
+    private int $pending_deletes = 0;
+
+    private int $processing_deletes = 0;
+
+    private int $done_deletes = 0;
 
     public function __construct(
         private readonly string $root,
@@ -130,8 +136,13 @@ final class LogQueue
                     )
                 );
 
-                return new StorageRecord($id, $this->payloads[ $id ] ?? array());
+                $record = new StorageRecord($id, $this->payload_for_id($id));
+                $this->compact_pending_order();
+
+                return $record;
             }
+
+            $this->compact_pending_order();
 
             return null;
         });
@@ -158,9 +169,10 @@ final class LogQueue
                     continue;
                 }
 
-                $records[] = new StorageRecord($id, $this->payloads[ $id ] ?? array());
+                $records[] = new StorageRecord($id, $this->payload_for_id($id));
             }
 
+            $this->compact_pending_order();
             $this->append_events($this->claim_events($records, $now));
 
             return $records;
@@ -472,6 +484,9 @@ final class LogQueue
         $this->done          = array();
         $this->pending_order = array();
         $this->pending_offset = 0;
+        $this->pending_deletes = 0;
+        $this->processing_deletes = 0;
+        $this->done_deletes = 0;
         $this->log_offset    = 0;
 
         $handle = $this->log_handle();
@@ -707,7 +722,7 @@ final class LogQueue
         if ('enqueue' === $op) {
             $payload = isset($event['payload']) && is_array($event['payload']) ? $event['payload'] : array();
             /** @var array<string, mixed> $payload */
-            $this->payloads[ $id ] = $payload;
+            $this->payloads[ $id ] = $this->encode_payload($payload);
             $this->pending[ $id ] = true;
             unset($this->processing[ $id ], $this->done[ $id ]);
             $this->pending_order[] = $id;
@@ -717,36 +732,135 @@ final class LogQueue
         if ('claim' === $op) {
             if (isset($this->pending[ $id ])) {
                 unset($this->pending[ $id ]);
+                $this->pending_deletes++;
                 $this->processing[ $id ] = $ts;
+                $this->compact_pending_map();
             }
             return;
         }
 
         if ('complete' === $op) {
-            unset($this->pending[ $id ], $this->processing[ $id ]);
+            if (isset($this->pending[ $id ])) {
+                unset($this->pending[ $id ]);
+                $this->pending_deletes++;
+            }
+            if (isset($this->processing[ $id ])) {
+                unset($this->processing[ $id ]);
+                $this->processing_deletes++;
+            }
+            unset($this->payloads[ $id ]);
             if (true === ( $event['done'] ?? false )) {
                 $this->done[ $id ] = $ts;
             } else {
-                unset($this->done[ $id ], $this->payloads[ $id ]);
+                if (isset($this->done[ $id ])) {
+                    unset($this->done[ $id ]);
+                    $this->done_deletes++;
+                }
             }
+            $this->compact_pending_map();
+            $this->compact_processing_map();
+            $this->compact_done_map();
             return;
         }
 
         if ('requeue' === $op) {
             if (isset($this->processing[ $id ])) {
                 unset($this->processing[ $id ]);
+                $this->processing_deletes++;
                 $this->pending[ $id ] = true;
                 $this->pending_order[] = $id;
+                $this->compact_processing_map();
             }
             return;
         }
 
         if ('purge' === $op) {
-            unset($this->done[ $id ], $this->payloads[ $id ]);
+            if (isset($this->done[ $id ])) {
+                unset($this->done[ $id ]);
+                $this->done_deletes++;
+            }
+            unset($this->payloads[ $id ]);
+            $this->compact_done_map();
             return;
         }
 
         throw new StorageException('Unsupported log queue event: ' . $op);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function encode_payload(array $payload): string
+    {
+        return json_encode(
+            $payload,
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
+        );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function payload_for_id(string $id): array
+    {
+        $encoded = $this->payloads[ $id ] ?? null;
+        if (null === $encoded) {
+            return array();
+        }
+
+        $decoded = json_decode($encoded, true, 512, JSON_THROW_ON_ERROR);
+        if (! is_array($decoded)) {
+            return array();
+        }
+
+        $payload = array();
+        foreach ($decoded as $key => $value) {
+            if (is_string($key)) {
+                $payload[ $key ] = $value;
+            }
+        }
+
+        return $payload;
+    }
+
+    private function compact_pending_order(): void
+    {
+        if ($this->pending_offset < 4096 || $this->pending_offset * 2 < count($this->pending_order)) {
+            return;
+        }
+
+        $this->pending_order  = array_slice($this->pending_order, $this->pending_offset);
+        $this->pending_offset = 0;
+    }
+
+    private function compact_pending_map(): void
+    {
+        if ($this->pending_deletes < 4096 || $this->pending_deletes * 2 < count($this->pending) + $this->pending_deletes) {
+            return;
+        }
+
+        $this->pending = array_slice($this->pending, 0, null, true);
+        $this->pending_deletes = 0;
+    }
+
+    private function compact_processing_map(): void
+    {
+        if ($this->processing_deletes < 4096 || $this->processing_deletes * 2 < count($this->processing) + $this->processing_deletes) {
+            return;
+        }
+
+        $this->processing = array_slice($this->processing, 0, null, true);
+        $this->processing_deletes = 0;
+    }
+
+    private function compact_done_map(): void
+    {
+        if ($this->done_deletes < 4096 || $this->done_deletes * 2 < count($this->done) + $this->done_deletes) {
+            return;
+        }
+
+        $this->done = array_slice($this->done, 0, null, true);
+        $this->done_deletes = 0;
     }
 
     /**

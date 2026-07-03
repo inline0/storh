@@ -34,26 +34,32 @@ try {
 
     if ('all' === $engine || 'doc' === $engine) {
         $results['results']['doc'] = bench_doc($root, $dataset);
+        release_bench_memory();
     }
 
     if ('all' === $engine || 'log' === $engine) {
         $results['results']['log'] = bench_log($root, $dataset);
+        release_bench_memory();
     }
 
     if ('all' === $engine || 'queue' === $engine) {
         $results['results']['queue'] = bench_queue($root, $dataset);
+        release_bench_memory();
     }
 
     if ('all' === $engine || 'recovery' === $engine) {
         $results['results']['recovery'] = bench_recovery($root, $dataset);
+        release_bench_memory();
     }
 
     if ('all' === $engine || 'cache' === $engine) {
         $results['results']['cache'] = bench_cache($root, $dataset, $cache_validation);
+        release_bench_memory();
     }
 
     if ('all' === $engine || 'uuid' === $engine) {
         $results['results']['uuid'] = bench_uuid($dataset);
+        release_bench_memory();
     }
 
     if (! is_dir(dirname($output))) {
@@ -136,7 +142,7 @@ function bench_doc(string $root, int $dataset): array
     });
 
     unset($store, $ids);
-    gc_collect_cycles();
+    release_bench_memory();
 
     $bulk_store = new DocPerFileStore($root, 'docs-bulk');
     $bulk_put = timed(static function () use ($bulk_store, $dataset): void {
@@ -189,7 +195,7 @@ function bench_log(string $root, int $dataset): array
     });
 
     unset($store, $ids);
-    gc_collect_cycles();
+    release_bench_memory();
 
     $bulk_store = new SegmentedLogStore($root, 'log-bulk', 16384);
     $bulk_start_ms = 1_700_000_000_000;
@@ -248,7 +254,7 @@ function bench_queue(string $root, int $dataset): array
     });
 
     unset($queue, $claimed);
-    gc_collect_cycles();
+    release_bench_memory();
 
     $bulk_queue = new Queue($root, 'queue-bulk');
     $bulk_claimed = array();
@@ -304,6 +310,8 @@ function bench_cache(string $root, int $dataset, string $cache_validation): arra
     for ($i = 0; $i < $dataset; $i++) {
         $ids[] = $writer->put(row($i))->id();
     }
+    unset($writer);
+    release_bench_memory();
 
     $store = new DocPerFileStore($root, 'cache', cache: $cache, cache_validation: $cache_validation);
     $cache->clear_prefix('doc:cache:');
@@ -387,6 +395,14 @@ function timed(callable $callback): float
     $callback();
 
     return ( hrtime(true) - $start ) / 1_000_000_000;
+}
+
+function release_bench_memory(): void
+{
+    gc_collect_cycles();
+    if (function_exists('gc_mem_caches')) {
+        gc_mem_caches();
+    }
 }
 
 /**
