@@ -436,9 +436,9 @@ final class LogQueue
 
     private function sync_from_log(): void
     {
-        $path = $this->log_file_path;
-        clearstatcache(true, $path);
-        $size = is_file($path) ? (int) filesize($path) : 0;
+        $handle = $this->log_handle();
+        $stat = fstat($handle);
+        $size = is_array($stat) && isset($stat['size']) ? (int) $stat['size'] : 0;
         if ($size < $this->log_offset) {
             $this->replay_log(false);
             return;
@@ -448,7 +448,6 @@ final class LogQueue
             return;
         }
 
-        $handle = $this->log_handle();
         fseek($handle, $this->log_offset);
         while (false !== ( $line = fgets($handle) )) {
             $offset = ftell($handle);
