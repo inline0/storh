@@ -91,7 +91,10 @@ function bench_doc(string $root, int $dataset): array
         }
     });
 
-    $store->indexes()->field('kind')->field('publishedAt')->range()->sync();
+    $index_build = timed(static function () use ($store): void {
+        $store->indexes()->field('kind')->field('publishedAt')->range()->sync();
+    });
+
     $indexed = timed(static function () use ($store): void {
         $store->query()->where('kind')->eq('page')->limit(100)->get();
     });
@@ -100,7 +103,15 @@ function bench_doc(string $root, int $dataset): array
         iterator_to_array($store->stream(RecordQuery::all()->where_equal('kind', 'page')->limit(100)));
     });
 
-    return compact('put', 'get', 'stream', 'delete', 'indexed', 'full');
+    unset($store, $ids);
+    gc_collect_cycles();
+
+    $bulk_store = new DocPerFileStore($root, 'docs-bulk');
+    $bulk_put = timed(static function () use ($bulk_store, $dataset): void {
+        $bulk_store->putStream(rows($dataset));
+    });
+
+    return compact('put', 'get', 'stream', 'delete', 'index_build', 'indexed', 'full', 'bulk_put');
 }
 
 /**
@@ -129,7 +140,30 @@ function bench_log(string $root, int $dataset): array
         $store->compact();
     });
 
-    return compact('append', 'cursor', 'range', 'compact');
+    unset($store, $ids);
+    gc_collect_cycles();
+
+    $bulk_store = new SegmentedLogStore($root, 'log-bulk', 16384);
+    $bulk_start_ms = 1_700_000_000_000;
+    $bulk_cursor_id = UuidV7::max_for_timestamp_ms($bulk_start_ms + (int) floor($dataset / 2));
+
+    $bulk_append = timed(static function () use ($bulk_store, $dataset, $bulk_start_ms): void {
+        $bulk_store->appendStream(rows_with_ids($dataset, $bulk_start_ms));
+    });
+
+    $bulk_cursor = timed(static function () use ($bulk_store, $bulk_cursor_id): void {
+        iterator_to_array($bulk_store->stream(RecordQuery::all()->after($bulk_cursor_id)->limit(100)));
+    });
+
+    $bulk_range = timed(static function () use ($bulk_store): void {
+        iterator_to_array($bulk_store->stream(RecordQuery::all()->time_range_ms(1_700_000_000_010, 1_700_000_000_200)));
+    });
+
+    $bulk_compact = timed(static function () use ($bulk_store): void {
+        $bulk_store->compact();
+    });
+
+    return compact('append', 'cursor', 'range', 'compact', 'bulk_append', 'bulk_cursor', 'bulk_range', 'bulk_compact');
 }
 
 /**
@@ -260,6 +294,19 @@ function rows(int $dataset): Generator
 {
     for ($i = 0; $i < $dataset; $i++) {
         yield row($i);
+    }
+}
+
+/**
+ * @return Generator<int, array{id: string, data: array<string, mixed>}>
+ */
+function rows_with_ids(int $dataset, int $startTimestampMs): Generator
+{
+    for ($i = 0; $i < $dataset; $i++) {
+        yield array(
+            'id'   => UuidV7::generate($startTimestampMs + $i),
+            'data' => row($i),
+        );
     }
 }
 

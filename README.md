@@ -92,11 +92,13 @@ if (null !== $job) {
 ## Engines
 
 `DocStore` writes each record as a JSONC object under a UUID-tail-sharded
-path. It is best for point reads and modest field scans.
+path. It is best for point reads and modest field scans. `putStream()` ingests
+large iterables without retaining returned record objects.
 
 `SegmentedLog` appends records to length and checksum guarded NDJSON segments.
 It is best for append-heavy workflows, cursor pagination, time-range scans, and
-compaction.
+compaction. `appendStream()` ingests large iterables without retaining returned
+record objects.
 
 `Queue` stores job events in an append-only log and keeps pending, processing,
 and done state in memory. Claims, completions, requeues, and purges append

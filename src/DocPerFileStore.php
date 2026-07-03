@@ -6,6 +6,8 @@ namespace Storh;
 
 final class DocPerFileStore implements FileStoreInterface
 {
+    private const WRITE_CACHE_LIMIT = 100000;
+
     /** @var callable(): string */
     private mixed $id_generator;
 
@@ -71,12 +73,7 @@ final class DocPerFileStore implements FileStoreInterface
         $record = new StorageRecord($id, $data);
         $path = $this->record_path_for_id($id);
         $this->write_record_file($path, $id, $data);
-        if (null !== $this->record_path_cache) {
-            $this->record_path_cache[ $id ] = $path;
-        }
-        if (null !== $this->record_data_cache) {
-            $this->record_data_cache[ $id ] = $data;
-        }
+        $this->remember_written_record($id, $path, $data);
 
         $indexes->update_record($id, $data, $old?->data());
         $this->cache_record($record, $path);
@@ -91,15 +88,80 @@ final class DocPerFileStore implements FileStoreInterface
     public function putMany(iterable $records): array
     {
         $stored = array();
+        $indexes = $this->indexes();
+        $has_indexes = array() !== $indexes->definitions();
+
         foreach ($records as $record) {
             $id   = isset($record['id']) && is_string($record['id']) ? $record['id'] : null;
             $data = isset($record['data']) && is_array($record['data']) ? $record['data'] : $record;
+            $generated = null === $id;
+            $id ??= ( $this->id_generator )();
+            UuidV7::assert_valid($id);
 
             /** @var array<string, mixed> $data */
-            $stored[] = $this->put($data, $id);
+            $this->schema?->validate($data);
+
+            $old = $generated || ! $has_indexes ? null : $this->get($id);
+            if ($has_indexes) {
+                $indexes->validate_unique($id, $data, $old?->data());
+            }
+
+            $path = $this->record_path_for_id($id);
+            $this->write_record_file($path, $id, $data);
+            $this->remember_written_record($id, $path, $data);
+
+            if ($has_indexes) {
+                $indexes->update_record($id, $data, $old?->data());
+            }
+
+            $storage_record = new StorageRecord($id, $data);
+            $this->cache_record($storage_record, $path);
+            $stored[] = $storage_record;
         }
 
         return $stored;
+    }
+
+    /**
+     * @param iterable<array<string, mixed>> $records
+     */
+    public function putStream(iterable $records): int
+    {
+        $count = 0;
+        $indexes = $this->indexes();
+        $has_indexes = array() !== $indexes->definitions();
+
+        foreach ($records as $record) {
+            $id   = isset($record['id']) && is_string($record['id']) ? $record['id'] : null;
+            $data = isset($record['data']) && is_array($record['data']) ? $record['data'] : $record;
+            $generated = null === $id;
+            $id ??= ( $this->id_generator )();
+            UuidV7::assert_valid($id);
+
+            /** @var array<string, mixed> $data */
+            $this->schema?->validate($data);
+
+            $old = $generated || ! $has_indexes ? null : $this->get($id);
+            if ($has_indexes) {
+                $indexes->validate_unique($id, $data, $old?->data());
+            }
+
+            $path = $this->record_path_for_id($id);
+            $this->write_record_file($path, $id, $data);
+            $this->remember_written_record($id, $path, $data);
+
+            if ($has_indexes) {
+                $indexes->update_record($id, $data, $old?->data());
+            }
+
+            if ($this->cache_enabled) {
+                $this->cache_record(new StorageRecord($id, $data), $path);
+            }
+
+            $count++;
+        }
+
+        return $count;
     }
 
     public function get(string $id): ?StorageRecord
@@ -357,30 +419,11 @@ final class DocPerFileStore implements FileStoreInterface
             throw new StorageException('Could not open JSONL import file: ' . $path);
         }
 
-        $count = 0;
         try {
-            while (false !== ( $line = fgets($handle) )) {
-                $line = trim($line);
-                if ('' === $line) {
-                    continue;
-                }
-
-                $decoded = json_decode($line, true, 512, JSON_THROW_ON_ERROR);
-                if (! is_array($decoded)) {
-                    throw new StorageException('JSONL import rows must be objects.');
-                }
-
-                $id   = isset($decoded['id']) && is_string($decoded['id']) ? $decoded['id'] : null;
-                $data = isset($decoded['data']) && is_array($decoded['data']) ? $decoded['data'] : $decoded;
-                /** @var array<string, mixed> $data */
-                $this->put($data, $id);
-                $count++;
-            }
+            return $this->putStream($this->jsonl_records($handle));
         } finally {
             fclose($handle);
         }
-
-        return $count;
     }
 
     public function exportJsonl(string $path): int
@@ -653,5 +696,55 @@ final class DocPerFileStore implements FileStoreInterface
 
         AtomicFilesystem::ensure_directory($directory);
         $this->known_directories[ $directory ] = true;
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    private function remember_written_record(string $id, string $path, array $data): void
+    {
+        if (null !== $this->record_path_cache) {
+            if (count($this->record_path_cache) >= self::WRITE_CACHE_LIMIT) {
+                $this->record_path_cache = null;
+            } else {
+                $this->record_path_cache[ $id ] = $path;
+            }
+        }
+
+        if (null !== $this->record_data_cache) {
+            if (count($this->record_data_cache) >= self::WRITE_CACHE_LIMIT) {
+                $this->record_data_cache = null;
+            } else {
+                $this->record_data_cache[ $id ] = $data;
+            }
+        }
+    }
+
+    /**
+     * @param resource $handle
+     * @return \Generator<int, array<string, mixed>>
+     */
+    private function jsonl_records(mixed $handle): \Generator
+    {
+        while (false !== ( $line = fgets($handle) )) {
+            $line = trim($line);
+            if ('' === $line) {
+                continue;
+            }
+
+            $decoded = json_decode($line, true, 512, JSON_THROW_ON_ERROR);
+            if (! is_array($decoded)) {
+                throw new StorageException('JSONL import rows must be objects.');
+            }
+
+            $record = array();
+            foreach ($decoded as $key => $value) {
+                if (is_string($key)) {
+                    $record[ $key ] = $value;
+                }
+            }
+
+            yield $record;
+        }
     }
 }

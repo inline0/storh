@@ -13,6 +13,8 @@ $docs->putMany([
     ['slug' => 'about', 'kind' => 'page'],
 ]);
 
+$docs->putStream($largeIterable);
+
 $docs->exportJsonl(__DIR__ . '/pages.jsonl');
 $docs->importJsonl(__DIR__ . '/pages.jsonl');
 ```
@@ -24,6 +26,8 @@ $log->appendMany([
     ['type' => 'page.saved'],
     ['type' => 'page.rendered'],
 ]);
+
+$log->appendStream($largeIterable);
 ```
 
 Queue bulk APIs:

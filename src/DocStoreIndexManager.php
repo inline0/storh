@@ -79,11 +79,22 @@ final class DocStoreIndexManager
         $this->delete_directory($this->entries_root());
         AtomicFilesystem::ensure_directory($this->entries_root());
 
+        $buckets = array();
         $entries = 0;
+        $definitions = $this->definitions();
         foreach ($this->store->stream() as $record) {
-            $this->update_record($record->id(), $record->data(), null);
+            $this->collect_index_entries($buckets, $definitions, $record->id(), $record->data());
             $entries++;
+
+            if ($this->bucket_value_count($buckets) < 4096) {
+                continue;
+            }
+
+            $this->merge_index_buckets($buckets);
+            $buckets = array();
         }
+
+        $this->merge_index_buckets($buckets);
 
         return array(
             'fields'  => count($this->definitions()),
@@ -170,25 +181,9 @@ final class DocStoreIndexManager
             $this->remove_record($id, $old_data);
         }
 
-        foreach ($this->definitions() as $definition) {
-            $field = $definition['field'];
-            if (! array_key_exists($field, $data) || ! $this->indexable($data[ $field ])) {
-                continue;
-            }
-
-            $value = $data[ $field ];
-            AtomicFilesystem::write_atomic(
-                $this->eq_entry_path($field, $value, $id),
-                Jsonc::encode_object(array( 'id' => $id, 'field' => $field, 'value' => $value ))
-            );
-
-            if ($definition['range']) {
-                AtomicFilesystem::write_atomic(
-                    $this->range_entry_path($field, $value, $id),
-                    Jsonc::encode_object(array( 'id' => $id, 'field' => $field, 'value' => $value ))
-                );
-            }
-        }
+        $buckets = array();
+        $this->collect_index_entries($buckets, $this->definitions(), $id, $data);
+        $this->merge_index_buckets($buckets);
     }
 
     /**
@@ -202,9 +197,10 @@ final class DocStoreIndexManager
                 continue;
             }
 
-            @unlink($this->eq_entry_path($field, $data[ $field ], $id));
             if ($definition['range']) {
-                @unlink($this->range_entry_path($field, $data[ $field ], $id));
+                $this->append_range_entry($field, $data[ $field ], array(), array( $id ));
+            } else {
+                $this->remove_id_from_entry($this->eq_entry_path($field, $data[ $field ]), $this->value_key($data[ $field ]), $id);
             }
         }
     }
@@ -361,36 +357,21 @@ final class DocStoreIndexManager
         }
 
         $root = $this->eq_value_root($field, $value);
-        if (! is_dir($root)) {
+        if (! is_file($root)) {
+            $definition = $this->definitions()[ $field ] ?? null;
+            if (null !== $definition && $definition['range']) {
+                return $this->ids_for_range_value($field, $value, $limit);
+            }
+
             return array();
         }
 
-        $ids = array();
-        if (null !== $limit) {
-            $iterator = new \DirectoryIterator($root);
-            foreach ($iterator as $file) {
-                if (! $file->isFile() || 'jsonc' !== $file->getExtension()) {
-                    continue;
-                }
-
-                $ids[] = basename($file->getPathname(), '.jsonc');
-                if (count($ids) >= $limit) {
-                    return $ids;
-                }
-            }
-
-            return $ids;
-        }
-
-        foreach (glob($root . '/*.jsonc') ?: array() as $path) {
-            if (is_file($path)) {
-                $ids[] = basename($path, '.jsonc');
-            }
-        }
+        $entry = AtomicFilesystem::read_jsonc_object($root);
+        $ids = $this->ids_for_index_key($entry, $this->value_key($value));
 
         sort($ids);
 
-        return $ids;
+        return null === $limit ? $ids : array_slice($ids, 0, $limit);
     }
 
     /**
@@ -399,37 +380,101 @@ final class DocStoreIndexManager
     private function ids_for_range_condition(QueryCondition $condition): array
     {
         $root = $this->range_field_root($condition->field());
-        if (! is_dir($root)) {
+        if (! is_file($root)) {
             return array();
         }
 
-        $ids      = array();
-        $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS)
-        );
+        $ids = array();
+        $handle = @fopen($root, 'rb');
+        if (false === $handle) {
+            return array();
+        }
 
-        foreach ($iterator as $file) {
-            if (! $file instanceof \SplFileInfo || 'jsonc' !== $file->getExtension()) {
-                continue;
-            }
+        try {
+            while (false !== ( $line = fgets($handle) )) {
+                $value_object = $this->decode_index_line($line);
+                if (array() === $value_object) {
+                    continue;
+                }
 
-            $entry = AtomicFilesystem::read_jsonc_object($file->getPathname());
-            $id    = isset($entry['id']) && is_string($entry['id']) ? $entry['id'] : '';
-            $value = $entry['value'] ?? null;
-            if ('' === $id) {
-                continue;
-            }
+                $value = $value_object['value'] ?? null;
+                $key = isset($value_object['key']) && is_string($value_object['key']) ? $value_object['key'] : $this->range_key($value);
+                $record = new StorageRecord(UuidV7::min_for_timestamp_ms(0), array($condition->field() => $value));
+                if (! $condition->matches($record)) {
+                    continue;
+                }
 
-            $record = new StorageRecord($id, array($condition->field() => $value));
-            if ($condition->matches($record)) {
-                $ids[ $id ] = true;
+                foreach ($this->ids_from_value_entry($value_object) as $id) {
+                    $ids[ $key ][ $id ] = true;
+                }
+
+                $removed = isset($value_object['remove']) && is_array($value_object['remove']) ? $value_object['remove'] : array();
+                foreach ($removed as $id) {
+                    if (is_string($id)) {
+                        unset($ids[ $key ][ $id ]);
+                    }
+                }
             }
+        } finally {
+            fclose($handle);
+        }
+
+        $result = array();
+        foreach ($ids as $value_ids) {
+            foreach ($value_ids as $id => $_) {
+                $result[ $id ] = true;
+            }
+        }
+
+        $result = array_keys($result);
+        sort($result);
+
+        return $result;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function ids_for_range_value(string $field, mixed $value, ?int $limit = null): array
+    {
+        $path = $this->range_field_root($field);
+        if (! is_file($path)) {
+            return array();
+        }
+
+        $key = $this->range_key($value);
+        $ids = array();
+        $handle = @fopen($path, 'rb');
+        if (false === $handle) {
+            return array();
+        }
+
+        try {
+            while (false !== ( $line = fgets($handle) )) {
+                $entry = $this->decode_index_line($line);
+                if (($entry['key'] ?? null) !== $key || ($entry['value'] ?? null) !== $value) {
+                    continue;
+                }
+
+                foreach ($this->ids_from_value_entry($entry) as $id) {
+                    $ids[ $id ] = true;
+                }
+
+                $removed = isset($entry['remove']) && is_array($entry['remove']) ? $entry['remove'] : array();
+                foreach ($removed as $id) {
+                    if (is_string($id)) {
+                        unset($ids[ $id ]);
+                    }
+                }
+            }
+        } finally {
+            fclose($handle);
         }
 
         $result = array_keys($ids);
         sort($result);
 
-        return $result;
+        return null === $limit ? $result : array_slice($result, 0, $limit);
     }
 
     private function manifest_path(): string
@@ -449,22 +494,22 @@ final class DocStoreIndexManager
 
     private function eq_value_root(string $field, mixed $value): string
     {
-        return $this->entries_root() . '/eq/' . $this->field_key($field) . '/' . $this->value_key($value);
+        return $this->entries_root() . '/eq/' . $this->field_key($field) . '.jsonc';
     }
 
-    private function eq_entry_path(string $field, mixed $value, string $id): string
+    private function eq_entry_path(string $field, mixed $value): string
     {
-        return $this->eq_value_root($field, $value) . '/' . $id . '.jsonc';
+        return $this->eq_value_root($field, $value);
     }
 
     private function range_field_root(string $field): string
     {
-        return $this->entries_root() . '/range/' . $this->field_key($field);
+        return $this->entries_root() . '/range/' . $this->field_key($field) . '.jsonl';
     }
 
-    private function range_entry_path(string $field, mixed $value, string $id): string
+    private function range_entry_path(string $field, mixed $value): string
     {
-        return $this->range_field_root($field) . '/' . $this->range_key($value) . '/' . $id . '.jsonc';
+        return $this->range_field_root($field);
     }
 
     private function field_key(string $field): string
@@ -494,9 +539,271 @@ final class DocStoreIndexManager
         return 'z-' . $this->value_key($value);
     }
 
+    /**
+     * @param array<string, array{path: string, field: string, values: array<string, array{value: mixed, ids: array<string, true>}>}> $buckets
+     * @param array<string, array{field: string, unique: bool, range: bool}> $definitions
+     * @param array<string, mixed> $data
+     */
+    private function collect_index_entries(array &$buckets, array $definitions, string $id, array $data): void
+    {
+        foreach ($definitions as $definition) {
+            $field = $definition['field'];
+            if (! array_key_exists($field, $data) || ! $this->indexable($data[ $field ])) {
+                continue;
+            }
+
+            $value = $data[ $field ];
+            if ($definition['range']) {
+                $this->append_range_entry($field, $value, array( $id ), array());
+                continue;
+            }
+
+            $this->collect_index_entry(
+                $buckets,
+                $this->eq_entry_path($field, $value),
+                $field,
+                $this->value_key($value),
+                $value,
+                $id
+            );
+        }
+    }
+
+    /**
+     * @param array<string, array{path: string, field: string, values: array<string, array{value: mixed, ids: array<string, true>}>}> $buckets
+     */
+    private function collect_index_entry(array &$buckets, string $path, string $field, string $value_key, mixed $value, string $id): void
+    {
+        $buckets[ $path ] ??= array(
+            'path'   => $path,
+            'field'  => $field,
+            'values' => array(),
+        );
+
+        $buckets[ $path ]['values'][ $value_key ] ??= array(
+            'value' => $value,
+            'ids'   => array(),
+        );
+        $buckets[ $path ]['values'][ $value_key ]['ids'][ $id ] = true;
+    }
+
+    /**
+     * @param array<string, array{path: string, field: string, values: array<string, array{value: mixed, ids: array<string, true>}>}> $buckets
+     */
+    private function merge_index_buckets(array $buckets): void
+    {
+        foreach ($buckets as $bucket) {
+            $values = is_file($bucket['path'])
+                ? $this->values_from_field_entry(AtomicFilesystem::read_jsonc_object($bucket['path']))
+                : array();
+
+            foreach ($bucket['values'] as $key => $value_entry) {
+                $values[ $key ] ??= array(
+                    'value' => $value_entry['value'],
+                    'ids'   => array(),
+                );
+
+                foreach ($value_entry['ids'] as $id => $_) {
+                    $values[ $key ]['ids'][ $id ] = true;
+                }
+            }
+
+            $this->write_field_index($bucket['path'], $bucket['field'], $values);
+        }
+    }
+
+    /**
+     * @param array<string, array{value: mixed, ids: array<string, true>}> $values
+     */
+    private function write_field_index(string $path, string $field, array $values): void
+    {
+        ksort($values);
+        $encoded = array();
+        foreach ($values as $key => $value_entry) {
+            $ids = array_keys($value_entry['ids']);
+            sort($ids);
+
+            $encoded[ $key ] = array(
+                'value' => $value_entry['value'],
+                'ids'   => $ids,
+            );
+        }
+
+        AtomicFilesystem::write_atomic(
+            $path,
+            $this->encode_index_object(array( 'field' => $field, 'values' => $encoded ))
+        );
+    }
+
+    private function remove_id_from_entry(string $path, string $value_key, string $id): void
+    {
+        if (! is_file($path)) {
+            return;
+        }
+
+        $entry = AtomicFilesystem::read_jsonc_object($path);
+        $field = isset($entry['field']) && is_string($entry['field']) ? $entry['field'] : '';
+        if ('' === $field) {
+            return;
+        }
+
+        $values = $this->values_from_field_entry($entry);
+        if (! isset($values[ $value_key ])) {
+            return;
+        }
+
+        unset($values[ $value_key ]['ids'][ $id ]);
+        if (array() === $values[ $value_key ]['ids']) {
+            unset($values[ $value_key ]);
+        }
+
+        if (array() === $values) {
+            @unlink($path);
+            return;
+        }
+
+        $this->write_field_index($path, $field, $values);
+    }
+
+    /**
+     * @param array<string, mixed> $entry
+     * @return array<string, array{value: mixed, ids: array<string, true>}>
+     */
+    private function values_from_field_entry(array $entry): array
+    {
+        $values = array();
+        $items = isset($entry['values']) && is_array($entry['values']) ? $entry['values'] : array();
+        foreach ($items as $key => $value_entry) {
+            if (! is_string($key) || ! is_array($value_entry)) {
+                continue;
+            }
+
+            $value_object = $this->string_keyed($value_entry);
+            $values[ $key ] = array(
+                'value' => $value_object['value'] ?? null,
+                'ids'   => array_fill_keys($this->ids_from_value_entry($value_object), true),
+            );
+        }
+
+        return $values;
+    }
+
+    /**
+     * @param array<string, mixed> $entry
+     * @return list<string>
+     */
+    private function ids_for_index_key(array $entry, string $key): array
+    {
+        $values = isset($entry['values']) && is_array($entry['values']) ? $entry['values'] : array();
+        $value_entry = $values[ $key ] ?? null;
+        if (! is_array($value_entry)) {
+            return array();
+        }
+
+        return $this->ids_from_value_entry($this->string_keyed($value_entry));
+    }
+
+    /**
+     * @param array<string, mixed> $entry
+     * @return list<string>
+     */
+    private function ids_from_value_entry(array $entry): array
+    {
+        $ids = array();
+        $items = isset($entry['ids']) && is_array($entry['ids']) ? $entry['ids'] : array();
+        foreach ($items as $id) {
+            if (is_string($id) && UuidV7::is_valid($id)) {
+                $ids[] = $id;
+            }
+        }
+
+        return $ids;
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    private function encode_index_object(array $data): string
+    {
+        return json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR) . "\n";
+    }
+
+    /**
+     * @param list<string> $ids
+     * @param list<string> $remove
+     */
+    private function append_range_entry(string $field, mixed $value, array $ids, array $remove): void
+    {
+        if (array() === $ids && array() === $remove) {
+            return;
+        }
+
+        $path = $this->range_entry_path($field, $value);
+        AtomicFilesystem::ensure_directory(dirname($path));
+        $line = $this->encode_index_object(
+            array(
+                'key'    => $this->range_key($value),
+                'value'  => $value,
+                'ids'    => $ids,
+                'remove' => $remove,
+            )
+        );
+
+        if (false === @file_put_contents($path, $line, FILE_APPEND)) {
+            throw new StorageException('Could not write range index: ' . $path);
+        }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function decode_index_line(string $line): array
+    {
+        try {
+            $decoded = json_decode(trim($line), true, 512, JSON_THROW_ON_ERROR);
+        } catch (\Throwable) {
+            return array();
+        }
+
+        if (! is_array($decoded) || ( array() !== $decoded && array_is_list($decoded) )) {
+            return array();
+        }
+
+        return $this->string_keyed($decoded);
+    }
+
+    /**
+     * @param array<mixed> $value
+     * @return array<string, mixed>
+     */
+    private function string_keyed(array $value): array
+    {
+        $object = array();
+        foreach ($value as $key => $item) {
+            if (is_string($key)) {
+                $object[ $key ] = $item;
+            }
+        }
+
+        return $object;
+    }
+
     private function indexable(mixed $value): bool
     {
         return null === $value || is_scalar($value);
+    }
+
+    /**
+     * @param array<string, array{path: string, field: string, values: array<string, array{value: mixed, ids: array<string, true>}>}> $buckets
+     */
+    private function bucket_value_count(array $buckets): int
+    {
+        $count = 0;
+        foreach ($buckets as $bucket) {
+            $count += count($bucket['values']);
+        }
+
+        return $count;
     }
 
     private function assert_field(string $field): void

@@ -18,6 +18,7 @@ Alias of `DocPerFileStore`.
 
 - `put(array $data, ?string $id = null): StorageRecord`
 - `putMany(iterable $records): array`
+- `putStream(iterable $records): int`
 - `get(string $id): ?StorageRecord`
 - `delete(string $id): void`
 - `stream(?RecordQuery $query = null): Generator`
@@ -39,6 +40,7 @@ Alias of `SegmentedLogStore`.
 
 - `put(array $data, ?string $id = null): StorageRecord`
 - `appendMany(iterable $records): array`
+- `appendStream(iterable $records): int`
 - `get(string $id): ?StorageRecord`
 - `delete(string $id): void`
 - `stream(?RecordQuery $query = null): Generator`

@@ -133,6 +133,17 @@ final class AdvancedStorageTest extends TestCase
         $imported = new DocPerFileStore($this->root, 'imported', cache: Cache::memory());
         $this->assertSame(4, $imported->importJsonl($export));
         $this->assertSame(4, $imported->stats()['records']);
+        $streamed = new DocPerFileStore($this->root, 'streamed-docs', $this->id_generator(array_slice($ids, 6)));
+        $this->assertSame(
+            2,
+            $streamed->putStream(
+                array(
+                    array( 'slug' => 'stream-a', 'kind' => 'page' ),
+                    array( 'slug' => 'stream-b', 'kind' => 'page' ),
+                )
+            )
+        );
+        $this->assertSame(2, $streamed->stats()['records']);
         $this->assertTrue($store->health()['ok']);
         $this->assertTrue($store->verify()['ok']);
         $this->assertSame(3, $store->reindex()['fields']);
@@ -243,12 +254,11 @@ final class AdvancedStorageTest extends TestCase
         );
         $this->assertArrayHasKey('rangeField', $store->indexes()->definitions());
 
-        $rangeRoot = $store->collection_root() . '/.storh/indexes/entries/range/' . bin2hex('rangeField');
-        mkdir($rangeRoot . '/manual', 0777, true);
-        file_put_contents($rangeRoot . '/manual/not-json.txt', 'ignored');
-        \Storh\AtomicFilesystem::write_atomic(
-            $rangeRoot . '/manual/empty.jsonc',
-            Jsonc::encode_object(array( 'field' => 'rangeField', 'value' => 10 ))
+        $rangeRoot = $store->collection_root() . '/.storh/indexes/entries/range';
+        mkdir($rangeRoot, 0777, true);
+        file_put_contents(
+            $rangeRoot . '/' . bin2hex('rangeField') . '.jsonl',
+            json_encode(array( 'key' => 'manual', 'value' => 10 ), JSON_THROW_ON_ERROR) . "\n"
         );
         $this->assertSame(array(), $store->query()->where('rangeField')->gt(1)->get());
 
@@ -394,6 +404,21 @@ final class AdvancedStorageTest extends TestCase
         $this->assertTrue($store->repair()['ok']);
         $store->delete($ids[2]);
         $this->assertGreaterThanOrEqual(1, $store->stats()['deleted']);
+
+        $stream = new SegmentedLogStore($this->root, 'stream-events', 512, 1, $this->id_generator(array_slice($ids, 3)));
+        $this->assertSame(
+            3,
+            $stream->appendStream(
+                array(
+                    array( 'type' => 'streamed', 'value' => 4, 'blob' => str_repeat('x', 120) ),
+                    array( 'type' => 'streamed', 'value' => 5, 'blob' => str_repeat('x', 120) ),
+                    array( 'type' => 'streamed', 'value' => 6, 'blob' => str_repeat('x', 120) ),
+                )
+            )
+        );
+        $this->assertSame(3, $stream->query()->where('type')->eq('streamed')->count());
+        $reopened_stream = new SegmentedLogStore($this->root, 'stream-events', 512, 1);
+        $this->assertSame(5, $reopened_stream->get($ids[4])?->data()['value'] ?? null);
 
         $deleted = $store->retain()->olderThanMs(UuidV7::timestamp_ms($ids[0]))->compact();
         $this->assertSame(1, $deleted);

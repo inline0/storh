@@ -20,10 +20,10 @@ composer bench:compare build/bench-main.json build/bench-current.json
 
 Covered targets:
 
-- DocStore put/get/delete/stream
+- DocStore put, streaming put, get, delete, stream, and index build
 - indexed versus non-indexed DocStore query
-- SegmentedLog append, cursor reads, time-range reads, compaction
-- Queue enqueue, claim, complete, requeue
+- SegmentedLog append, streaming append, cursor reads, time-range reads, compaction
+- Queue enqueue, bulk enqueue, claim, bulk claim, complete, bulk complete, requeue
 - torn trailing line recovery
 - cold versus warm cache reads with hash, stat, or trusted validation
 
