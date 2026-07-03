@@ -36,6 +36,8 @@ final class DocPerFileStore implements FileStoreInterface
     /** @var array<string, array<string, mixed>>|null */
     private ?array $record_data_cache = null;
 
+    private ?bool $index_manifest_exists = null;
+
     public function __construct(
         private readonly string $root,
         private readonly string $collection,
@@ -85,8 +87,9 @@ final class DocPerFileStore implements FileStoreInterface
         }
 
         $record = new StorageRecord($id, $data);
-        $path = $this->record_path_for_id($id);
-        $this->write_record_file($path, $id, $data);
+        $directory = $this->record_directory_for_id($id);
+        $path = $directory . '/' . $id . '.jsonc';
+        $this->write_record_file($directory, $path, $id, $data);
         $this->remember_written_record($id, $path, $data);
 
         if (null !== $indexes) {
@@ -122,8 +125,9 @@ final class DocPerFileStore implements FileStoreInterface
                 $indexes->validate_unique($id, $data, $old?->data());
             }
 
-            $path = $this->record_path_for_id($id);
-            $this->write_record_file($path, $id, $data);
+            $directory = $this->record_directory_for_id($id);
+            $path = $directory . '/' . $id . '.jsonc';
+            $this->write_record_file($directory, $path, $id, $data);
             $this->remember_written_record($id, $path, $data);
 
             if ($has_indexes) {
@@ -162,8 +166,9 @@ final class DocPerFileStore implements FileStoreInterface
                 $indexes->validate_unique($id, $data, $old?->data());
             }
 
-            $path = $this->record_path_for_id($id);
-            $this->write_record_file($path, $id, $data);
+            $directory = $this->record_directory_for_id($id);
+            $path = $directory . '/' . $id . '.jsonc';
+            $this->write_record_file($directory, $path, $id, $data);
             $this->remember_written_record($id, $path, $data, false);
 
             if ($has_indexes) {
@@ -305,13 +310,20 @@ final class DocPerFileStore implements FileStoreInterface
             return array() === $this->index_manager->definitions() ? null : $this->index_manager;
         }
 
-        if (! is_file($this->collection_root() . '/.storh/indexes/manifest.jsonc')) {
+        if (! $this->has_index_manifest()) {
             return null;
         }
 
         $indexes = $this->indexes();
 
         return array() === $indexes->definitions() ? null : $indexes;
+    }
+
+    private function has_index_manifest(): bool
+    {
+        $this->index_manifest_exists ??= is_file($this->collection_root() . '/.storh/indexes/manifest.jsonc');
+
+        return $this->index_manifest_exists;
     }
 
     /**
@@ -497,7 +509,12 @@ final class DocPerFileStore implements FileStoreInterface
 
     private function record_path_for_id(string $id): string
     {
-        return $this->data_root() . '/' . substr($id, 24, 2) . '/' . $id . '.jsonc';
+        return $this->record_directory_for_id($id) . '/' . $id . '.jsonc';
+    }
+
+    private function record_directory_for_id(string $id): string
+    {
+        return $this->data_root() . '/' . substr($id, 24, 2);
     }
 
     private function assert_record_id(string $id, bool $generated): void
@@ -667,7 +684,7 @@ final class DocPerFileStore implements FileStoreInterface
     /**
      * @param array<string, mixed> $data
      */
-    private function write_record_file(string $path, string $id, array $data): void
+    private function write_record_file(string $directory, string $path, string $id, array $data): void
     {
         $contents = json_encode(
             array(
@@ -677,9 +694,8 @@ final class DocPerFileStore implements FileStoreInterface
             JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR
         ) . "\n";
 
-        $directory = dirname($path);
         $this->ensure_known_directory($directory);
-        $temp = $directory . '/.' . basename($path) . '.' . $this->temp_prefix . '.' . ++$this->temp_counter . '.tmp';
+        $temp = $directory . '/.' . $id . '.jsonc.' . $this->temp_prefix . '.' . ++$this->temp_counter . '.tmp';
         $handle = @fopen($temp, 'wb');
         if (false === $handle) {
             throw new StorageException('Could not open temporary storage file for writing: ' . $temp);

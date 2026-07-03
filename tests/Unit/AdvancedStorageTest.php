@@ -292,6 +292,20 @@ final class AdvancedStorageTest extends TestCase
         $this->assertSame($ids[259], $records[259]->id());
     }
 
+    public function test_doc_store_can_add_indexes_after_no_index_writes(): void
+    {
+        $ids = $this->fixed_ids(3);
+        $store = new DocPerFileStore($this->root, 'late-index', $this->id_generator($ids));
+
+        $store->put(array( 'kind' => 'page', 'slug' => 'one' ));
+        $store->indexes()->field('kind')->sync();
+        $store->put(array( 'kind' => 'page', 'slug' => 'two' ));
+
+        $records = $store->query()->where('kind')->eq('page')->get();
+
+        $this->assertSame(array( 'one', 'two' ), array_map(static fn($record): string => $record->data()['slug'], $records));
+    }
+
     public function test_query_builder_all_operators_without_indexes(): void
     {
         $store = new DocPerFileStore($this->root, 'operators', $this->id_generator($this->fixed_ids(5)));
