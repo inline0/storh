@@ -805,7 +805,7 @@ final class SegmentedLogStore implements FileStoreInterface
                             continue;
                         }
 
-                        $record = $this->record_from_envelope($envelope);
+                        UuidV7::assert_valid($id);
                         if (null === $output_handle) {
                             $opened        = $this->open_compaction_segment($token, $output_number);
                             $output_file   = $opened['file'];
@@ -817,26 +817,20 @@ final class SegmentedLogStore implements FileStoreInterface
                         $output_offset = ftell($output_handle);
                         $output_offset = false === $output_offset ? 0 : $output_offset;
 
-                        $output_line = $this->encode_line(
-                            array(
-                                'op'   => 'put',
-                                'id'   => $record->id(),
-                                'data' => $record->data(),
-                            )
-                        );
+                        $output_line = $this->compaction_line($line, $envelope);
                         AtomicFilesystem::write_all($output_handle, $output_line, $output_path);
                         $output_position = $output_offset + strlen($output_line);
 
                         if (0 === $output_records % $this->sparse_index_interval) {
-                            $output_offsets[] = array( $record->id(), $output_offset );
+                            $output_offsets[] = array( $id, $output_offset );
                         }
 
                         $output_records++;
-                        $output_min = null === $output_min || strcmp($record->id(), $output_min) < 0 ? $record->id() : $output_min;
-                        $output_max = null === $output_max || strcmp($record->id(), $output_max) > 0 ? $record->id() : $output_max;
+                        $output_min = null === $output_min || strcmp($id, $output_min) < 0 ? $id : $output_min;
+                        $output_max = null === $output_max || strcmp($id, $output_max) > 0 ? $id : $output_max;
 
                         $this->write_state_entry(
-                            $record->id(),
+                            $id,
                             array(
                                 'deleted' => false,
                                 'file'    => $output_file,
@@ -1437,6 +1431,29 @@ final class SegmentedLogStore implements FileStoreInterface
         );
 
         return strlen($json) . "\t" . hash('crc32b', $json) . "\t" . $json . "\n";
+    }
+
+    /**
+     * @param array{id: string, op: string, data?: mixed} $envelope
+     */
+    private function compaction_line(string $line, array $envelope): string
+    {
+        if (
+            'put' === $envelope['op'] &&
+            isset($envelope['data']) &&
+            is_array($envelope['data']) &&
+            str_ends_with($line, "\n")
+        ) {
+            return $line;
+        }
+
+        return $this->encode_line(
+            array(
+                'op'   => 'put',
+                'id'   => $envelope['id'],
+                'data' => $this->data_from_envelope($envelope),
+            )
+        );
     }
 
     /**
