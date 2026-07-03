@@ -461,6 +461,8 @@ final class LogQueue
             $this->apply_event($event);
             $this->log_offset = false === $offset ? $this->log_offset : $offset;
         }
+
+        fseek($handle, 0, SEEK_END);
     }
 
     private function replay_log(bool $truncate_torn): void
@@ -492,6 +494,8 @@ final class LogQueue
             $this->apply_event($event);
             $this->log_offset = false === $offset ? $this->log_offset : $offset;
         }
+
+        fseek($handle, 0, SEEK_END);
     }
 
     /**
@@ -499,7 +503,15 @@ final class LogQueue
      */
     private function append_event(array $event): void
     {
-        $this->append_events(array( $event ));
+        $path = $this->log_path();
+        $handle = $this->log_handle();
+
+        AtomicFilesystem::write_all($handle, $this->encode_line($event), $path);
+        $this->apply_event($event);
+        fflush($handle);
+
+        $offset = ftell($handle);
+        $this->log_offset = false === $offset ? $this->log_offset : $offset;
     }
 
     /**

@@ -624,6 +624,29 @@ JSONC
         $this->assertFalse($queue->verify()['ok']);
     }
 
+    public function test_log_queue_repairs_torn_line_before_single_append(): void
+    {
+        $ids   = $this->fixed_ids();
+        $queue = new LogQueue($this->root, 'torn-log-queue', $this->id_generator(array( $ids[0] )));
+        $path  = $this->root . '/torn-log-queue/queue.log';
+
+        $queue->enqueue(array( 'task' => 'one' ));
+        file_put_contents($path, "broken\n", FILE_APPEND);
+        unset($queue);
+
+        $repaired = new LogQueue($this->root, 'torn-log-queue', $this->id_generator(array( $ids[1] )));
+        $this->assertSame(array( 'pending' => 1, 'processing' => 0, 'done' => 0 ), $repaired->counts());
+
+        $repaired->enqueue(array( 'task' => 'two' ));
+
+        $contents = file_get_contents($path);
+        $this->assertIsString($contents);
+        $this->assertStringNotContainsString("broken\n", $contents);
+        $this->assertStringNotContainsString("\0", $contents);
+        $this->assertTrue($repaired->verify()['ok']);
+        $this->assertSame(array( 'pending' => 2, 'processing' => 0, 'done' => 0 ), $repaired->counts());
+    }
+
     public function test_log_queue_bulk_enqueue_claim_and_complete(): void
     {
         $ids   = $this->fixed_ids();
