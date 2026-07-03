@@ -21,7 +21,7 @@ export default defineConfig({
     light: "/logo-light.svg",
     dark: "/logo-dark.svg",
   },
-  icon: { light: "/icon.svg", dark: "/icon-dark.svg" },
+  icon: { light: "/icon.png", dark: "/icon-dark.png" },
   nav: {
     github: "inline0/storh",
   },

@@ -179,6 +179,11 @@ final class QueryBuilder
         return $this->limit;
     }
 
+    public function has_ordering(): bool
+    {
+        return null !== $this->order_field;
+    }
+
     public function matches(StorageRecord $record): bool
     {
         if (null !== $this->cursor && strcmp($record->id(), $this->cursor) <= 0) {

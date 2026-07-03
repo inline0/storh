@@ -7,6 +7,7 @@ namespace Storh\Tests\Unit;
 use PHPUnit\Framework\TestCase;
 use Storh\AtomicFilesystem;
 use Storh\Cache;
+use Storh\CacheValidation;
 use Storh\DirectoryQueue;
 use Storh\DocPerFileStore;
 use Storh\Jsonc;
@@ -503,6 +504,54 @@ final class AdvancedStorageTest extends TestCase
         $apcu->delete('x');
         $apcu->clear_prefix('x');
         $this->assertTrue(true);
+    }
+
+    public function test_smart_cache_validation_modes_keep_internal_writes_consistent(): void
+    {
+        $doc_ids = $this->fixed_ids(2);
+        $docs = new DocPerFileStore(
+            $this->root,
+            'trusted-docs',
+            $this->id_generator($doc_ids),
+            Cache::memory(10),
+            cache_validation: CacheValidation::TRUST
+        );
+
+        $docs->put(array( 'value' => 'cached' ));
+        $this->assertSame('cached', $docs->get($doc_ids[0])?->data()['value'] ?? null);
+
+        AtomicFilesystem::write_atomic(
+            $docs->path_for_id($doc_ids[0]),
+            Jsonc::encode_object(array( 'id' => $doc_ids[0], 'data' => array( 'value' => 'external' ) ))
+        );
+        $this->assertSame('cached', $docs->get($doc_ids[0])?->data()['value'] ?? null);
+
+        $docs->put(array( 'value' => 'internal' ), $doc_ids[0]);
+        $this->assertSame('internal', $docs->get($doc_ids[0])?->data()['value'] ?? null);
+
+        $log_ids = $this->fixed_ids(3);
+        $log = new SegmentedLogStore(
+            $this->root,
+            'trusted-log',
+            4096,
+            2,
+            $this->id_generator($log_ids),
+            Cache::memory(10),
+            cache_validation: CacheValidation::TRUST
+        );
+
+        $log->appendMany(array(array( 'id' => $log_ids[0], 'data' => array( 'value' => 'first' ) )));
+        $this->assertSame('first', $log->get($log_ids[0])?->data()['value'] ?? null);
+
+        $log->appendMany(array(array( 'id' => $log_ids[0], 'data' => array( 'value' => 'second' ) )));
+        $this->assertSame('second', $log->get($log_ids[0])?->data()['value'] ?? null);
+
+        try {
+            new DocPerFileStore($this->root, 'bad-cache-mode', cache_validation: 'never');
+            $this->fail('Expected cache validation mode failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('cache validation', $exception->getMessage());
+        }
     }
 
     public function test_cli_and_bench_scripts_run(): void

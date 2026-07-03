@@ -9,9 +9,16 @@ storh ships with small cache backends and no runtime dependency:
 
 ```php
 use Storh\Cache;
+use Storh\CacheValidation;
 
 $docs = new Storh\DocStore($root, 'pages', cache: Cache::memory(maxEntries: 10000));
 $docs = new Storh\DocStore($root, 'pages', cache: Cache::apcu('storh.pages'));
+$docs = new Storh\DocStore(
+    $root,
+    'pages',
+    cache: Cache::memory(maxEntries: 100000),
+    cache_validation: CacheValidation::TRUST
+);
 ```
 
 Cache layers:
@@ -22,8 +29,15 @@ Cache layers:
 - segmented-log state entries
 - sparse segment indexes
 
-Cached file reads validate existence, mtime, size, and content hash before
-returning a value, so external file changes are detected.
+Validation modes:
+
+- `CacheValidation::HASH`: validate existence, mtime, size, and content hash.
+- `CacheValidation::STAT`: validate existence, mtime, and size.
+- `CacheValidation::TRUST`: skip filesystem validation on hits and trust
+  explicit storh writes to invalidate cache entries.
+
+`HASH` is the default and detects external file changes. `TRUST` is the fastest
+mode for single-process or explicit-invalidation workloads.
 
 `Cache::apcu()` is optional. If APCu is unavailable or disabled for the current
 SAPI, it behaves as a no-op backend.

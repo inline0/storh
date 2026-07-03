@@ -16,8 +16,11 @@ final class DocPerFileStore implements FileStoreInterface
         private readonly string $collection,
         ?callable $id_generator = null,
         ?CacheInterface $cache = null,
-        private readonly ?Schema $schema = null
+        private readonly ?Schema $schema = null,
+        private readonly string $cache_validation = CacheValidation::HASH
     ) {
+        CacheValidation::assert_valid($this->cache_validation);
+
         if (null !== $this->schema && $this->schema->collection_name() !== $this->collection) {
             throw new StorageException('Schema collection does not match DocStore collection.');
         }
@@ -167,12 +170,17 @@ final class DocPerFileStore implements FileStoreInterface
     {
         $ids     = $this->indexes()->candidate_ids($query);
         $records = array();
+        $limit   = $query->limit_value();
+        $can_stop_early = null !== $limit && ! $query->has_ordering();
 
         if (null !== $ids) {
             foreach ($ids as $id) {
                 $record = $this->get($id);
                 if (null !== $record && $query->matches($record)) {
                     $records[] = $record;
+                    if ($can_stop_early && count($records) >= $limit) {
+                        return $records;
+                    }
                 }
             }
 
@@ -182,6 +190,9 @@ final class DocPerFileStore implements FileStoreInterface
         foreach ($this->stream() as $record) {
             if ($query->matches($record)) {
                 $records[] = $record;
+                if ($can_stop_early && count($records) >= $limit) {
+                    return $records;
+                }
             }
         }
 
@@ -404,17 +415,27 @@ final class DocPerFileStore implements FileStoreInterface
             return null;
         }
 
+        if (CacheValidation::TRUST === $this->cache_validation) {
+            if (false === $cached['exists']) {
+                return false;
+            }
+
+            $data = isset($cached['data']) && is_array($cached['data']) ? $cached['data'] : array();
+            /** @var array<string, mixed> $data */
+            return new StorageRecord($id, $data);
+        }
+
         clearstatcache(true, $path);
         $exists = is_file($path);
         $mtime  = $exists ? (int) filemtime($path) : 0;
         $size   = $exists ? (int) filesize($path) : -1;
-        $hash   = $exists ? (string) sha1_file($path) : '';
+        $hash   = $exists && CacheValidation::HASH === $this->cache_validation ? (string) sha1_file($path) : '';
 
         if (
             $exists !== $cached['exists'] ||
             $mtime !== $cached['mtime'] ||
             $size !== $cached['size'] ||
-            ( $exists && ( $cached['hash'] ?? '' ) !== $hash )
+            ( CacheValidation::HASH === $this->cache_validation && $exists && ( $cached['hash'] ?? '' ) !== $hash )
         ) {
             $this->cache->delete($this->cache_key($id));
             return null;
@@ -439,7 +460,7 @@ final class DocPerFileStore implements FileStoreInterface
                 'exists' => true,
                 'mtime'  => is_file($path) ? (int) filemtime($path) : 0,
                 'size'   => is_file($path) ? (int) filesize($path) : -1,
-                'hash'   => is_file($path) ? (string) sha1_file($path) : '',
+                'hash'   => is_file($path) && CacheValidation::HASH === $this->cache_validation ? (string) sha1_file($path) : '',
                 'data'   => $record->data(),
             )
         );

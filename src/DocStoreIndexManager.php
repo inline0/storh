@@ -204,8 +204,11 @@ final class DocStoreIndexManager
     public function candidate_ids(QueryBuilder $query): ?array
     {
         $all_candidates = array();
-        foreach ($query->groups() as $group) {
-            $group_ids = $this->candidate_ids_for_group($group);
+        $groups = $query->groups();
+        $limit = $this->candidate_limit($query, $groups);
+
+        foreach ($groups as $group) {
+            $group_ids = $this->candidate_ids_for_group($group, $limit);
             if (null === $group_ids) {
                 return null;
             }
@@ -213,10 +216,16 @@ final class DocStoreIndexManager
             foreach ($group_ids as $id) {
                 $all_candidates[ $id ] = true;
             }
+
+            if (null !== $limit && count($all_candidates) >= $limit) {
+                break;
+            }
         }
 
         $ids = array_keys($all_candidates);
-        sort($ids);
+        if (null === $limit) {
+            sort($ids);
+        }
 
         return $ids;
     }
@@ -249,10 +258,31 @@ final class DocStoreIndexManager
     }
 
     /**
+     * @param list<list<QueryCondition>> $groups
+     */
+    private function candidate_limit(QueryBuilder $query, array $groups): ?int
+    {
+        if ($query->has_ordering() || null !== $query->cursor_id() || null === $query->limit_value()) {
+            return null;
+        }
+
+        if (1 !== count($groups)) {
+            return null;
+        }
+
+        $group = $groups[0];
+        if (1 !== count($group)) {
+            return null;
+        }
+
+        return $query->limit_value();
+    }
+
+    /**
      * @param list<QueryCondition> $group
      * @return null|list<string>
      */
-    private function candidate_ids_for_group(array $group): ?array
+    private function candidate_ids_for_group(array $group, ?int $limit = null): ?array
     {
         $condition = $this->best_condition($group);
         if (null === $condition) {
@@ -260,14 +290,17 @@ final class DocStoreIndexManager
         }
 
         if ('eq' === $condition->operator()) {
-            return $this->ids_for_value($condition->field(), $condition->value());
+            return $this->ids_for_value($condition->field(), $condition->value(), $limit);
         }
 
         if ('in' === $condition->operator() && is_array($condition->value())) {
             $ids = array();
             foreach ($condition->value() as $value) {
-                foreach ($this->ids_for_value($condition->field(), $value) as $id) {
+                foreach ($this->ids_for_value($condition->field(), $value, $limit) as $id) {
                     $ids[ $id ] = true;
+                    if (null !== $limit && count($ids) >= $limit) {
+                        return array_keys($ids);
+                    }
                 }
             }
 
@@ -310,7 +343,7 @@ final class DocStoreIndexManager
     /**
      * @return list<string>
      */
-    private function ids_for_value(string $field, mixed $value): array
+    private function ids_for_value(string $field, mixed $value, ?int $limit = null): array
     {
         if (! $this->indexable($value)) {
             return array();
@@ -322,6 +355,22 @@ final class DocStoreIndexManager
         }
 
         $ids = array();
+        if (null !== $limit) {
+            $iterator = new \DirectoryIterator($root);
+            foreach ($iterator as $file) {
+                if (! $file->isFile() || 'jsonc' !== $file->getExtension()) {
+                    continue;
+                }
+
+                $ids[] = basename($file->getPathname(), '.jsonc');
+                if (count($ids) >= $limit) {
+                    return $ids;
+                }
+            }
+
+            return $ids;
+        }
+
         foreach (glob($root . '/*.jsonc') ?: array() as $path) {
             if (is_file($path)) {
                 $ids[] = basename($path, '.jsonc');

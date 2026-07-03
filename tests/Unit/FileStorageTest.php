@@ -269,6 +269,7 @@ JSONC
         $this->assertCount(1, $records);
         $this->assertSame($ids[1], $records[0]->id());
 
+        AtomicFilesystem::ensure_directory(dirname($store->path_for_id($ids[3])));
         file_put_contents($store->path_for_id($ids[3]), '{ broken');
         $errors  = array();
         $scanned = iterator_to_array(

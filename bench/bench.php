@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Storh\Cache;
+use Storh\CacheValidation;
 use Storh\DirectoryQueue;
 use Storh\DocPerFileStore;
 use Storh\RecordQuery;
@@ -11,10 +12,11 @@ use Storh\UuidV7;
 
 require dirname(__DIR__) . '/vendor/autoload.php';
 
-$options = getopt('', array( 'dataset::', 'engine::', 'output::' ));
+$options = getopt('', array( 'dataset::', 'engine::', 'output::', 'cache-validation::' ));
 $dataset = max(1, (int) ( $options['dataset'] ?? 1000 ));
 $engine  = (string) ( $options['engine'] ?? 'all' );
 $output  = (string) ( $options['output'] ?? dirname(__DIR__) . '/build/bench-current.json' );
+$cache_validation = CacheValidation::assert_valid((string) ( $options['cache-validation'] ?? CacheValidation::HASH ));
 $root    = sys_get_temp_dir() . '/storh-bench-' . getmypid() . '-' . bin2hex(random_bytes(4));
 
 mkdir($root, 0777, true);
@@ -26,6 +28,7 @@ try {
         'engine'  => $engine,
         'php'     => PHP_VERSION,
         'time'    => gmdate('c'),
+        'cacheValidation' => $cache_validation,
         'results' => array(),
     );
 
@@ -46,7 +49,7 @@ try {
     }
 
     if ('all' === $engine || 'cache' === $engine) {
-        $results['results']['cache'] = bench_cache($root, min($dataset, 10000));
+        $results['results']['cache'] = bench_cache($root, min($dataset, 100000), $cache_validation);
     }
 
     if (! is_dir(dirname($output))) {
@@ -188,12 +191,16 @@ function bench_recovery(string $root, int $dataset): array
 /**
  * @return array<string, float>
  */
-function bench_cache(string $root, int $dataset): array
+function bench_cache(string $root, int $dataset, string $cache_validation): array
 {
     $cache = Cache::memory($dataset + 10);
-    $store = new DocPerFileStore($root, 'cache', cache: $cache);
-    $ids   = array_map(static fn(int $i): string => $store->put(row($i))->id(), range(0, $dataset - 1));
+    $store = new DocPerFileStore($root, 'cache', cache: $cache, cache_validation: $cache_validation);
+    $ids   = array();
+    for ($i = 0; $i < $dataset; $i++) {
+        $ids[] = $store->put(row($i))->id();
+    }
 
+    $cache->clear_prefix('doc:cache:');
     $cold = timed(static function () use ($store, $ids): void {
         foreach ($ids as $id) {
             $store->get($id);

@@ -138,6 +138,8 @@ vendor/bin/storh reindex var/storh pages
 
 composer bench
 composer bench -- --dataset=100000 --engine=doc
+composer bench -- --dataset=100000 --engine=cache --cache-validation=trust
+composer bench:range -- --datasets=1000,10000,50000,100000
 composer bench:compare build/bench-main.json build/bench-current.json
 ```
 

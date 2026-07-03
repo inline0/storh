@@ -12,6 +12,9 @@ composer bench
 composer bench -- --dataset=100000 --engine=doc
 composer bench -- --dataset=100000 --engine=log
 composer bench -- --dataset=10000 --engine=queue
+composer bench -- --dataset=100000 --engine=cache --cache-validation=trust
+composer bench:range -- --datasets=1000,10000,50000,100000
+composer bench:range -- --datasets=100000 --engines=cache --memory-limit=512M
 composer bench:compare build/bench-main.json build/bench-current.json
 ```
 
@@ -22,10 +25,13 @@ Covered targets:
 - SegmentedLog append, cursor reads, time-range reads, compaction
 - Queue enqueue, claim, complete, requeue
 - torn trailing line recovery
-- cold versus warm cache reads
+- cold versus warm cache reads with hash, stat, or trusted validation
 
 Default output path:
 
 ```text
 build/bench-current.json
 ```
+
+Range runs write one JSON file per dataset and engine under
+`build/bench-ranges/`.

@@ -9,6 +9,11 @@ final class DirectoryQueue
     /** @var callable(): string */
     private mixed $id_generator;
 
+    /** @var null|list<string> */
+    private ?array $pending_claim_paths = null;
+
+    private int $pending_claim_offset = 0;
+
     public function __construct(
         private readonly string $root,
         private readonly string $name,
@@ -39,12 +44,19 @@ final class DirectoryQueue
             )
         );
 
+        $this->reset_pending_claim_paths();
+
         return $id;
     }
 
     public function claim(): ?StorageRecord
     {
-        foreach ($this->lane_files('pending') as $path) {
+        while (true) {
+            $path = $this->next_pending_claim_path();
+            if (null === $path) {
+                return null;
+            }
+
             $id     = basename($path, '.jsonc');
             $target = $this->lane_path('processing') . '/' . $id . '.jsonc';
 
@@ -52,8 +64,6 @@ final class DirectoryQueue
                 return $this->record_from_file($target, $id);
             }
         }
-
-        return null;
     }
 
     public function complete(string $id, bool $keep_done = true): void
@@ -89,6 +99,10 @@ final class DirectoryQueue
             if (@rename($path, $this->lane_path('pending') . '/' . $id . '.jsonc')) {
                 $count++;
             }
+        }
+
+        if ($count > 0) {
+            $this->reset_pending_claim_paths();
         }
 
         return $count;
@@ -206,6 +220,36 @@ final class DirectoryQueue
         sort($files);
 
         return array_values(array_filter($files, 'is_file'));
+    }
+
+    private function next_pending_claim_path(): ?string
+    {
+        while (true) {
+            if (
+                null === $this->pending_claim_paths ||
+                $this->pending_claim_offset >= count($this->pending_claim_paths)
+            ) {
+                $this->pending_claim_paths = $this->lane_files('pending');
+                $this->pending_claim_offset = 0;
+            }
+
+            if (array() === $this->pending_claim_paths) {
+                return null;
+            }
+
+            $path = $this->pending_claim_paths[ $this->pending_claim_offset ];
+            $this->pending_claim_offset++;
+
+            if (is_file($path)) {
+                return $path;
+            }
+        }
+    }
+
+    private function reset_pending_claim_paths(): void
+    {
+        $this->pending_claim_paths  = null;
+        $this->pending_claim_offset = 0;
     }
 
     private function record_from_file(string $path, string $fallback_id): StorageRecord
