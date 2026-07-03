@@ -6,7 +6,7 @@ namespace Storh;
 
 final class DocStoreIndexManager
 {
-    private const EQ_REBUILD_FLUSH_IDS = 65536;
+    private const EQ_REBUILD_FLUSH_IDS = 262144;
 
     private const RANGE_REBUILD_CHUNK_ENTRIES = 16384;
 
@@ -288,7 +288,7 @@ final class DocStoreIndexManager
             'in' => is_array($condition->value())
                 ? $this->count_for_values($condition->field(), $condition->value(), $limit)
                 : 0,
-            'gt', 'gte', 'lt', 'lte', 'between', 'prefix' => count($this->ids_for_range_condition($condition)),
+            'gt', 'gte', 'lt', 'lte', 'between', 'prefix' => $this->count_for_range_condition($condition),
             default => null,
         };
 
@@ -568,6 +568,12 @@ final class DocStoreIndexManager
         return $result;
     }
 
+    private function count_for_range_condition(QueryCondition $condition): int
+    {
+        return $this->count_range_condition_entries($this->range_field_root($condition->field()), $condition, true)
+            + $this->count_range_condition_entries($this->range_delta_field_root($condition->field()), $condition, false);
+    }
+
     /**
      * @return array{0: string|null, 1: bool, 2: string|null, 3: bool}|null
      */
@@ -756,6 +762,109 @@ final class DocStoreIndexManager
         } finally {
             fclose($handle);
         }
+    }
+
+    private function count_range_condition_entries(string $path, QueryCondition $condition, bool $sorted): int
+    {
+        if (! is_file($path)) {
+            return 0;
+        }
+
+        $handle = @fopen($path, 'rb');
+        if (false === $handle) {
+            return 0;
+        }
+
+        $count = 0;
+        $key_window = $this->range_key_window($condition);
+        $requires_value_match = null === $key_window;
+
+        try {
+            if ($sorted && null !== $key_window) {
+                fseek($handle, $this->range_seek_offset($condition->field(), $key_window));
+            }
+
+            while (false !== ( $line = fgets($handle) )) {
+                $line_key = null;
+                if (null !== $key_window) {
+                    $line_key = $this->range_line_key($line);
+                    if (null !== $line_key) {
+                        if ($sorted && $this->range_key_after_window($line_key, $key_window)) {
+                            break;
+                        }
+
+                        if (! $this->range_key_matches_window($line_key, $key_window)) {
+                            continue;
+                        }
+                    }
+                }
+
+                if ($requires_value_match) {
+                    $entry = $this->decode_index_line($line);
+                    if (
+                        array() === $entry ||
+                        ! $this->range_value_matches(
+                            $condition->operator(),
+                            $entry['value'] ?? null,
+                            $condition->value(),
+                            $condition->second_value()
+                        )
+                    ) {
+                        continue;
+                    }
+
+                    $count += $this->range_entry_count($entry);
+                    continue;
+                }
+
+                $count += $this->range_line_count($line);
+            }
+        } finally {
+            fclose($handle);
+        }
+
+        return $count;
+    }
+
+    private function range_line_count(string $line): int
+    {
+        $marker = ',"count":';
+        $offset = strpos($line, $marker);
+        if (false === $offset) {
+            throw new StorageException('Malformed range index count.');
+        }
+
+        $start = $offset + strlen($marker);
+        $negative = '-' === ( $line[ $start ] ?? '' );
+        if ($negative) {
+            $start++;
+        }
+
+        $end = $start;
+        $length = strlen($line);
+        while ($end < $length && ctype_digit($line[ $end ])) {
+            $end++;
+        }
+
+        if ($end === $start) {
+            throw new StorageException('Malformed range index count.');
+        }
+
+        $count = (int) substr($line, $start, $end - $start);
+
+        return $negative ? -$count : $count;
+    }
+
+    /**
+     * @param array<string, mixed> $entry
+     */
+    private function range_entry_count(array $entry): int
+    {
+        if (! isset($entry['count']) || ! is_int($entry['count'])) {
+            throw new StorageException('Malformed range index count.');
+        }
+
+        return $entry['count'];
     }
 
     /**
@@ -1008,6 +1117,7 @@ final class DocStoreIndexManager
             array(
                 'key'    => $key,
                 'value'  => $value,
+                'count'  => 1,
                 'ids'    => array( $id ),
                 'remove' => array(),
             )
@@ -1449,6 +1559,7 @@ final class DocStoreIndexManager
             array(
                 'key'    => $this->range_key($value),
                 'value'  => $value,
+                'count'  => count($ids) - count($remove),
                 'ids'    => $ids,
                 'remove' => $remove,
             )
