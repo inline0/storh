@@ -397,15 +397,26 @@ final class DocStoreIndexManager
         $operator = $condition->operator();
         $expected = $condition->value();
         $second_expected = $condition->second_value();
+        $key_window = $this->range_key_window($condition);
         try {
             while (false !== ( $line = fgets($handle) )) {
+                $line_key = null;
+                if (null !== $key_window) {
+                    $line_key = $this->range_line_key($line);
+                    if (null !== $line_key && ! $this->range_key_matches_window($line_key, $key_window)) {
+                        continue;
+                    }
+                }
+
                 $value_object = $this->decode_index_line($line);
                 if (array() === $value_object) {
                     continue;
                 }
 
                 $value = $value_object['value'] ?? null;
-                $key = isset($value_object['key']) && is_string($value_object['key']) ? $value_object['key'] : $this->range_key($value);
+                $key = isset($value_object['key']) && is_string($value_object['key'])
+                    ? $value_object['key']
+                    : ( $line_key ?? $this->range_key($value) );
                 if (! $this->range_value_matches($operator, $value, $expected, $second_expected)) {
                     continue;
                 }
@@ -436,6 +447,86 @@ final class DocStoreIndexManager
         sort($result);
 
         return $result;
+    }
+
+    /**
+     * @return array{0: string|null, 1: bool, 2: string|null, 3: bool}|null
+     */
+    private function range_key_window(QueryCondition $condition): ?array
+    {
+        $operator = $condition->operator();
+        $value = $condition->value();
+
+        if ('gt' === $operator || 'gte' === $operator) {
+            $key = $this->ordered_range_key($value);
+
+            return null === $key ? null : array( $key, 'gte' === $operator, null, true );
+        }
+
+        if ('lt' === $operator || 'lte' === $operator) {
+            $key = $this->ordered_range_key($value);
+
+            return null === $key ? null : array( null, true, $key, 'lte' === $operator );
+        }
+
+        if ('between' === $operator) {
+            $lower = $this->ordered_range_key($value);
+            $upper = $this->ordered_range_key($condition->second_value());
+
+            return null === $lower || null === $upper ? null : array( $lower, true, $upper, true );
+        }
+
+        return null;
+    }
+
+    private function ordered_range_key(mixed $value): ?string
+    {
+        if (is_int($value) && $value >= 0) {
+            return $this->range_key($value);
+        }
+
+        if (is_string($value) || is_bool($value)) {
+            return $this->range_key($value);
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array{0: string|null, 1: bool, 2: string|null, 3: bool} $window
+     */
+    private function range_key_matches_window(string $key, array $window): bool
+    {
+        [ $lower, $lower_inclusive, $upper, $upper_inclusive ] = $window;
+
+        if (null !== $lower) {
+            $comparison = strcmp($key, $lower);
+            if ($comparison < 0 || (0 === $comparison && ! $lower_inclusive)) {
+                return false;
+            }
+        }
+
+        if (null !== $upper) {
+            $comparison = strcmp($key, $upper);
+            if ($comparison > 0 || (0 === $comparison && ! $upper_inclusive)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function range_line_key(string $line): ?string
+    {
+        $prefix = '{"key":"';
+        if (! str_starts_with($line, $prefix)) {
+            return null;
+        }
+
+        $start = strlen($prefix);
+        $end = strpos($line, '"', $start);
+
+        return false === $end ? null : substr($line, $start, $end - $start);
     }
 
     /**
