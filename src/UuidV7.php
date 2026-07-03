@@ -108,7 +108,14 @@ final class UuidV7
 
     private static function increment_entropy(string $entropy): string
     {
-        for ($index = strlen($entropy) - 1; $index >= 0; $index--) {
+        $byte = ord($entropy[9]);
+        if ($byte < 255) {
+            $entropy[9] = chr($byte + 1);
+            return $entropy;
+        }
+
+        $entropy[9] = "\0";
+        for ($index = 8; $index >= 0; $index--) {
             $byte = ord($entropy[ $index ]);
             if ($byte < 255) {
                 $entropy[ $index ] = chr($byte + 1);
