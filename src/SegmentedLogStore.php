@@ -432,13 +432,7 @@ final class SegmentedLogStore implements FileStoreInterface
 
     private function recover_unlocked(): void
     {
-        foreach ($this->all_segments() as $segment) {
-            if (isset($segment['file']) && is_string($segment['file'])) {
-                $this->recover_segment($this->segment_path($segment['file']));
-            }
-        }
-
-        $this->replace_state_index($this->build_state_index());
+        $this->replace_state_index($this->build_state_index(true));
         $this->repair_manifest_stats_from_segments();
     }
 
@@ -1110,7 +1104,7 @@ final class SegmentedLogStore implements FileStoreInterface
     /**
      * @return array<string, array{deleted: bool, file: string, offset: int, aliases: list<array{file: string, offset: int}>}>
      */
-    private function build_state_index(): array
+    private function build_state_index(bool $truncate_torn = false): array
     {
         $state = array();
         $stats = array();
@@ -1121,7 +1115,12 @@ final class SegmentedLogStore implements FileStoreInterface
                 continue;
             }
 
-            $handle = @fopen($this->segment_path($file), 'rb');
+            $path = $this->segment_path($file);
+            if (! is_file($path)) {
+                continue;
+            }
+
+            $handle = @fopen($path, $truncate_torn ? 'c+b' : 'rb');
             if (false === $handle) {
                 continue;
             }
@@ -1130,6 +1129,7 @@ final class SegmentedLogStore implements FileStoreInterface
                 $min     = null;
                 $max     = null;
                 $records = 0;
+                $last_good_offset = 0;
                 while (true) {
                     $offset = ftell($handle);
                     $line   = fgets($handle);
@@ -1137,7 +1137,19 @@ final class SegmentedLogStore implements FileStoreInterface
                         break;
                     }
 
-                    $envelope      = $this->decode_line($line);
+                    try {
+                        $envelope = $this->decode_line($line);
+                    } catch (\Throwable $throwable) {
+                        if ($truncate_torn) {
+                            ftruncate($handle, max(0, $last_good_offset));
+                            break;
+                        }
+
+                        throw $throwable;
+                    }
+
+                    $line_end = ftell($handle);
+                    $last_good_offset = false === $line_end ? $last_good_offset : $line_end;
                     $id            = $envelope['id'];
                     $min           = null === $min || strcmp($id, $min) < 0 ? $id : $min;
                     $max           = null === $max || strcmp($id, $max) > 0 ? $id : $max;
@@ -1366,42 +1378,6 @@ final class SegmentedLogStore implements FileStoreInterface
         }
 
         return $envelope;
-    }
-
-    private function recover_segment(string $path): void
-    {
-        if (! is_file($path)) {
-            return;
-        }
-
-        $handle = @fopen($path, 'c+b');
-        // @codeCoverageIgnoreStart
-        if (false === $handle) {
-            throw new StorageException('Could not open segment for recovery.');
-        }
-        // @codeCoverageIgnoreEnd
-
-        $last_good_offset = 0;
-        try {
-            while (true) {
-                $offset = ftell($handle);
-                $line   = fgets($handle);
-                if (false === $offset || false === $line) {
-                    break;
-                }
-
-                try {
-                    $this->decode_line($line);
-                    $last_good_offset = (int) ftell($handle);
-                } catch (\Throwable) {
-                    break;
-                }
-            }
-
-            ftruncate($handle, max(0, $last_good_offset));
-        } finally {
-            fclose($handle);
-        }
     }
 
     /**
