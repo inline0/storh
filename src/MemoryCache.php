@@ -43,7 +43,9 @@ final class MemoryCache implements CacheInterface
             'tick'    => ++$this->tick,
         );
 
-        $this->evict();
+        if (count($this->items) > $this->max_entries) {
+            $this->evict();
+        }
     }
 
     public function delete(string $key): void
