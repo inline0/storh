@@ -11,6 +11,12 @@ final class LogQueue
 
     private bool $trusted_generated_ids;
 
+    private string $queue_path;
+
+    private string $log_file_path;
+
+    private string $lock_file_path;
+
     /** @var resource|null */
     private mixed $lock_handle = null;
 
@@ -43,6 +49,9 @@ final class LogQueue
     ) {
         $this->trusted_generated_ids = null === $id_generator;
         $this->id_generator          = $id_generator ?? static fn(): string => UuidV7::generate();
+        $this->queue_path            = rtrim($this->root, '/\\') . '/' . $this->name;
+        $this->log_file_path         = $this->queue_path . '/queue.log';
+        $this->lock_file_path        = $this->queue_path . '/queue.lock';
         AtomicFilesystem::ensure_directory($this->queue_root());
         $this->with_lock(function (): void {
             $this->replay_log(true);
@@ -377,7 +386,7 @@ final class LogQueue
             return $this->lock_handle;
         }
 
-        $handle = @fopen($this->queue_root() . '/queue.lock', 'c+b');
+        $handle = @fopen($this->lock_file_path, 'c+b');
         if (false === $handle) {
             throw new StorageException('Could not open log queue lock.');
         }
@@ -408,7 +417,7 @@ final class LogQueue
 
     private function queue_root(): string
     {
-        return rtrim($this->root, '/\\') . '/' . $this->name;
+        return $this->queue_path;
     }
 
     private function assert_job_id(string $id, bool $generated): void
@@ -422,15 +431,20 @@ final class LogQueue
 
     private function log_path(): string
     {
-        return $this->queue_root() . '/queue.log';
+        return $this->log_file_path;
     }
 
     private function sync_from_log(): void
     {
-        clearstatcache(true, $this->log_path());
-        $size = is_file($this->log_path()) ? (int) filesize($this->log_path()) : 0;
+        $path = $this->log_file_path;
+        clearstatcache(true, $path);
+        $size = is_file($path) ? (int) filesize($path) : 0;
         if ($size < $this->log_offset) {
             $this->replay_log(false);
+            return;
+        }
+
+        if ($size === $this->log_offset) {
             return;
         }
 
