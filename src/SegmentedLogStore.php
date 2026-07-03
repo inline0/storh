@@ -13,6 +13,29 @@ final class SegmentedLogStore implements FileStoreInterface
 
     private CacheInterface $cache;
 
+    /** @var null|array<string, array{deleted: bool, file: string, offset: int, aliases: list<array{file: string, offset: int}>}> */
+    private ?array $state = null;
+
+    /** @var array<string, array{min: string|null, max: string|null, records: int}> */
+    private array $segment_stats = array();
+
+    /** @var resource|null */
+    private mixed $lock_handle = null;
+
+    /** @var resource|null */
+    private mixed $active_handle = null;
+
+    private ?string $active_handle_file = null;
+
+    private ?string $active_handle_path = null;
+
+    /** @var array<string, mixed>|null */
+    private ?array $manifest_state = null;
+
+    private ?int $manifest_mtime = null;
+
+    private ?int $manifest_size = null;
+
     public function __construct(
         private readonly string $root,
         private readonly string $collection,
@@ -38,6 +61,14 @@ final class SegmentedLogStore implements FileStoreInterface
         $this->cache          = $cache ?? Cache::null();
         $this->collection_path = $this->partitioned_collection($collection, $partition, $partition_timestamp_ms);
         $this->initialize();
+    }
+
+    public function __destruct()
+    {
+        $this->close_active_handle();
+        if (is_resource($this->lock_handle)) {
+            fclose($this->lock_handle);
+        }
     }
 
     /**
@@ -248,11 +279,11 @@ final class SegmentedLogStore implements FileStoreInterface
      */
     public function state_index(): array
     {
-        if (! is_dir($this->state_index_root())) {
+        if (null === $this->state) {
             $this->recover();
         }
 
-        return $this->read_state_index();
+        return $this->state ?? array();
     }
 
     public function query(): QueryBuilder
@@ -393,38 +424,7 @@ final class SegmentedLogStore implements FileStoreInterface
         }
 
         $this->replace_state_index($this->build_state_index());
-    }
-
-    /**
-     * @return array<string, array{deleted: bool, file: string, offset: int, aliases: list<array{file: string, offset: int}>}>
-     */
-    private function read_state_index(): array
-    {
-        $state = array();
-
-        if (! is_dir($this->state_index_root())) {
-            return $state;
-        }
-
-        $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($this->state_index_root(), \FilesystemIterator::SKIP_DOTS)
-        );
-
-        foreach ($iterator as $file) {
-            if (! $file instanceof \SplFileInfo || 'jsonc' !== $file->getExtension()) {
-                continue;
-            }
-
-            $id    = basename($file->getPathname(), '.jsonc');
-            $entry = $this->read_state_entry_file($file->getPathname());
-            if (null !== $entry) {
-                $state[ $id ] = $entry;
-            }
-        }
-
-        ksort($state);
-
-        return $state;
+        $this->repair_manifest_stats_from_segments();
     }
 
     /**
@@ -436,23 +436,16 @@ final class SegmentedLogStore implements FileStoreInterface
         $active   = isset($manifest['active']) && is_array($manifest['active']) ? $manifest['active'] : array();
         $file     = isset($active['file']) && is_string($active['file']) ? $active['file'] : $this->segment_file_name(1);
         $path     = $this->segment_path($file);
-        $handle   = @fopen($path, 'c+b');
+        $handle   = $this->active_segment_handle($file, $path);
 
-        if (false === $handle) {
-            throw new StorageException('Could not open active segment.');
-        }
-
-        try {
-            fseek($handle, 0, SEEK_END);
-            $offset = ftell($handle);
-            $offset = false === $offset ? 0 : $offset;
-            AtomicFilesystem::write_all($handle, $this->encode_line($envelope), $path);
-            fflush($handle);
-        } finally {
-            fclose($handle);
-        }
+        fseek($handle, 0, SEEK_END);
+        $offset = ftell($handle);
+        $offset = false === $offset ? 0 : $offset;
+        AtomicFilesystem::write_all($handle, $this->encode_line($envelope), $path);
+        fflush($handle);
 
         $id = $envelope['id'];
+        $this->remember_segment_record($file, $id);
         $active_max = isset($active['max']) && is_string($active['max']) ? $active['max'] : null;
         $active_min = isset($active['min']) && is_string($active['min']) ? $active['min'] : null;
         $active_records = isset($active['records']) && is_int($active['records']) ? $active['records'] : 0;
@@ -463,7 +456,6 @@ final class SegmentedLogStore implements FileStoreInterface
             'records' => $active_records + 1,
         );
 
-        $this->write_manifest($manifest);
         $this->write_state_entry(
             $id,
             array(
@@ -476,6 +468,7 @@ final class SegmentedLogStore implements FileStoreInterface
 
         clearstatcache(true, $path);
         if (is_file($path) && filesize($path) >= $this->max_segment_bytes) {
+            $this->write_manifest($manifest);
             $this->roll_active_segment();
         }
     }
@@ -488,6 +481,8 @@ final class SegmentedLogStore implements FileStoreInterface
         if (array() === $envelopes) {
             return;
         }
+
+        $this->close_active_handle();
 
         $manifest = $this->manifest();
         $active   = isset($manifest['active']) && is_array($manifest['active']) ? $manifest['active'] : array();
@@ -511,6 +506,7 @@ final class SegmentedLogStore implements FileStoreInterface
                 AtomicFilesystem::write_all($handle, $this->encode_line($envelope), $path);
 
                 $id = $envelope['id'];
+                $this->remember_segment_record($file, $id);
                 $active_max = null === $active_max || strcmp($id, $active_max) > 0 ? $id : $active_max;
                 $active_min = null === $active_min || strcmp($id, $active_min) < 0 ? $id : $active_min;
                 $active_records++;
@@ -565,7 +561,6 @@ final class SegmentedLogStore implements FileStoreInterface
                 'min'     => $active_min,
                 'records' => $active_records,
             );
-            $this->write_manifest($manifest);
         } finally {
             if (is_resource($handle)) {
                 fflush($handle);
@@ -578,16 +573,19 @@ final class SegmentedLogStore implements FileStoreInterface
     {
         $manifest = $this->manifest();
         $active   = isset($manifest['active']) && is_array($manifest['active']) ? $manifest['active'] : array();
-        $active_records = isset($active['records']) && is_int($active['records']) ? $active['records'] : 0;
+        $file = isset($active['file']) && is_string($active['file']) ? $active['file'] : $this->segment_file_name(1);
+        $stats = $this->segment_stats[ $file ] ?? null;
+        $active_records = is_array($stats) ? $stats['records'] : ( isset($active['records']) && is_int($active['records']) ? $active['records'] : 0 );
         if (0 === $active_records) {
             return;
         }
 
-        $file = isset($active['file']) && is_string($active['file']) ? $active['file'] : $this->segment_file_name(1);
         $path = $this->segment_path($file);
         if (! is_file($path)) {
             throw new StorageException('Could not roll missing active segment.');
         }
+
+        $this->close_active_handle();
 
         $index = $this->index_file_name_for_segment($file);
         $this->write_sparse_index_to($this->segment_path($index), $this->segment_offsets($file));
@@ -596,8 +594,8 @@ final class SegmentedLogStore implements FileStoreInterface
         $sealed[]   = array(
             'file'    => $file,
             'index'   => $index,
-            'max'     => $active['max'] ?? null,
-            'min'     => $active['min'] ?? null,
+            'max'     => is_array($stats) ? $stats['max'] : ( $active['max'] ?? null ),
+            'min'     => is_array($stats) ? $stats['min'] : ( $active['min'] ?? null ),
             'records' => $active_records,
         );
         $next_segment = isset($manifest['nextSegment']) && is_int($manifest['nextSegment'])
@@ -616,6 +614,11 @@ final class SegmentedLogStore implements FileStoreInterface
         );
 
         @touch($this->segment_path($active_new));
+        $this->segment_stats[ $active_new ] = array(
+            'min'     => null,
+            'max'     => null,
+            'records' => 0,
+        );
         $this->write_manifest($manifest);
     }
 
@@ -794,6 +797,11 @@ final class SegmentedLogStore implements FileStoreInterface
 
         if (0 === $records) {
             @unlink($path);
+            $this->segment_stats[ $file ] = array(
+                'min'     => $min,
+                'max'     => $max,
+                'records' => 0,
+            );
 
             return array(
                 'file'      => $file,
@@ -807,6 +815,11 @@ final class SegmentedLogStore implements FileStoreInterface
 
         $index_file = $this->index_file_name_for_segment($file);
         $this->write_sparse_entries_to($this->segment_path($index_file), $offsets);
+        $this->segment_stats[ $file ] = array(
+            'min'     => $min,
+            'max'     => $max,
+            'records' => $records,
+        );
 
         return array(
             'file'      => $file,
@@ -823,7 +836,24 @@ final class SegmentedLogStore implements FileStoreInterface
      */
     private function manifest(): array
     {
-        return $this->read_cached_jsonc_object($this->manifest_path(), $this->manifest_cache_key());
+        $path = $this->manifest_path();
+        clearstatcache(true, $path);
+        $mtime = is_file($path) ? (int) filemtime($path) : 0;
+        $size  = is_file($path) ? (int) filesize($path) : -1;
+
+        if (
+            null !== $this->manifest_state &&
+            $this->manifest_mtime === $mtime &&
+            $this->manifest_size === $size
+        ) {
+            return $this->manifest_state;
+        }
+
+        $this->manifest_state = AtomicFilesystem::read_jsonc_object($path);
+        $this->manifest_mtime = $mtime;
+        $this->manifest_size  = $size;
+
+        return $this->manifest_state;
     }
 
     /**
@@ -831,8 +861,61 @@ final class SegmentedLogStore implements FileStoreInterface
      */
     private function write_manifest(array $manifest): void
     {
-        AtomicFilesystem::write_atomic($this->manifest_path(), Jsonc::encode_object($manifest));
+        $path = $this->manifest_path();
+        AtomicFilesystem::write_atomic($path, Jsonc::encode_object($manifest));
+        clearstatcache(true, $path);
+        $this->manifest_state = $manifest;
+        $this->manifest_mtime = is_file($path) ? (int) filemtime($path) : 0;
+        $this->manifest_size  = is_file($path) ? (int) filesize($path) : -1;
         $this->cache->delete($this->manifest_cache_key());
+    }
+
+    private function repair_manifest_stats_from_segments(): void
+    {
+        $manifest = $this->manifest();
+
+        if (isset($manifest['sealed']) && is_array($manifest['sealed'])) {
+            $sealed = array();
+            foreach ($manifest['sealed'] as $index => $segment) {
+                if (! is_array($segment) || ! isset($segment['file']) || ! is_string($segment['file'])) {
+                    $sealed[ $index ] = $segment;
+                    continue;
+                }
+
+                $stats = $this->segment_stats_for($segment['file']);
+                $segment['min']     = $stats['min'];
+                $segment['max']     = $stats['max'];
+                $segment['records'] = $stats['records'];
+                $sealed[ $index ] = $segment;
+            }
+            $manifest['sealed'] = $sealed;
+        }
+
+        if (isset($manifest['active']) && is_array($manifest['active'])) {
+            $active_file = isset($manifest['active']['file']) && is_string($manifest['active']['file'])
+                ? $manifest['active']['file']
+                : '';
+            if ('' !== $active_file) {
+                $stats = $this->segment_stats_for($active_file);
+                $manifest['active']['min']     = $stats['min'];
+                $manifest['active']['max']     = $stats['max'];
+                $manifest['active']['records'] = $stats['records'];
+            }
+        }
+
+        $this->write_manifest($manifest);
+    }
+
+    /**
+     * @return array{min: string|null, max: string|null, records: int}
+     */
+    private function segment_stats_for(string $file): array
+    {
+        return $this->segment_stats[ $file ] ?? array(
+            'min'     => null,
+            'max'     => null,
+            'records' => 0,
+        );
     }
 
     /**
@@ -901,16 +984,16 @@ final class SegmentedLogStore implements FileStoreInterface
         $lower = $query->lower_id();
         $upper = $query->upper_id();
 
+        $segment_stats = $this->segment_stats;
+
         return array_values(
             array_filter(
                 $this->all_segments(),
-                static function (array $segment) use ($after, $lower, $upper): bool {
-                    if (isset($segment['records']) && is_int($segment['records']) && 0 === $segment['records']) {
-                        return false;
-                    }
-
-                    $min = isset($segment['min']) && is_string($segment['min']) ? $segment['min'] : null;
-                    $max = isset($segment['max']) && is_string($segment['max']) ? $segment['max'] : null;
+                static function (array $segment) use ($after, $lower, $upper, $segment_stats): bool {
+                    $file = isset($segment['file']) && is_string($segment['file']) ? $segment['file'] : '';
+                    $stats = '' !== $file && isset($segment_stats[ $file ]) ? $segment_stats[ $file ] : null;
+                    $min = is_array($stats) ? $stats['min'] : ( isset($segment['min']) && is_string($segment['min']) ? $segment['min'] : null );
+                    $max = is_array($stats) ? $stats['max'] : ( isset($segment['max']) && is_string($segment['max']) ? $segment['max'] : null );
 
                     if (null === $min || null === $max) {
                         return true;
@@ -968,6 +1051,7 @@ final class SegmentedLogStore implements FileStoreInterface
     private function build_state_index(): array
     {
         $state = array();
+        $stats = array();
 
         foreach ($this->all_segments() as $segment) {
             $file = isset($segment['file']) && is_string($segment['file']) ? $segment['file'] : '';
@@ -981,6 +1065,9 @@ final class SegmentedLogStore implements FileStoreInterface
             }
 
             try {
+                $min     = null;
+                $max     = null;
+                $records = 0;
                 while (true) {
                     $offset = ftell($handle);
                     $line   = fgets($handle);
@@ -990,6 +1077,9 @@ final class SegmentedLogStore implements FileStoreInterface
 
                     $envelope      = $this->decode_line($line);
                     $id            = $envelope['id'];
+                    $min           = null === $min || strcmp($id, $min) < 0 ? $id : $min;
+                    $max           = null === $max || strcmp($id, $max) > 0 ? $id : $max;
+                    $records++;
                     $state[ $id ] = array(
                         'deleted' => 'delete' === $envelope['op'],
                         'file'    => $file,
@@ -997,12 +1087,19 @@ final class SegmentedLogStore implements FileStoreInterface
                         'aliases' => array(),
                     );
                 }
+
+                $stats[ $file ] = array(
+                    'min'     => $min,
+                    'max'     => $max,
+                    'records' => $records,
+                );
             } finally {
                 fclose($handle);
             }
         }
 
         ksort($state);
+        $this->segment_stats = $stats;
 
         return $state;
     }
@@ -1035,53 +1132,11 @@ final class SegmentedLogStore implements FileStoreInterface
      */
     private function state_entry(string $id): ?array
     {
-        $path = $this->state_entry_path($id);
-        if (! is_file($path)) {
-            if (! is_dir($this->state_index_root())) {
-                $this->recover();
-            }
-
-            if (! is_file($path)) {
-                return null;
-            }
+        if (null === $this->state) {
+            $this->recover();
         }
 
-        return $this->read_state_entry_file($path);
-    }
-
-    /**
-     * @return null|array{deleted: bool, file: string, offset: int, aliases: list<array{file: string, offset: int}>}
-     */
-    private function read_state_entry_file(string $path): ?array
-    {
-        $id    = basename($path, '.jsonc');
-        $entry = $this->read_cached_jsonc_object($path, $this->state_cache_key($id));
-        if (! isset($entry['file'], $entry['offset']) || ! is_string($entry['file']) || ! is_int($entry['offset'])) {
-            return null;
-        }
-
-        $aliases = array();
-        $entry_aliases = isset($entry['aliases']) && is_array($entry['aliases']) ? $entry['aliases'] : array();
-        foreach ($entry_aliases as $alias) {
-            if (
-                is_array($alias) &&
-                isset($alias['file'], $alias['offset']) &&
-                is_string($alias['file']) &&
-                is_int($alias['offset'])
-            ) {
-                $aliases[] = array(
-                    'file'   => $alias['file'],
-                    'offset' => $alias['offset'],
-                );
-            }
-        }
-
-        return array(
-            'deleted' => true === ( $entry['deleted'] ?? false ),
-            'file'    => $entry['file'],
-            'offset'  => $entry['offset'],
-            'aliases' => $aliases,
-        );
+        return $this->state[ $id ] ?? null;
     }
 
     /**
@@ -1100,18 +1155,13 @@ final class SegmentedLogStore implements FileStoreInterface
             $encoded['aliases'] = $aliases;
         }
 
-        $path = $this->state_entry_path($id);
-        $contents = Jsonc::encode_object($encoded);
-
-        if ($atomic) {
-            AtomicFilesystem::write_atomic($path, $contents);
-        } else {
-            AtomicFilesystem::ensure_directory(dirname($path));
-            if (false === @file_put_contents($path, $contents)) {
-                throw new StorageException('Could not write state index entry: ' . $id);
-            }
-        }
-
+        $this->state ??= array();
+        $this->state[ $id ] = array(
+            'deleted' => $encoded['deleted'],
+            'file'    => $encoded['file'],
+            'offset'  => $encoded['offset'],
+            'aliases' => isset($encoded['aliases']) && is_array($encoded['aliases']) ? $encoded['aliases'] : array(),
+        );
         $this->cache->delete($this->state_cache_key($id));
     }
 
@@ -1120,41 +1170,9 @@ final class SegmentedLogStore implements FileStoreInterface
      */
     private function replace_state_index(array $state): void
     {
-        AtomicFilesystem::ensure_directory($this->state_index_root());
+        $this->delete_directory($this->state_index_root());
         $this->cache->clear_prefix($this->state_cache_prefix());
-        $seen = array();
-
-        foreach ($state as $id => $entry) {
-            $this->write_state_entry($id, $entry, false);
-            $seen[ $id ] = true;
-        }
-
-        $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($this->state_index_root(), \FilesystemIterator::SKIP_DOTS),
-            \RecursiveIteratorIterator::CHILD_FIRST
-        );
-
-        foreach ($iterator as $file) {
-            // @codeCoverageIgnoreStart
-            if (! $file instanceof \SplFileInfo) {
-                continue;
-            }
-            // @codeCoverageIgnoreEnd
-
-            if ($file->isDir()) {
-                @rmdir($file->getPathname());
-                continue;
-            }
-
-            if ('jsonc' !== $file->getExtension()) {
-                continue;
-            }
-
-            $id = basename($file->getPathname(), '.jsonc');
-            if (! isset($seen[ $id ])) {
-                @unlink($file->getPathname());
-            }
-        }
+        $this->state = $state;
     }
 
     /**
@@ -1389,13 +1407,19 @@ final class SegmentedLogStore implements FileStoreInterface
     private function with_lock(callable $callback): mixed
     {
         AtomicFilesystem::ensure_directory($this->collection_root());
-        $handle = @fopen($this->collection_root() . '/collection.lock', 'c');
-        if (false === $handle) {
+        if (! is_resource($this->lock_handle)) {
+            $handle = @fopen($this->collection_root() . '/collection.lock', 'c');
+            if (false !== $handle) {
+                $this->lock_handle = $handle;
+            }
+        }
+
+        if (! is_resource($this->lock_handle)) {
             throw new StorageException('Could not open collection lock.');
         }
 
         try {
-            if (! flock($handle, LOCK_EX)) {
+            if (! flock($this->lock_handle, LOCK_EX)) {
                 // @codeCoverageIgnoreStart
                 throw new StorageException('Could not acquire collection lock.');
                 // @codeCoverageIgnoreEnd
@@ -1403,8 +1427,7 @@ final class SegmentedLogStore implements FileStoreInterface
 
             return $callback();
         } finally {
-            flock($handle, LOCK_UN);
-            fclose($handle);
+            flock($this->lock_handle, LOCK_UN);
         }
     }
 
@@ -1423,6 +1446,59 @@ final class SegmentedLogStore implements FileStoreInterface
         return $this->segments_root() . '/' . $file;
     }
 
+    /**
+     * @return resource
+     */
+    private function active_segment_handle(string $file, string $path): mixed
+    {
+        if (
+            is_resource($this->active_handle) &&
+            $this->active_handle_file === $file &&
+            $this->active_handle_path === $path
+        ) {
+            return $this->active_handle;
+        }
+
+        $this->close_active_handle();
+        $handle = @fopen($path, 'c+b');
+        if (false === $handle) {
+            throw new StorageException('Could not open active segment.');
+        }
+
+        $this->active_handle      = $handle;
+        $this->active_handle_file = $file;
+        $this->active_handle_path = $path;
+
+        return $handle;
+    }
+
+    private function close_active_handle(): void
+    {
+        if (is_resource($this->active_handle)) {
+            fflush($this->active_handle);
+            fclose($this->active_handle);
+        }
+
+        $this->active_handle      = null;
+        $this->active_handle_file = null;
+        $this->active_handle_path = null;
+    }
+
+    private function remember_segment_record(string $file, string $id): void
+    {
+        $stats = $this->segment_stats[ $file ] ?? array(
+            'min'     => null,
+            'max'     => null,
+            'records' => 0,
+        );
+
+        $stats['min'] = null === $stats['min'] || strcmp($id, $stats['min']) < 0 ? $id : $stats['min'];
+        $stats['max'] = null === $stats['max'] || strcmp($id, $stats['max']) > 0 ? $id : $stats['max'];
+        $stats['records']++;
+
+        $this->segment_stats[ $file ] = $stats;
+    }
+
     private function manifest_path(): string
     {
         return $this->collection_root() . '/manifest.jsonc';
@@ -1433,21 +1509,11 @@ final class SegmentedLogStore implements FileStoreInterface
         return $this->collection_root() . '/index';
     }
 
-    private function state_entry_path(string $id): string
-    {
-        return $this->state_entry_path_for_root($this->state_index_root(), $id);
-    }
-
-    private function state_entry_path_for_root(string $root, string $id): string
-    {
-        UuidV7::assert_valid($id);
-
-        return rtrim($root, '/\\') . '/' . substr($id, 0, 2) . '/' . substr($id, 2, 2) . '/' . $id . '.jsonc';
-    }
-
     private function delete_state_entry(string $id): void
     {
-        @unlink($this->state_entry_path($id));
+        if (null !== $this->state) {
+            unset($this->state[ $id ]);
+        }
         $this->cache->delete($this->state_cache_key($id));
     }
 

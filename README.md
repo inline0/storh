@@ -98,8 +98,9 @@ path. It is best for point reads and modest field scans.
 It is best for append-heavy workflows, cursor pagination, time-range scans, and
 compaction.
 
-`Queue` stores jobs in `pending`, `processing`, and `done` lanes. Claims and
-completions are atomic directory renames.
+`Queue` stores jobs in sharded `pending`, `processing`, and `done` lanes. Claims
+and completions are atomic directory renames, with same-process claim caching for
+jobs enqueued by the current queue instance.
 
 ## Querying and Indexes
 

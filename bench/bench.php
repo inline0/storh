@@ -41,15 +41,15 @@ try {
     }
 
     if ('all' === $engine || 'queue' === $engine) {
-        $results['results']['queue'] = bench_queue($root, min($dataset, 10000));
+        $results['results']['queue'] = bench_queue($root, $dataset);
     }
 
     if ('all' === $engine || 'recovery' === $engine) {
-        $results['results']['recovery'] = bench_recovery($root, min($dataset, 10000));
+        $results['results']['recovery'] = bench_recovery($root, $dataset);
     }
 
     if ('all' === $engine || 'cache' === $engine) {
-        $results['results']['cache'] = bench_cache($root, min($dataset, 100000), $cache_validation);
+        $results['results']['cache'] = bench_cache($root, $dataset, $cache_validation);
     }
 
     if (! is_dir(dirname($output))) {
@@ -174,7 +174,10 @@ function bench_queue(string $root, int $dataset): array
 function bench_recovery(string $root, int $dataset): array
 {
     $store = new SegmentedLogStore($root, 'recover', 16384);
-    $store->appendMany(array_map(static fn(int $i): array => row($i), range(0, $dataset - 1)));
+    for ($i = 0; $i < $dataset; $i++) {
+        $store->put(row($i));
+    }
+
     $manifest = Storh\AtomicFilesystem::read_jsonc_object($root . '/recover/manifest.jsonc');
     $active   = $manifest['active']['file'] ?? '';
     if (is_string($active) && '' !== $active) {

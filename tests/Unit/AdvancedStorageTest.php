@@ -443,11 +443,11 @@ final class AdvancedStorageTest extends TestCase
         $first = $queue->claim();
         $this->assertNotNull($first);
         $queue->complete($first->id());
-        touch($this->root . '/queue/done/' . $first->id() . '.jsonc', time() - 100);
+        touch($this->queue_record_path('queue', 'done', $first->id()), time() - 100);
 
         $second = $queue->claim();
         $this->assertNotNull($second);
-        touch($this->root . '/queue/processing/' . $second->id() . '.jsonc', time() - 100);
+        touch($this->queue_record_path('queue', 'processing', $second->id()), time() - 100);
 
         $this->assertSame(1, $queue->purgeDone(10));
         $this->assertSame(1, $queue->repair(10)['requeued']);
@@ -461,7 +461,8 @@ final class AdvancedStorageTest extends TestCase
         $queue->complete($recent->id());
         $this->assertSame(0, $queue->purgeDone(1000));
 
-        file_put_contents($this->root . '/queue/pending/' . $ids[3] . '.jsonc', '{ broken');
+        AtomicFilesystem::ensure_directory(dirname($this->queue_record_path('queue', 'pending', $ids[3])));
+        file_put_contents($this->queue_record_path('queue', 'pending', $ids[3]), '{ broken');
         $this->assertFalse($queue->verify()['ok']);
     }
 
@@ -599,5 +600,10 @@ final class AdvancedStorageTest extends TestCase
             static fn(int $index): string => UuidV7::generate(1_700_000_000_000 + $index),
             range(0, $count - 1)
         );
+    }
+
+    private function queue_record_path(string $queue, string $lane, string $id): string
+    {
+        return $this->root . '/' . $queue . '/' . $lane . '/' . substr($id, 9, 2) . '/' . $id . '.jsonc';
     }
 }

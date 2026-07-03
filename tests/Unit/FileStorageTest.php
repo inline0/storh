@@ -502,7 +502,7 @@ JSONC
         $this->assertSame($ids[0], $claimed?->id());
         $this->assertSame(array( 'pending' => 1, 'processing' => 1, 'done' => 0 ), $queue->counts());
 
-        touch($this->root . '/queue/processing/' . $ids[0] . '.jsonc', time() - 100);
+        touch($this->queue_record_path('queue', 'processing', $ids[0]), time() - 100);
         $this->assertSame(1, $queue->requeue_timed_out(10));
         $this->assertSame(array( 'pending' => 2, 'processing' => 0, 'done' => 0 ), $queue->counts());
 
@@ -527,7 +527,7 @@ JSONC
         $queue->enqueue(array( 'task' => 'one' ));
         $claimed = $queue->claim();
         $this->assertSame($ids[0], $claimed?->id());
-        mkdir($this->root . '/queue-fail/done/' . $ids[0] . '.jsonc', 0777, true);
+        mkdir($this->queue_record_path('queue-fail', 'done', $ids[0]), 0777, true);
 
         $this->expectException(StorageException::class);
         $queue->complete($ids[0]);
@@ -571,6 +571,37 @@ JSONC
         $this->assertCount(8, $claimed);
         $this->assertSame($claimed, array_values(array_unique($claimed)));
         $this->assertSame(array( 'pending' => 0, 'processing' => 8, 'done' => 0 ), $queue->counts());
+    }
+
+    public function test_directory_queue_claims_legacy_flat_pending_files(): void
+    {
+        $ids   = $this->fixed_ids();
+        $queue = new DirectoryQueue($this->root, 'legacy-queue');
+        AtomicFilesystem::write_atomic(
+            $this->root . '/legacy-queue/pending/' . $ids[0] . '.jsonc',
+            Jsonc::encode_object(array( 'id' => $ids[0], 'payload' => array( 'task' => 'legacy' ) ))
+        );
+
+        $claimed = $queue->claim();
+
+        $this->assertSame($ids[0], $claimed?->id());
+        $this->assertSame('legacy', $claimed?->data()['task'] ?? null);
+        $queue->complete($ids[0]);
+        $this->assertSame(array( 'pending' => 0, 'processing' => 0, 'done' => 1 ), $queue->counts());
+    }
+
+    public function test_directory_queue_verify_reads_disk_instead_of_claim_cache(): void
+    {
+        $ids   = $this->fixed_ids();
+        $queue = new DirectoryQueue($this->root, 'verify-cache-queue', $this->id_generator($ids));
+
+        $queue->enqueue(array( 'task' => 'cached' ));
+        $path = $this->queue_record_path('verify-cache-queue', 'pending', $ids[0]);
+        $contents = file_get_contents($path);
+        $this->assertIsString($contents);
+        file_put_contents($path, str_repeat('{', strlen($contents)));
+
+        $this->assertFalse($queue->verify()['ok']);
     }
 
     public function test_segmented_log_accepts_concurrent_appends_without_lost_or_interleaved_records(): void
@@ -649,7 +680,7 @@ JSONC
         $this->assertLessThan(2 * 1024 * 1024, $memory_after_stream - $memory_before_stream);
     }
 
-    public function test_segmented_log_uses_sharded_state_index_and_reads_active_offsets(): void
+    public function test_segmented_log_uses_derived_state_index_and_reads_active_offsets(): void
     {
         $ids   = $this->fixed_ids();
         $store = new SegmentedLogStore($this->root, 'active-index', 4096, 2, $this->id_generator($ids));
@@ -659,11 +690,12 @@ JSONC
         $store->put(array( 'value' => 'third' ));
 
         $this->assertSame('third', $store->get($ids[2])?->data()['value'] ?? null);
-        $this->assertFileExists($this->root . '/active-index/index/01/8b/' . $ids[2] . '.jsonc');
+        $this->assertArrayHasKey($ids[2], $store->state_index());
+        $this->assertDirectoryDoesNotExist($this->root . '/active-index/index');
         $this->assertFileDoesNotExist($this->root . '/active-index/state.index.jsonc');
     }
 
-    public function test_segmented_log_recovers_missing_index_and_handles_corrupt_state_entries(): void
+    public function test_segmented_log_recovers_derived_state_and_ignores_legacy_state_entries(): void
     {
         $ids   = $this->fixed_ids();
         $store = new SegmentedLogStore($this->root, 'state-recover', 4096, 2, $this->id_generator($ids));
@@ -674,8 +706,9 @@ JSONC
         $this->assertSame('second', $store->get($ids[1])?->data()['value'] ?? null);
         $this->assertNull($store->get($ids[4]));
 
+        AtomicFilesystem::ensure_directory(dirname($this->state_entry_path('state-recover', $ids[0])));
         AtomicFilesystem::write_atomic($this->state_entry_path('state-recover', $ids[0]), "{}\n");
-        $this->assertNull($store->get($ids[0]));
+        $this->assertSame('first', $store->get($ids[0])?->data()['value'] ?? null);
 
         AtomicFilesystem::write_atomic(
             $this->state_entry_path('state-recover', $ids[1]),
@@ -687,45 +720,10 @@ JSONC
                     )
             )
         );
+        $store->recover();
 
-        try {
-            $store->get($ids[1]);
-            $this->fail('Expected wrong state pointer failure.');
-        } catch (StorageException $exception) {
-            $this->assertStringContainsString('wrong record', $exception->getMessage());
-        }
-
-        AtomicFilesystem::write_atomic(
-            $this->state_entry_path('state-recover', $ids[1]),
-            Jsonc::encode_object(
-                array(
-                    'deleted' => false,
-                    'file'    => 'missing.ndjson',
-                    'offset'  => 0,
-                )
-            )
-        );
-
-        try {
-            $store->get($ids[1]);
-            $this->fail('Expected missing segment pointer failure.');
-        } catch (StorageException $exception) {
-            $this->assertStringContainsString('open segment', $exception->getMessage());
-        }
-
-        AtomicFilesystem::write_atomic(
-            $this->state_entry_path('state-recover', $ids[1]),
-            Jsonc::encode_object(
-                array(
-                        'deleted' => false,
-                        'file'    => $this->active_segment_file('state-recover'),
-                        'offset'  => 999999,
-                    )
-            )
-        );
-
-        $this->expectException(StorageException::class);
-        $store->get($ids[1]);
+        $this->assertDirectoryDoesNotExist($this->root . '/state-recover/index');
+        $this->assertSame('second', $store->get($ids[1])?->data()['value'] ?? null);
     }
 
     public function test_segmented_log_reports_corrupt_lines_and_missing_segments(): void
@@ -831,11 +829,12 @@ JSONC
         TestFilesystem::remove_path($this->root . '/branch-log/index');
         $this->assertNotSame(array(), $store->state_index());
 
+        AtomicFilesystem::ensure_directory($this->root . '/branch-log/index');
         file_put_contents($this->root . '/branch-log/index/not-json.txt', 'ignored');
         $this->assertNotSame(array(), $store->state_index());
 
         TestFilesystem::remove_path($this->root . '/branch-log/index');
-        $this->assertSame(array(), $this->invoke_private($store, 'read_state_index'));
+        $this->assertNotSame(array(), $store->state_index());
         $this->assertSame(0, $this->invoke_private($store, 'seek_offset_for', array( array( 'file' => 'active.ndjson' ), $ids[0] )));
         $this->assertSame(array(), $this->invoke_private($store, 'segment_offsets', array( 'missing.ndjson' )));
 
@@ -913,9 +912,10 @@ JSONC
         $this->assertContains('manual.ndjson', $opened);
         $this->assertSame(array(), $this->invoke_private($manifest_store, 'build_state_index'));
 
+        AtomicFilesystem::ensure_directory($this->root . '/manifest-branches/index');
         file_put_contents($this->root . '/manifest-branches/index/not-json.txt', 'ignored');
         $manifest_store->recover();
-        $this->assertFileExists($this->root . '/manifest-branches/index/not-json.txt');
+        $this->assertFileDoesNotExist($this->root . '/manifest-branches/index/not-json.txt');
         $this->assertSame(array(), $this->invoke_private($manifest_store, 'write_compacted_segments', array( array( array( 'records' => 1 ) ) )));
         file_put_contents(
             $this->root . '/manifest-branches/segments/noop.ndjson',
@@ -1148,6 +1148,11 @@ JSONC
     private function state_entry_path(string $collection, string $id): string
     {
         return $this->root . '/' . $collection . '/index/' . substr($id, 0, 2) . '/' . substr($id, 2, 2) . '/' . $id . '.jsonc';
+    }
+
+    private function queue_record_path(string $queue, string $lane, string $id): string
+    {
+        return $this->root . '/' . $queue . '/' . $lane . '/' . substr($id, 9, 2) . '/' . $id . '.jsonc';
     }
 
     private function active_segment_path(string $collection): string

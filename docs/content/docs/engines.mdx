@@ -36,8 +36,9 @@ $events->compact();
 
 ## Queue
 
-`Queue` is for simple durable work queues. Enqueue writes to `pending`, claim
-moves one job to `processing`, and complete moves it to `done` or deletes it.
+`Queue` is for simple durable work queues. Enqueue writes to a sharded
+`pending` lane, claim moves one job to `processing`, and complete moves it to
+`done` or deletes it. The queue also reads legacy flat lane files.
 
 ```php
 $queue = new Storh\Queue($root, 'mail');
