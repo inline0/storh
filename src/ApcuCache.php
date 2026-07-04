@@ -9,13 +9,19 @@ namespace Storh;
  */
 final class ApcuCache implements CacheInterface
 {
-    public function __construct(private readonly string $prefix = 'storh')
+    private readonly bool $enabled;
+
+    private readonly string $key_prefix;
+
+    public function __construct(string $prefix = 'storh')
     {
+        $this->enabled    = function_exists('apcu_enabled') && apcu_enabled();
+        $this->key_prefix = $prefix . ':';
     }
 
     public function get(string $key): mixed
     {
-        if (! $this->available()) {
+        if (! $this->enabled) {
             return null;
         }
 
@@ -27,7 +33,7 @@ final class ApcuCache implements CacheInterface
 
     public function set(string $key, mixed $value, ?int $ttl_seconds = null): void
     {
-        if (! $this->available()) {
+        if (! $this->enabled) {
             return;
         }
 
@@ -36,14 +42,14 @@ final class ApcuCache implements CacheInterface
 
     public function delete(string $key): void
     {
-        if ($this->available()) {
+        if ($this->enabled) {
             apcu_delete($this->key($key));
         }
     }
 
     public function clear_prefix(string $prefix): void
     {
-        if (! $this->available() || ! class_exists(\APCUIterator::class)) {
+        if (! $this->enabled || ! class_exists(\APCUIterator::class)) {
             return;
         }
 
@@ -52,11 +58,6 @@ final class ApcuCache implements CacheInterface
 
     private function key(string $key): string
     {
-        return $this->prefix . ':' . $key;
-    }
-
-    private function available(): bool
-    {
-        return function_exists('apcu_enabled') && apcu_enabled();
+        return $this->key_prefix . $key;
     }
 }
