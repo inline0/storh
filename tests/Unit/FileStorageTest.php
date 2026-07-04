@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Storh\Tests\Unit;
 
 use Storh\AtomicFilesystem;
-use Storh\DirectoryQueue;
 use Storh\DocPerFileStore;
 use Storh\Jsonc;
 use Storh\LogQueue;
@@ -507,105 +506,6 @@ JSONC
         );
 
         $this->assertFalse(RecordQuery::all()->time_range_ms(1_700_000_000_002, null)->matches($record));
-    }
-
-    public function test_directory_queue_claim_complete_requeue_and_counts(): void
-    {
-        $ids   = $this->fixed_ids();
-        $queue = new DirectoryQueue($this->root, 'queue', $this->id_generator($ids));
-
-        $queue->enqueue(array( 'task' => 'one' ));
-        $queue->enqueue(array( 'task' => 'two' ));
-
-        $this->assertSame(array( 'pending' => 2, 'processing' => 0, 'done' => 0 ), $queue->counts());
-
-        $claimed = $queue->claim();
-        $this->assertSame($ids[0], $claimed?->id());
-        $this->assertSame(array( 'pending' => 1, 'processing' => 1, 'done' => 0 ), $queue->counts());
-
-        touch($this->queue_record_path('queue', 'processing', $ids[0]), time() - 100);
-        $this->assertSame(1, $queue->requeue_timed_out(10));
-        $this->assertSame(array( 'pending' => 2, 'processing' => 0, 'done' => 0 ), $queue->counts());
-
-        $claimed_again = $queue->claim();
-        $this->assertSame($ids[0], $claimed_again?->id());
-        $this->assertSame(0, $queue->requeue_timed_out(1000));
-        $queue->complete($ids[0]);
-        $queue->complete($ids[4]);
-        $this->assertSame(array( 'pending' => 1, 'processing' => 0, 'done' => 1 ), $queue->counts());
-
-        $claimed_delete = $queue->claim();
-        $this->assertSame($ids[1], $claimed_delete?->id());
-        $queue->complete($ids[1], false);
-        $this->assertNull($queue->claim());
-    }
-
-    public function test_directory_queue_reports_complete_rename_failures(): void
-    {
-        $ids   = $this->fixed_ids();
-        $queue = new DirectoryQueue($this->root, 'queue-fail', $this->id_generator($ids));
-
-        $queue->enqueue(array( 'task' => 'one' ));
-        $claimed = $queue->claim();
-        $this->assertSame($ids[0], $claimed?->id());
-        mkdir($this->queue_record_path('queue-fail', 'done', $ids[0]), 0777, true);
-
-        $this->expectException(StorageException::class);
-        $queue->complete($ids[0]);
-    }
-
-    public function test_directory_queue_claims_each_job_once_across_processes(): void
-    {
-        if (! function_exists('pcntl_fork') || ! function_exists('pcntl_wait')) {
-            $this->markTestSkipped('pcntl is required for forked queue claims.');
-        }
-
-        $ids   = $this->fixed_ids(12);
-        $queue = new DirectoryQueue($this->root, 'fork-queue', $this->id_generator($ids));
-        foreach (range(0, 7) as $index) {
-            $queue->enqueue(array( 'index' => $index ));
-        }
-
-        $children = array();
-        for ($index = 0; $index < 8; $index++) {
-            $pid = pcntl_fork();
-            if (0 === $pid) {
-                $child_queue = new DirectoryQueue($this->root, 'fork-queue');
-                $record      = $child_queue->claim();
-                if (null !== $record) {
-                    file_put_contents($this->root . '/claimed-' . getmypid() . '.txt', $record->id());
-                }
-                exit(0);
-            }
-            $this->assertIsInt($pid);
-            $children[] = $pid;
-        }
-
-        foreach ($children as $child) {
-            pcntl_waitpid($child, $status);
-            $this->assertSame(0, pcntl_wexitstatus($status));
-        }
-
-        $claimed = array_map('trim', glob($this->root . '/claimed-*.txt') ? array_map('file_get_contents', glob($this->root . '/claimed-*.txt') ?: array()) : array());
-        sort($claimed);
-
-        $this->assertCount(8, $claimed);
-        $this->assertSame($claimed, array_values(array_unique($claimed)));
-        $this->assertSame(array( 'pending' => 0, 'processing' => 8, 'done' => 0 ), $queue->counts());
-    }
-
-    public function test_directory_queue_verify_reads_disk_instead_of_claim_cache(): void
-    {
-        $ids   = $this->fixed_ids();
-        $queue = new DirectoryQueue($this->root, 'verify-cache-queue', $this->id_generator($ids));
-
-        $queue->enqueue(array( 'task' => 'cached' ));
-        $path = $this->queue_record_path('verify-cache-queue', 'pending', $ids[0]);
-        $contents = file_get_contents($path);
-        $this->assertIsString($contents);
-        file_put_contents($path, str_repeat('{', strlen($contents)));
-
-        $this->assertFalse($queue->verify()['ok']);
     }
 
     public function test_log_queue_claim_complete_requeue_counts_and_verify(): void
@@ -1225,11 +1125,6 @@ JSONC
     private function doc_shard_fragment(string $id): string
     {
         return '/data/' . substr($id, 24, 2) . '/';
-    }
-
-    private function queue_record_path(string $queue, string $lane, string $id): string
-    {
-        return $this->root . '/' . $queue . '/' . $lane . '/' . substr($id, 9, 2) . '/' . $id . '.jsonc';
     }
 
     private function active_segment_path(string $collection): string

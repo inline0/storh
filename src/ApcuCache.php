@@ -57,6 +57,6 @@ final class ApcuCache implements CacheInterface
 
     private function available(): bool
     {
-        return function_exists('apcu_fetch') && filter_var(ini_get('apc.enabled'), FILTER_VALIDATE_BOOL);
+        return function_exists('apcu_enabled') && apcu_enabled();
     }
 }

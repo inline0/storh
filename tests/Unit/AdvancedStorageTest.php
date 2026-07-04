@@ -8,9 +8,9 @@ use PHPUnit\Framework\TestCase;
 use Storh\AtomicFilesystem;
 use Storh\Cache;
 use Storh\CacheValidation;
-use Storh\DirectoryQueue;
 use Storh\DocPerFileStore;
 use Storh\Jsonc;
+use Storh\LogQueue;
 use Storh\MemoryCache;
 use Storh\RecordQuery;
 use Storh\Schema;
@@ -594,33 +594,30 @@ final class AdvancedStorageTest extends TestCase
     public function test_queue_purge_stats_verify_and_repair(): void
     {
         $ids = $this->fixed_ids(4);
-        $queue = new DirectoryQueue($this->root, 'queue', $this->id_generator($ids));
+        $queue = new LogQueue($this->root, 'queue', $this->id_generator($ids));
         $queue->enqueue(array( 'task' => 'a' ));
         $queue->enqueue(array( 'task' => 'b' ));
 
         $first = $queue->claim();
         $this->assertNotNull($first);
         $queue->complete($first->id());
-        touch($this->queue_record_path('queue', 'done', $first->id()), time() - 100);
+        $this->assertSame(0, $queue->purgeDone(1000));
+        $this->assertSame(1, $queue->purgeDone());
 
         $second = $queue->claim();
         $this->assertNotNull($second);
-        touch($this->queue_record_path('queue', 'processing', $second->id()), time() - 100);
 
-        $this->assertSame(1, $queue->purgeDone(10));
-        $this->assertSame(1, $queue->repair(10)['requeued']);
+        $this->assertSame(1, $queue->repair(0)['requeued']);
         $this->assertTrue($queue->verify()['ok']);
         $this->assertTrue($queue->health()['ok']);
         $this->assertSame(array( 'pending' => 1, 'processing' => 0, 'done' => 0 ), $queue->counts());
         $this->assertGreaterThan(0, $queue->stats()['bytes']);
-        $this->assertSame(0, $queue->purgeDone());
         $recent = $queue->claim();
         $this->assertNotNull($recent);
         $queue->complete($recent->id());
         $this->assertSame(0, $queue->purgeDone(1000));
 
-        AtomicFilesystem::ensure_directory(dirname($this->queue_record_path('queue', 'pending', $ids[3])));
-        file_put_contents($this->queue_record_path('queue', 'pending', $ids[3]), '{ broken');
+        file_put_contents($this->root . '/queue/queue.log', "broken\n", FILE_APPEND);
         $this->assertFalse($queue->verify()['ok']);
     }
 
@@ -782,6 +779,13 @@ final class AdvancedStorageTest extends TestCase
         $this->assertSame(0, $code);
         $this->assertStringContainsString('"records": 1', implode("\n", $output));
 
+        $queue = new LogQueue($this->root, 'cli-queue', $this->id_generator($this->fixed_ids(2)));
+        $queue->enqueue(array( 'task' => 'run' ));
+        $output = array();
+        exec(PHP_BINARY . ' bin/storh stats ' . escapeshellarg($this->root) . ' cli-queue queue', $output, $code);
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString('"pending": 1', implode("\n", $output));
+
         $benchOutput = $this->root . '-bench.json';
         $output = array();
         exec(PHP_BINARY . ' bench/bench.php --dataset=5 --engine=doc --output=' . escapeshellarg($benchOutput), $output, $code);
@@ -816,10 +820,5 @@ final class AdvancedStorageTest extends TestCase
             static fn(int $index): string => UuidV7::generate(1_700_000_000_000 + $index),
             range(0, $count - 1)
         );
-    }
-
-    private function queue_record_path(string $queue, string $lane, string $id): string
-    {
-        return $this->root . '/' . $queue . '/' . $lane . '/' . substr($id, 9, 2) . '/' . $id . '.jsonc';
     }
 }

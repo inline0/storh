@@ -3,8 +3,8 @@
 
 declare(strict_types=1);
 
-use Storh\DirectoryQueue;
 use Storh\DocPerFileStore;
+use Storh\LogQueue;
 use Storh\SegmentedLogStore;
 
 require dirname(__DIR__) . '/vendor/autoload.php';
@@ -94,12 +94,12 @@ function command_target(array $args, string $defaultEngine): array
     return array($root, $args[1] ?? 'default', $args[2] ?? $defaultEngine);
 }
 
-function store_for(string $root, string $collection, string $engine): DocPerFileStore|SegmentedLogStore|DirectoryQueue
+function store_for(string $root, string $collection, string $engine): DocPerFileStore|SegmentedLogStore|LogQueue
 {
     return match ($engine) {
         'doc' => new DocPerFileStore($root, $collection),
         'log' => new SegmentedLogStore($root, $collection),
-        'queue' => new DirectoryQueue($root, $collection),
+        'queue' => new LogQueue($root, $collection),
         default => throw new RuntimeException('Unknown engine: ' . $engine),
     };
 }

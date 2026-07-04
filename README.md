@@ -152,6 +152,14 @@ composer bench:range -- --datasets=1000,10000,50000,100000
 composer bench:compare build/bench-main.json build/bench-current.json
 ```
 
+## API Stability
+
+For 0.0.1, the documented API is the surface shown in the README and docs.
+Some classes expose extra public methods so storh engines can cooperate
+internally; treat those as implementation details unless they are documented.
+That keeps future performance work focused on internal storage, indexing,
+caching, and query-planner improvements without changing user-facing calls.
+
 ## Scaling & Limits
 
 - Point access is effectively unbounded with sharding and a filesystem that can
