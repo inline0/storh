@@ -287,7 +287,13 @@ final class SegmentedLogStore implements FileStoreInterface
                     }
 
                     $entry = $state[ $id ] ?? null;
-                    if (null === $entry || $entry['deleted'] || ! $this->state_entry_matches($entry, $file, $line_offset)) {
+                    if (null === $entry || $entry['deleted']) {
+                        continue;
+                    }
+                    if (
+                        ( $file !== $entry['file'] || $line_offset !== $entry['offset'] ) &&
+                        ! $this->state_entry_matches($entry, $file, $line_offset)
+                    ) {
                         continue;
                     }
 
