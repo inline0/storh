@@ -17,6 +17,8 @@ final class QueryBuilder
 
     private ?string $cursor = null;
 
+    private bool $has_id_equality = false;
+
     public function __construct(private readonly FileStoreInterface $store)
     {
         $this->groups = array(array());
@@ -32,6 +34,9 @@ final class QueryBuilder
         $next = clone $this;
         foreach ($next->groups as $index => $group) {
             $next->groups[ $index ][] = $condition;
+        }
+        if ('id' === $condition->field() && 'eq' === $condition->operator()) {
+            $next->has_id_equality = true;
         }
 
         return $next;
@@ -49,6 +54,9 @@ final class QueryBuilder
             foreach ($next->groups as $index => $group) {
                 $next->groups[ $index ][] = $condition;
             }
+            if ('id' === $condition->field() && 'eq' === $condition->operator()) {
+                $next->has_id_equality = true;
+            }
         }
 
         return $next;
@@ -65,6 +73,7 @@ final class QueryBuilder
         foreach ($branch->groups as $group) {
             $next->groups[] = $group;
         }
+        $next->has_id_equality = $next->has_id_equality || $branch->has_id_equality;
 
         return $next;
     }
@@ -336,6 +345,10 @@ final class QueryBuilder
      */
     private function direct_id_records(): ?array
     {
+        if (! $this->has_id_equality) {
+            return null;
+        }
+
         if (1 !== count($this->groups)) {
             return null;
         }
