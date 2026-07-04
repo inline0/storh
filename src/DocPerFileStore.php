@@ -428,13 +428,60 @@ final class DocPerFileStore implements FileStoreInterface
         }
 
         if (null !== $this->record_path_cache && null !== $this->record_data_cache) {
+            if (null !== $simple_equal) {
+                $field = $simple_equal['field'];
+                $value = $simple_equal['value'];
+                if ($this->record_cache_ordered) {
+                    foreach ($this->record_data_cache as $id => $data) {
+                        if ('id' === $field) {
+                            if ($id !== $value) {
+                                continue;
+                            }
+                        } else {
+                            $actual = $data[ $field ] ?? null;
+                            if (( null === $actual && ! array_key_exists($field, $data) ) || $actual !== $value) {
+                                continue;
+                            }
+                        }
+
+                        $records[] = new StorageRecord($id, $data);
+                        if ($can_stop_early && count($records) >= $limit) {
+                            return $records;
+                        }
+                    }
+
+                    return $records;
+                }
+
+                foreach ($this->cached_record_ids() as $id) {
+                    $data = $this->record_data_cache[ $id ] ?? null;
+                    if (null === $data) {
+                        continue;
+                    }
+
+                    if ('id' === $field) {
+                        if ($id !== $value) {
+                            continue;
+                        }
+                    } else {
+                        $actual = $data[ $field ] ?? null;
+                        if (( null === $actual && ! array_key_exists($field, $data) ) || $actual !== $value) {
+                            continue;
+                        }
+                    }
+
+                    $records[] = new StorageRecord($id, $data);
+                    if ($can_stop_early && count($records) >= $limit) {
+                        return $records;
+                    }
+                }
+
+                return $records;
+            }
+
             if ($this->record_cache_ordered) {
                 foreach ($this->record_data_cache as $id => $data) {
-                    if (
-                        null !== $simple_equal
-                            ? ! $this->record_matches_equal_filter($id, $data, $simple_equal)
-                            : ! $query->matches_data($id, $data)
-                    ) {
+                    if (! $query->matches_data($id, $data)) {
                         continue;
                     }
 
@@ -449,14 +496,7 @@ final class DocPerFileStore implements FileStoreInterface
 
             foreach ($this->cached_record_ids() as $id) {
                 $data = $this->record_data_cache[ $id ] ?? null;
-                if (
-                    null === $data ||
-                    (
-                        null !== $simple_equal
-                            ? ! $this->record_matches_equal_filter($id, $data, $simple_equal)
-                            : ! $query->matches_data($id, $data)
-                    )
-                ) {
+                if (null === $data || ! $query->matches_data($id, $data)) {
                     continue;
                 }
 
@@ -498,13 +538,54 @@ final class DocPerFileStore implements FileStoreInterface
         }
 
         if (null !== $this->record_path_cache && null !== $this->record_data_cache) {
+            if (null !== $simple_equal) {
+                $field = $simple_equal['field'];
+                $value = $simple_equal['value'];
+                if ($this->record_cache_ordered) {
+                    foreach ($this->record_data_cache as $id => $data) {
+                        if ('id' === $field) {
+                            if ($id !== $value) {
+                                continue;
+                            }
+                        } else {
+                            $actual = $data[ $field ] ?? null;
+                            if (( null === $actual && ! array_key_exists($field, $data) ) || $actual !== $value) {
+                                continue;
+                            }
+                        }
+
+                        return new StorageRecord($id, $data);
+                    }
+
+                    return null;
+                }
+
+                foreach ($this->cached_record_ids() as $id) {
+                    $data = $this->record_data_cache[ $id ] ?? null;
+                    if (null === $data) {
+                        continue;
+                    }
+
+                    if ('id' === $field) {
+                        if ($id !== $value) {
+                            continue;
+                        }
+                    } else {
+                        $actual = $data[ $field ] ?? null;
+                        if (( null === $actual && ! array_key_exists($field, $data) ) || $actual !== $value) {
+                            continue;
+                        }
+                    }
+
+                    return new StorageRecord($id, $data);
+                }
+
+                return null;
+            }
+
             if ($this->record_cache_ordered) {
                 foreach ($this->record_data_cache as $id => $data) {
-                    if (
-                        null !== $simple_equal
-                            ? ! $this->record_matches_equal_filter($id, $data, $simple_equal)
-                            : ! $query->matches_data($id, $data)
-                    ) {
+                    if (! $query->matches_data($id, $data)) {
                         continue;
                     }
 
@@ -516,14 +597,7 @@ final class DocPerFileStore implements FileStoreInterface
 
             foreach ($this->cached_record_ids() as $id) {
                 $data = $this->record_data_cache[ $id ] ?? null;
-                if (
-                    null === $data ||
-                    (
-                        null !== $simple_equal
-                            ? ! $this->record_matches_equal_filter($id, $data, $simple_equal)
-                            : ! $query->matches_data($id, $data)
-                    )
-                ) {
+                if (null === $data || ! $query->matches_data($id, $data)) {
                     continue;
                 }
 
@@ -576,12 +650,32 @@ final class DocPerFileStore implements FileStoreInterface
 
         if (null !== $this->record_path_cache && null !== $this->record_data_cache) {
             $simple_equal = $query->simple_equal_filter();
+            if (null !== $simple_equal) {
+                $field = $simple_equal['field'];
+                $value = $simple_equal['value'];
+                foreach ($this->record_data_cache as $id => $data) {
+                    if ('id' === $field) {
+                        if ($id !== $value) {
+                            continue;
+                        }
+                    } else {
+                        $actual = $data[ $field ] ?? null;
+                        if (( null === $actual && ! array_key_exists($field, $data) ) || $actual !== $value) {
+                            continue;
+                        }
+                    }
+
+                    $count++;
+                    if (null !== $limit && $count >= $limit) {
+                        return $count;
+                    }
+                }
+
+                return $count;
+            }
+
             foreach ($this->record_data_cache as $id => $data) {
-                if (
-                    null !== $simple_equal
-                        ? ! $this->record_matches_equal_filter($id, $data, $simple_equal)
-                        : ! $query->matches_data($id, $data)
-                ) {
+                if (! $query->matches_data($id, $data)) {
                     continue;
                 }
 
@@ -702,21 +796,6 @@ final class DocPerFileStore implements FileStoreInterface
         }
 
         return $records;
-    }
-
-    /**
-     * @param array<string, mixed> $data
-     * @param array{field: string, value: mixed} $filter
-     */
-    private function record_matches_equal_filter(string $id, array $data, array $filter): bool
-    {
-        if ('id' === $filter['field']) {
-            return $id === $filter['value'];
-        }
-
-        $actual = $data[ $filter['field'] ] ?? null;
-
-        return ( null !== $actual || array_key_exists($filter['field'], $data) ) && $actual === $filter['value'];
     }
 
     /**
