@@ -296,11 +296,18 @@ JSONC
 
     public function test_doc_per_file_store_keeps_cached_streams_sorted_after_out_of_order_ids(): void
     {
-        $ids   = $this->fixed_ids(3);
+        $ids   = $this->fixed_ids(4);
         $store = new DocPerFileStore($this->root, 'docs-out-of-order');
 
         $store->put(array( 'rank' => 2 ), $ids[2]);
         $store->put(array( 'rank' => 0 ), $ids[0]);
+        $store->put(array( 'rank' => 3 ), $ids[3]);
+
+        $this->assertSame(
+            array( $ids[0], $ids[2], $ids[3] ),
+            array_map(static fn($record): string => $record->id(), iterator_to_array($store->stream()))
+        );
+
         $store->put(array( 'rank' => 1 ), $ids[1]);
 
         $this->assertSame(
@@ -310,6 +317,13 @@ JSONC
         $this->assertSame(
             $ids,
             array_map(static fn($record): string => $record->id(), $store->query()->where('rank')->gte(0)->get())
+        );
+
+        $store->delete($ids[2]);
+
+        $this->assertSame(
+            array( $ids[0], $ids[1], $ids[3] ),
+            array_map(static fn($record): string => $record->id(), iterator_to_array($store->stream()))
         );
     }
 
