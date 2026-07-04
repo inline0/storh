@@ -530,7 +530,6 @@ final class QueryBuilder
 
         $limit = $limit_override ?? $this->limit;
 
-        $seen_fields = array();
         /** @var array<string, scalar|null> $field_equals */
         $field_equals = array();
         foreach ($this->groups[0] as $condition) {
@@ -544,15 +543,14 @@ final class QueryBuilder
             }
 
             $field = $condition->field();
-            if (array_key_exists($field, $seen_fields)) {
-                if ($seen_fields[ $field ] !== $value) {
+            if (array_key_exists($field, $field_equals)) {
+                if ($field_equals[ $field ] !== $value) {
                     return null;
                 }
 
                 continue;
             }
 
-            $seen_fields[ $field ] = $value;
             $field_equals[ $field ] = $value;
         }
 
