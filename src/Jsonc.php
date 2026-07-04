@@ -11,14 +11,28 @@ final class Jsonc
      */
     public static function decode_object(string $jsonc): array
     {
-        $json = trim(self::strip_jsonc($jsonc));
+        $json = trim($jsonc);
+        if (str_starts_with($json, '{') && str_ends_with($json, '}')) {
+            try {
+                return self::object_from_decoded(json_decode($json, true, 512, JSON_THROW_ON_ERROR));
+            } catch (\JsonException) {
+                // Fall through for JSONC features such as comments and trailing commas.
+            }
+        }
 
+        $json = trim(self::strip_jsonc($jsonc));
         if (! str_starts_with($json, '{') || ! str_ends_with($json, '}')) {
             throw new StorageException('JSONC document must decode to an object.');
         }
 
-        $data = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+        return self::object_from_decoded(json_decode($json, true, 512, JSON_THROW_ON_ERROR));
+    }
 
+    /**
+     * @return array<string, mixed>
+     */
+    private static function object_from_decoded(mixed $data): array
+    {
         if (! is_array($data) || ( array() !== $data && array_is_list($data) )) {
             throw new StorageException('JSONC document must decode to an object.');
         }
