@@ -140,7 +140,7 @@ final class QueryBuilder
             $records = array_slice($records, 0, $this->limit);
         }
 
-        return array_values($records);
+        return $records;
     }
 
     public function first(): ?StorageRecord
