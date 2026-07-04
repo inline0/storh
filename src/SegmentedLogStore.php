@@ -948,12 +948,9 @@ final class SegmentedLogStore implements FileStoreInterface
 
                         $pending_state_entries[] = array(
                             $id,
-                            array(
-                                'deleted' => false,
-                                'file'    => $output_file,
-                                'offset'  => $output_offset,
-                                'aliases' => $this->state_locations($entry),
-                            )
+                            $output_file,
+                            $output_offset,
+                            $entry
                         );
 
                         if ($output_position >= $this->max_segment_bytes) {
@@ -1003,7 +1000,7 @@ final class SegmentedLogStore implements FileStoreInterface
 
     /**
      * @param resource $handle
-     * @param list<array{0: string, 1: array{deleted: bool, file: string, offset: int, aliases: list<array{file: string, offset: int}>}}> $pending_state_entries
+     * @param list<array{0: string, 1: string, 2: int, 3: array{deleted: bool, file: string, offset: int, aliases: list<array{file: string, offset: int}>}}> $pending_state_entries
      */
     private function flush_compaction_buffer(mixed $handle, string &$buffer, string $path, array &$pending_state_entries): void
     {
@@ -1013,7 +1010,7 @@ final class SegmentedLogStore implements FileStoreInterface
 
         AtomicFilesystem::write_all($handle, $buffer, $path);
         foreach ($pending_state_entries as $entry) {
-            $this->write_state_entry($entry[0], $entry[1]);
+            $this->write_compacted_state_entry($entry[0], $entry[1], $entry[2], $entry[3]);
         }
 
         $buffer = '';
@@ -1466,45 +1463,6 @@ final class SegmentedLogStore implements FileStoreInterface
         return $this->state[ $id ] ?? null;
     }
 
-    /**
-     * @param array{deleted: bool, file: string, offset: int, aliases?: list<array{file: string, offset: int}>} $entry
-     */
-    private function write_state_entry(string $id, array $entry, bool $atomic = true): void
-    {
-        $encoded = array(
-            'deleted' => $entry['deleted'],
-            'file'    => $entry['file'],
-            'offset'  => $entry['offset'],
-        );
-
-        $aliases = $this->dedupe_locations($entry['aliases'] ?? array(), $entry['file'], $entry['offset']);
-        if (array() !== $aliases) {
-            $encoded['aliases'] = $aliases;
-        }
-
-        $this->state ??= array();
-        $deleted = $encoded['deleted'];
-        if (isset($this->state[ $id ])) {
-            $previous_deleted = $this->state[ $id ]['deleted'];
-            if ($previous_deleted !== $deleted) {
-                $previous_deleted ? $this->deleted_record_count-- : $this->live_record_count--;
-                $deleted ? $this->deleted_record_count++ : $this->live_record_count++;
-            }
-        } else {
-            $deleted ? $this->deleted_record_count++ : $this->live_record_count++;
-        }
-
-        $this->state[ $id ] = array(
-            'deleted' => $deleted,
-            'file'    => $encoded['file'],
-            'offset'  => $encoded['offset'],
-            'aliases' => isset($encoded['aliases']) && is_array($encoded['aliases']) ? $encoded['aliases'] : array(),
-        );
-        if ($this->cache_enabled) {
-            $this->cache->delete($this->state_cache_key($id));
-        }
-    }
-
     private function write_state_entry_without_aliases(string $id, bool $deleted, string $file, int $offset): void
     {
         $this->state ??= array();
@@ -1523,6 +1481,36 @@ final class SegmentedLogStore implements FileStoreInterface
             'file'    => $file,
             'offset'  => $offset,
             'aliases' => array(),
+        );
+        if ($this->cache_enabled) {
+            $this->cache->delete($this->state_cache_key($id));
+        }
+    }
+
+    /**
+     * @param array{deleted: bool, file: string, offset: int, aliases: list<array{file: string, offset: int}>} $source
+     */
+    private function write_compacted_state_entry(string $id, string $file, int $offset, array $source): void
+    {
+        $this->state ??= array();
+        if (isset($this->state[ $id ])) {
+            if ($this->state[ $id ]['deleted']) {
+                $this->deleted_record_count--;
+                $this->live_record_count++;
+            }
+        } else {
+            $this->live_record_count++;
+        }
+
+        $aliases = array() === $source['aliases']
+            ? array( array( 'file' => $source['file'], 'offset' => $source['offset'] ) )
+            : $this->state_locations($source);
+
+        $this->state[ $id ] = array(
+            'deleted' => false,
+            'file'    => $file,
+            'offset'  => $offset,
+            'aliases' => $aliases,
         );
         if ($this->cache_enabled) {
             $this->cache->delete($this->state_cache_key($id));
