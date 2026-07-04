@@ -674,6 +674,13 @@ final class AdvancedStorageTest extends TestCase
         $this->assertSame(1, $counted->query()->where('type')->eq('published')->count());
         $this->assertSame(2, $counted->query()->where('type')->eq('draft')->count());
 
+        $activeCursorIds = $this->fixed_ids(10);
+        $activeCursor = new SegmentedLogStore($this->root, 'active-cursor-count', 1_073_741_824, 4, $this->id_generator($activeCursorIds));
+        for ($index = 0; $index < 10; $index++) {
+            $activeCursor->put(array( 'type' => 0 === $index % 2 ? 'new' : 'old', 'value' => $index ));
+        }
+        $this->assertSame(2, $activeCursor->query()->where('type')->eq('new')->cursor($activeCursorIds[5])->count());
+
         $rangeIds = $this->fixed_ids(24);
         $rangeSeek = new SegmentedLogStore($this->root, 'range-seek', 4096, 4, $this->id_generator($rangeIds));
         $rangeSeekRows = array();

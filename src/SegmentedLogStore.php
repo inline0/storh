@@ -439,6 +439,10 @@ final class SegmentedLogStore implements FileStoreInterface
                     }
 
                     UuidV7::assert_valid($id);
+                    if (null !== $cursor && strcmp($id, $cursor) <= 0) {
+                        continue;
+                    }
+
                     $data = isset($envelope['data']) && is_array($envelope['data']) ? $envelope['data'] : array();
                     /** @var array<string, mixed> $data */
                     if (
