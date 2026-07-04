@@ -2,33 +2,34 @@
 
 declare(strict_types=1);
 
-$options = getopt('', array( 'dataset::', 'engine::', 'output::', 'cache-validation::', 'repeat::' ));
+$options = getopt('', array( 'dataset::', 'engine::', 'output::', 'cache-validation::', 'repeat::', 'memory-limit::' ));
 $dataset = max(1, (int) ( $options['dataset'] ?? 1000 ));
 $engine  = (string) ( $options['engine'] ?? 'all' );
 $output  = (string) ( $options['output'] ?? dirname(__DIR__) . '/build/bench-repeat-current.json' );
 $cache_validation = (string) ( $options['cache-validation'] ?? 'stat' );
 $repeat = max(1, (int) ( $options['repeat'] ?? 5 ));
+$memory_limit = isset($options['memory-limit']) ? (string) $options['memory-limit'] : null;
 
 $series = array();
 $bench = __DIR__ . '/bench.php';
 
 for ($index = 0; $index < $repeat; $index++) {
     $temp = sys_get_temp_dir() . '/storh-repeat-' . getmypid() . '-' . $index . '.json';
-    $command = implode(
-        ' ',
-        array(
-            escapeshellarg(PHP_BINARY),
-            escapeshellarg($bench),
-            escapeshellarg('--dataset=' . $dataset),
-            escapeshellarg('--engine=' . $engine),
-            escapeshellarg('--cache-validation=' . $cache_validation),
-            escapeshellarg('--output=' . $temp),
-        )
-    );
+    $command = array(PHP_BINARY);
+    if (null !== $memory_limit && '' !== $memory_limit) {
+        $command[] = '-d';
+        $command[] = 'memory_limit=' . $memory_limit;
+    }
+
+    $command[] = $bench;
+    $command[] = '--dataset=' . $dataset;
+    $command[] = '--engine=' . $engine;
+    $command[] = '--cache-validation=' . $cache_validation;
+    $command[] = '--output=' . $temp;
 
     $lines = array();
     $code = 0;
-    exec($command, $lines, $code);
+    exec(implode(' ', array_map('escapeshellarg', $command)), $lines, $code);
     if (0 !== $code) {
         throw new RuntimeException('Benchmark run failed: ' . implode("\n", $lines));
     }
@@ -62,6 +63,7 @@ $report = array(
     'time' => gmdate('c'),
     'cacheValidation' => $cache_validation,
     'repeat' => $repeat,
+    'memoryLimit' => $memory_limit,
     'results' => $results,
     'summary' => $summary,
 );
@@ -119,6 +121,7 @@ function print_report(array $report, string $output): void
 {
     echo 'storh bench repeat=' . $report['repeat']
         . ' dataset=' . $report['dataset']
+        . ( null !== $report['memoryLimit'] ? ' memory_limit=' . $report['memoryLimit'] : '' )
         . ' output=' . $output
         . PHP_EOL;
 
