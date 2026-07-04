@@ -141,7 +141,7 @@ final class QueryBuilder
             );
         }
 
-        if (null !== $this->limit) {
+        if (null !== $this->limit && ( null !== $this->order_field || $this->store instanceof DocPerFileStore )) {
             $records = array_slice($records, 0, $this->limit);
         }
 
