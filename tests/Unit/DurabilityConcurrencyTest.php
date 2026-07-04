@@ -306,6 +306,119 @@ final class DurabilityConcurrencyTest extends TestCase
         $this->assertTrue($reopened->verify()['ok']);
     }
 
+    public function test_indexed_doc_store_serializes_concurrent_updates_to_same_records_without_stale_index_entries(): void
+    {
+        if (! function_exists('pcntl_fork') || ! function_exists('pcntl_waitpid')) {
+            $this->markTestSkipped('pcntl is required for forked writes.');
+        }
+
+        $workers = 5;
+        $records = 20;
+        $ids = $this->fixed_ids($records, 1_700_800_000_000);
+        $store = new DocPerFileStore($this->root, 'indexed-concurrent-updates');
+        $store->indexes()->field('kind')->field('bucket')->field('revision')->range()->sync();
+        foreach ($ids as $slot => $id) {
+            $store->put(
+                array(
+                    'kind'     => 'initial',
+                    'bucket'   => $slot % 5,
+                    'revision' => -1,
+                    'slot'     => $slot,
+                    'writer'   => -1,
+                    'marker'   => 'initial-' . $slot,
+                ),
+                $id
+            );
+        }
+        unset($store);
+
+        $children = array();
+        for ($worker = 0; $worker < $workers; $worker++) {
+            $pid = pcntl_fork();
+            if (0 === $pid) {
+                try {
+                    $child_store = new DocPerFileStore($this->root, 'indexed-concurrent-updates');
+                    for ($slot = 0; $slot < $records; $slot++) {
+                        usleep(( ( $worker + $slot ) % 4 ) * 1000);
+                        $child_store->put(
+                            array(
+                                'kind'     => 'updated',
+                                'bucket'   => ( $slot + $worker ) % 5,
+                                'revision' => $worker,
+                                'slot'     => $slot,
+                                'writer'   => $worker,
+                                'marker'   => 'worker-' . $worker . '-slot-' . $slot,
+                            ),
+                            $ids[ $slot ]
+                        );
+                    }
+                    exit(0);
+                } catch (\Throwable) {
+                    exit(1);
+                }
+            }
+
+            $this->assertIsInt($pid);
+            $children[] = $pid;
+        }
+
+        foreach ($children as $child) {
+            pcntl_waitpid($child, $status);
+            $this->assertSame(0, pcntl_wexitstatus($status));
+        }
+
+        $reopened = new DocPerFileStore($this->root, 'indexed-concurrent-updates');
+        $records_by_id = array();
+        foreach ($reopened->stream() as $record) {
+            $records_by_id[ $record->id() ] = $record->data();
+        }
+
+        $this->assertSame($records, count($records_by_id));
+        $this->assertSame($records, $reopened->stats()['records']);
+        $this->assertSame(0, $reopened->query()->where('kind')->eq('initial')->count());
+        $this->assertSame($records, $reopened->query()->where('kind')->eq('updated')->count());
+
+        $expected_by_revision = array_fill(0, $workers, array());
+        $expected_by_bucket = array_fill(0, 5, array());
+        foreach ($ids as $slot => $id) {
+            $data = $records_by_id[ $id ] ?? null;
+            $this->assertIsArray($data);
+            $this->assertSame('updated', $data['kind'] ?? null);
+            $this->assertSame($slot, $data['slot'] ?? null);
+            $this->assertSame($data['revision'] ?? null, $data['writer'] ?? null);
+            $this->assertSame('worker-' . $data['writer'] . '-slot-' . $slot, $data['marker'] ?? null);
+
+            $revision = $data['revision'] ?? null;
+            $bucket = $data['bucket'] ?? null;
+            $this->assertIsInt($revision);
+            $this->assertGreaterThanOrEqual(0, $revision);
+            $this->assertLessThan($workers, $revision);
+            $this->assertIsInt($bucket);
+            $this->assertGreaterThanOrEqual(0, $bucket);
+            $this->assertLessThan(5, $bucket);
+            $expected_by_revision[ $revision ][] = $id;
+            $expected_by_bucket[ $bucket ][] = $id;
+        }
+
+        for ($revision = 0; $revision < $workers; $revision++) {
+            sort($expected_by_revision[ $revision ]);
+            $query = $reopened->query()->where('revision')->eq($revision);
+            $this->assertSame($expected_by_revision[ $revision ], $this->record_ids($query->get()));
+            $this->assertSame(count($expected_by_revision[ $revision ]), $query->count());
+            $this->assertSame($expected_by_revision[ $revision ], $reopened->indexes()->candidate_ids($query));
+        }
+
+        for ($bucket = 0; $bucket < 5; $bucket++) {
+            sort($expected_by_bucket[ $bucket ]);
+            $query = $reopened->query()->where('bucket')->eq($bucket);
+            $this->assertSame($expected_by_bucket[ $bucket ], $this->record_ids($query->get()));
+            $this->assertSame(count($expected_by_bucket[ $bucket ]), $query->count());
+            $this->assertSame($expected_by_bucket[ $bucket ], $reopened->indexes()->candidate_ids($query));
+        }
+
+        $this->assertTrue($reopened->verify()['ok']);
+    }
+
     /**
      * @return list<string>
      */
