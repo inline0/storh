@@ -275,6 +275,11 @@ final class QueryBuilder
      */
     private function candidate_records(): array
     {
+        $id_records = $this->direct_id_records();
+        if (null !== $id_records) {
+            return $id_records;
+        }
+
         if ($this->store instanceof DocPerFileStore) {
             return $this->store->query_records($this);
         }
@@ -299,6 +304,37 @@ final class QueryBuilder
         }
 
         return $records;
+    }
+
+    /**
+     * @return list<StorageRecord>|null
+     */
+    private function direct_id_records(): ?array
+    {
+        if (1 !== count($this->groups) || 1 !== count($this->groups[0])) {
+            return null;
+        }
+
+        $condition = $this->groups[0][0];
+        if ('id' !== $condition->field() || 'eq' !== $condition->operator()) {
+            return null;
+        }
+
+        $id = $condition->value();
+        if (! is_string($id) || ! UuidV7::is_valid($id)) {
+            return array();
+        }
+
+        if (null !== $this->cursor && strcmp($id, $this->cursor) <= 0) {
+            return array();
+        }
+
+        $record = $this->store->get($id);
+        if (null === $record || ! $this->matches($record)) {
+            return array();
+        }
+
+        return array($record);
     }
 
     private function record_query(): ?RecordQuery
