@@ -1623,13 +1623,21 @@ final class SegmentedLogStore implements FileStoreInterface
      */
     private function data_from_envelope(array $envelope): array
     {
-        $data = array();
+        if (! isset($envelope['data']) || ! is_array($envelope['data'])) {
+            return array();
+        }
 
-        if (isset($envelope['data']) && is_array($envelope['data'])) {
-            foreach ($envelope['data'] as $key => $value) {
-                if (is_string($key)) {
-                    $data[ $key ] = $value;
+        $data = $envelope['data'];
+        foreach ($data as $key => $_value) {
+            if (! is_string($key)) {
+                $filtered = array();
+                foreach ($data as $copy_key => $value) {
+                    if (is_string($copy_key)) {
+                        $filtered[ $copy_key ] = $value;
+                    }
                 }
+
+                return $filtered;
             }
         }
 
