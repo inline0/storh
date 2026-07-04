@@ -970,7 +970,7 @@ final class DocPerFileStore implements FileStoreInterface
     private function over_validated_record_cache_budget(): bool
     {
         return null !== $this->validated_record_cache_max_bytes &&
-            memory_get_usage(true) >= $this->validated_record_cache_max_bytes;
+            memory_get_usage() >= $this->validated_record_cache_max_bytes;
     }
 
     private static function default_validated_record_cache_max_bytes(): ?int
