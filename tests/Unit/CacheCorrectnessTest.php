@@ -10,6 +10,7 @@ use Storh\Cache;
 use Storh\CacheValidation;
 use Storh\DocPerFileStore;
 use Storh\Jsonc;
+use Storh\RecordQuery;
 use Storh\StorageRecord;
 use Storh\Tests\Support\TestFilesystem;
 use Storh\UuidV7;
@@ -222,6 +223,34 @@ final class CacheCorrectnessTest extends TestCase
         $this->assertSame($ids[1], $store->query()->first()?->id());
         $this->assertSame(array( $ids[1], $ids[2] ), $this->record_ids($store->query()->get()));
         $this->assertSame(array( $ids[1], $ids[2] ), $this->record_ids(iterator_to_array($store->stream(), false)));
+    }
+
+    public function test_trust_unordered_write_cache_fast_paths_remain_sorted_and_filter_correctly(): void
+    {
+        $ids = $this->fixed_ids(4);
+        $store = new DocPerFileStore(
+            $this->root,
+            'trust-unordered-fast-paths',
+            cache_validation: CacheValidation::TRUST
+        );
+
+        $store->put(array( 'value' => 'charlie', 'marker' => 'value' ), $ids[2]);
+        $store->put(array( 'value' => 'alpha', 'marker' => null ), $ids[0]);
+        $store->put(array( 'value' => 'bravo' ), $ids[1]);
+        $store->put(array( 'value' => 'delta', 'marker' => 'value' ), $ids[3]);
+
+        $this->assertSame($ids, array_map(static fn(string $path): string => basename($path, '.jsonc'), $store->record_paths()));
+        $this->assertSame($ids[0], $store->query()->first()?->id());
+        $this->assertSame(array_slice($ids, 0, 2), $this->record_ids($store->query()->limit(2)->get()));
+        $this->assertSame(array( $ids[0] ), $this->record_ids(iterator_to_array($store->stream(RecordQuery::all()->limit(1)), false)));
+        $this->assertSame(array( $ids[1] ), $this->record_ids(iterator_to_array($store->stream(RecordQuery::all()->where_equal('value', 'bravo')->limit(1)), false)));
+
+        $this->assertSame(array( $ids[1] ), $this->record_ids($store->query()->where('value')->eq('bravo')->limit(1)->get()));
+        $this->assertSame(array( $ids[0] ), $this->record_ids($store->query()->where('marker')->eq(null)->limit(1)->get()));
+        $this->assertSame($ids[1], $store->query()->where('value')->eq('bravo')->first()?->id());
+        $this->assertSame($ids[0], $store->query()->where('marker')->eq(null)->first()?->id());
+        $this->assertSame(1, $store->query()->where('value')->eq('bravo')->count());
+        $this->assertSame(1, $store->query()->where('marker')->eq(null)->count());
     }
 
     public function test_reindex_reads_filesystem_records_and_clears_stat_caches_after_same_stat_change(): void

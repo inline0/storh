@@ -1090,15 +1090,21 @@ final class AdvancedStorageTest extends TestCase
         $this->assertSame(0, $store->query()->where('id')->eq($ids[0])->where('id')->eq($ids[1])->count());
         $this->assertSame(0, $store->query()->where('id')->eq($ids[0])->cursor($ids[1])->count());
         $this->assertSame(0, $store->query()->where('kind')->eq('page')->where('id')->eq($ids[0])->cursor($ids[1])->count());
+        $this->assertSame(array( $ids[0] ), array_map(static fn(StorageRecord $record): string => $record->id(), $store->query()->orWhere(static fn($query) => $query)->limit(1)->get()));
         $this->assertSame(array( $ids[0] ), array_map(static fn(StorageRecord $record): string => $record->id(), $store->query()->limit(1)->get()));
         $this->assertSame(array( $ids[0] ), array_map(static fn(StorageRecord $record): string => $record->id(), $store->query()->where('kind')->prefix('p')->limit(1)->get()));
+        $this->assertSame(array( $ids[0] ), array_map(static fn(StorageRecord $record): string => $record->id(), $store->query()->where('kind')->prefix('p')->orWhere(static fn($query) => $query->where('kind')->eq('missing'))->limit(1)->get()));
         $this->assertSame(1, $store->query()->where('kind')->prefix('p')->limit(1)->count());
         $this->assertSame(0, $store->query()->where('kind')->prefix('missing')->count());
         $this->assertSame(0, $store->query()->where('kind')->eq(array( 'page' ))->count());
         $this->assertSame(0, $store->query()->where('kind')->eq('page')->where('kind')->eq('post')->count());
         $this->assertSame(array(), $store->query()->where('kind')->eq(array( 'page' ))->get());
         $this->assertSame(array(), $store->query()->where('kind')->eq('page')->where('kind')->eq('post')->get());
+        $this->assertSame(array( $ids[0], $ids[2] ), array_map(static fn(StorageRecord $record): string => $record->id(), $store->query()->where('kind')->eq('page')->where('kind')->eq('page')->get()));
         $this->assertSame(2, $store->query()->where('kind')->eq('page')->count());
+        $direct_id_records = new \ReflectionMethod(\Storh\QueryBuilder::class, 'direct_id_records');
+        $this->assertNull($direct_id_records->invoke($store->query()->where('kind')->eq('page')));
+        $this->assertNull($direct_id_records->invoke($store->query()->where('kind')->eq('page')->where('kind')->eq('page')));
         $this->assertSame(
             $ids,
             array_map(static fn(StorageRecord $record): string => $record->id(), $store->query()->orderBy('id')->get())
