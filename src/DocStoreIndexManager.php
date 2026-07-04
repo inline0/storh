@@ -1371,7 +1371,7 @@ final class DocStoreIndexManager
                     $this->compound_entry_path($left, $right, $key),
                     $left . "\t" . $right,
                     $key,
-                    array( $left => $values[ $left ], $right => $values[ $right ] ),
+                    null,
                     $id
                 );
                 $entries++;
