@@ -529,7 +529,7 @@ final class LogQueue
     {
         $line = $this->encode_complete_line($id, $keep_done, $now);
         $handle = $this->append_event_line($line);
-        $this->apply_complete_event($id, $keep_done, $now);
+        $this->apply_appended_complete_event($id, $keep_done, $now);
         $this->finish_appended_event($handle, strlen($line));
     }
 
@@ -777,7 +777,7 @@ final class LogQueue
 
         AtomicFilesystem::write_all($handle, $lines, $path);
         foreach ($pending as $event) {
-            $this->apply_complete_event($event[0], $event[1], $event[2]);
+            $this->apply_appended_complete_event($event[0], $event[1], $event[2]);
         }
 
         $lines = '';
@@ -986,6 +986,18 @@ final class LogQueue
         if ($removed_done) {
             $this->compact_done_map();
         }
+    }
+
+    private function apply_appended_complete_event(string $id, bool $keep_done, int $ts): void
+    {
+        unset($this->processing[ $id ], $this->payloads[ $id ]);
+        $this->processing_deletes++;
+
+        if ($keep_done) {
+            $this->done[ $id ] = $ts;
+        }
+
+        $this->compact_processing_map();
     }
 
     /**
