@@ -77,6 +77,7 @@ final class AdvancedStorageTest extends TestCase
         $this->assertSame(0, $store->query()->where('id')->eq('not-a-uuid')->count());
         $this->assertSame(2, $store->query()->where('status')->in(array( 'draft', 'archived' ))->count());
         $this->assertSame(1, $store->query()->where('status')->eq('published')->where('featured')->eq(false)->count());
+        $this->assertSame(2, $store->query()->where('publishedAt')->gte(10)->limit(2)->count());
         $statusIndexes = glob(
             $store->collection_root() . '/.storh/indexes/entries/eq/' . bin2hex('status') . '/*.jsonc'
         ) ?: array();

@@ -319,7 +319,7 @@ final class DocStoreIndexManager
             'in' => is_array($condition->value())
                 ? $this->count_for_values($condition->field(), $condition->value(), $limit)
                 : 0,
-            'gt', 'gte', 'lt', 'lte', 'between', 'prefix' => $this->count_for_range_condition($condition),
+            'gt', 'gte', 'lt', 'lte', 'between', 'prefix' => $this->count_for_range_condition($condition, $limit),
             default => null,
         };
 
@@ -730,10 +730,15 @@ final class DocStoreIndexManager
         return $result;
     }
 
-    private function count_for_range_condition(QueryCondition $condition): int
+    private function count_for_range_condition(QueryCondition $condition, ?int $limit = null): int
     {
+        $delta_path = $this->range_delta_field_root($condition->field());
+        if (! is_file($delta_path)) {
+            return $this->count_range_condition_entries($this->range_field_root($condition->field()), $condition, true, $limit);
+        }
+
         return $this->count_range_condition_entries($this->range_field_root($condition->field()), $condition, true)
-            + $this->count_range_condition_entries($this->range_delta_field_root($condition->field()), $condition, false);
+            + $this->count_range_condition_entries($delta_path, $condition, false);
     }
 
     /**
@@ -947,7 +952,7 @@ final class DocStoreIndexManager
         }
     }
 
-    private function count_range_condition_entries(string $path, QueryCondition $condition, bool $sorted): int
+    private function count_range_condition_entries(string $path, QueryCondition $condition, bool $sorted, ?int $limit = null): int
     {
         if (! is_file($path)) {
             return 0;
@@ -997,10 +1002,16 @@ final class DocStoreIndexManager
                     }
 
                     $count += $this->range_entry_count($entry);
+                    if (null !== $limit && $sorted && $count >= $limit) {
+                        return $limit;
+                    }
                     continue;
                 }
 
                 $count += $this->range_line_count($line);
+                if (null !== $limit && $sorted && $count >= $limit) {
+                    return $limit;
+                }
             }
         } finally {
             fclose($handle);
