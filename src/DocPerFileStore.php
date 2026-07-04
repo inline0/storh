@@ -776,13 +776,23 @@ final class DocPerFileStore implements FileStoreInterface
                     return $count;
                 }
 
+                if (null === $limit) {
+                    foreach ($this->record_data_cache as $data) {
+                        if (( $data[ $field ] ?? null ) === $value) {
+                            $count++;
+                        }
+                    }
+
+                    return $count;
+                }
+
                 foreach ($this->record_data_cache as $data) {
                     if (( $data[ $field ] ?? null ) !== $value) {
                         continue;
                     }
 
                     $count++;
-                    if (null !== $limit && $count >= $limit) {
+                    if ($count >= $limit) {
                         return $count;
                     }
                 }
