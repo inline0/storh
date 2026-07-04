@@ -866,16 +866,13 @@ final class LogQueue
             throw new StorageException('Log queue event must be an object.');
         }
 
-        $event = array();
-        foreach ($decoded as $key => $value) {
+        foreach ($decoded as $key => $_value) {
             if (! is_string($key)) {
                 throw new StorageException('Log queue event must be an object.');
             }
-
-            $event[ $key ] = $value;
         }
 
-        return $event;
+        return $decoded;
     }
 
     /**
