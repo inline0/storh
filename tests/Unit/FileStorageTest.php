@@ -511,6 +511,28 @@ JSONC
         $this->assertFalse(RecordQuery::all()->time_range_ms(1_700_000_000_002, null)->matches($record));
     }
 
+    public function test_record_query_reports_id_and_data_filters_separately(): void
+    {
+        $ids = $this->fixed_ids(4);
+
+        $id_only = RecordQuery::all()
+            ->after($ids[0])
+            ->time_range_ms(UuidV7::timestamp_ms($ids[1]), UuidV7::timestamp_ms($ids[2]));
+
+        $this->assertTrue($id_only->filters_records());
+        $this->assertFalse($id_only->filters_data());
+        $this->assertFalse($id_only->matches_id($ids[0]));
+        $this->assertTrue($id_only->matches_id($ids[1]));
+        $this->assertTrue($id_only->matches_id($ids[2]));
+        $this->assertFalse($id_only->matches_id($ids[3]));
+
+        $data_filter = $id_only->where_equal('kind', 'page');
+
+        $this->assertTrue($data_filter->filters_data());
+        $this->assertFalse($data_filter->matches_data($ids[1], array( 'kind' => 'post' )));
+        $this->assertTrue($data_filter->matches_data($ids[1], array( 'kind' => 'page' )));
+    }
+
     public function test_log_queue_claim_complete_requeue_counts_and_verify(): void
     {
         $ids   = $this->fixed_ids();

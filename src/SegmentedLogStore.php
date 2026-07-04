@@ -239,6 +239,7 @@ final class SegmentedLogStore implements FileStoreInterface
         $query ??= RecordQuery::all();
         $count  = 0;
         $filters_records = $query->filters_records();
+        $filters_id_only = $filters_records && ! $query->filters_data();
         $limit = $query->limit_value();
 
         foreach ($this->query_segments($query) as $segment) {
@@ -290,7 +291,12 @@ final class SegmentedLogStore implements FileStoreInterface
                     }
 
                     $data = null;
-                    if ($filters_records) {
+                    if ($filters_id_only) {
+                        UuidV7::assert_valid($id);
+                        if (! $query->matches_id($id)) {
+                            continue;
+                        }
+                    } elseif ($filters_records) {
                         UuidV7::assert_valid($id);
                         $data = $this->data_from_envelope($envelope);
                         if (! $query->matches_data($id, $data)) {

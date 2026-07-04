@@ -124,9 +124,31 @@ final class RecordQuery
             array() !== $this->field_equals;
     }
 
+    public function filters_data(): bool
+    {
+        return array() !== $this->field_equals;
+    }
+
     public function matches(StorageRecord $record): bool
     {
         return $this->matches_data($record->id(), $record->data());
+    }
+
+    public function matches_id(string $id): bool
+    {
+        if (null !== $this->after_id && $id <= $this->after_id) {
+            return false;
+        }
+
+        if (null !== $this->lower_id && $id < $this->lower_id) {
+            return false;
+        }
+
+        if (null !== $this->upper_id && $id > $this->upper_id) {
+            return false;
+        }
+
+        return true;
     }
 
     /**
