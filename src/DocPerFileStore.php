@@ -289,6 +289,23 @@ final class DocPerFileStore implements FileStoreInterface
         $limit = $query->limit_value();
 
         if (null !== $this->record_path_cache && null !== $this->record_data_cache) {
+            if ($this->record_cache_ordered) {
+                foreach ($this->record_data_cache as $id => $data) {
+                    if ($filters_records && ! $query->matches_data($id, $data)) {
+                        continue;
+                    }
+
+                    yield new StorageRecord($id, $data);
+                    $count++;
+
+                    if (null !== $limit && $count >= $limit) {
+                        return;
+                    }
+                }
+
+                return;
+            }
+
             foreach ($this->cached_record_ids() as $id) {
                 $data = $this->record_data_cache[ $id ] ?? null;
                 if (null === $data) {
@@ -404,6 +421,21 @@ final class DocPerFileStore implements FileStoreInterface
         }
 
         if (null !== $this->record_path_cache && null !== $this->record_data_cache) {
+            if ($this->record_cache_ordered) {
+                foreach ($this->record_data_cache as $id => $data) {
+                    if (! $query->matches_data($id, $data)) {
+                        continue;
+                    }
+
+                    $records[] = new StorageRecord($id, $data);
+                    if ($can_stop_early && count($records) >= $limit) {
+                        return $records;
+                    }
+                }
+
+                return $records;
+            }
+
             foreach ($this->cached_record_ids() as $id) {
                 $data = $this->record_data_cache[ $id ] ?? null;
                 if (null === $data || ! $query->matches_data($id, $data)) {
