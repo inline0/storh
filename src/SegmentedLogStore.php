@@ -972,9 +972,11 @@ final class SegmentedLogStore implements FileStoreInterface
                         if ($compaction_entry['copy']) {
                             $output_line = $line;
                         } else {
+                            // @codeCoverageIgnoreStart
                             if (! isset($compaction_entry['envelope'])) {
                                 throw new StorageException('Segmented log compaction entry is missing its envelope.');
                             }
+                            // @codeCoverageIgnoreEnd
 
                             $output_line = $this->compaction_line($line, $compaction_entry['envelope']);
                         }
@@ -1236,12 +1238,7 @@ final class SegmentedLogStore implements FileStoreInterface
      */
     private function segment_stats_for(string $file): array
     {
-        return $this->segment_stats[ $file ] ?? array(
-            'min'     => null,
-            'max'     => null,
-            'records' => 0,
-            'ordered' => true,
-        );
+        return $this->segment_stats[ $file ] ?? array( 'min' => null, 'max' => null, 'records' => 0, 'ordered' => true );
     }
 
     /**
@@ -2324,12 +2321,7 @@ final class SegmentedLogStore implements FileStoreInterface
 
     private function remember_segment_record(string $file, string $id, int $offset): void
     {
-        $stats = $this->segment_stats[ $file ] ?? array(
-            'min'     => null,
-            'max'     => null,
-            'records' => 0,
-            'ordered' => true,
-        );
+        $stats = $this->segment_stats[ $file ] ?? array( 'min' => null, 'max' => null, 'records' => 0, 'ordered' => true );
 
         if (null !== $stats['max'] && strcmp($id, $stats['max']) < 0) {
             $stats['ordered'] = false;

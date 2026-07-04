@@ -10,9 +10,13 @@ use Storh\Cache;
 use Storh\CacheValidation;
 use Storh\DocPerFileStore;
 use Storh\Jsonc;
+use Storh\LogQueue;
+use Storh\QueryCondition;
 use Storh\RecordQuery;
+use Storh\SegmentedLogStore;
 use Storh\StorageRecord;
 use Storh\StorageException;
+use Storh\Tests\Support\FaultyStreamWrapper;
 use Storh\Tests\Support\TestFilesystem;
 use Storh\UuidV7;
 
@@ -794,6 +798,395 @@ final class CacheCorrectnessTest extends TestCase
         $this->assertNull($cached->get($id));
     }
 
+    public function test_index_manager_defensive_helper_branches(): void
+    {
+        $ids = $this->fixed_ids(5);
+        $store = new DocPerFileStore($this->root, 'index-helper-branches', $this->id_generator($ids));
+        $store->putMany(array(
+            array( 'kind' => 'a', 'rank' => 10 ),
+            array( 'kind' => 'b', 'rank' => 20 ),
+            array( 'kind' => 'c', 'rank' => 30 ),
+        ));
+        $manager = $store->indexes();
+        $manager->field('kind')->field('rank')->range()->sync();
+
+        $this->assertSame(
+            array(),
+            $this->invoke_private($manager, 'indexed_condition_ids', array( new QueryCondition('kind', 'in', 'not-array') ))
+        );
+        $this->assertCount(
+            1,
+            $this->invoke_private($manager, 'indexed_condition_ids', array( new QueryCondition('kind', 'in', array( 'a', 'b' )), 1 ))
+        );
+        $this->assertCount(
+            1,
+            $this->invoke_private($manager, 'indexed_condition_ids', array( new QueryCondition('rank', 'gte', 10), 1 ))
+        );
+        $this->assertSame(
+            1,
+            $this->invoke_private($manager, 'count_for_values', array( 'kind', array( array( 'bad' ), 'a', 'a' ), null ))
+        );
+        $this->assertNull($this->invoke_private($manager, 'count_for_values', array( 'rank', array( 999 ), null )));
+        $this->assertSame(0, $this->invoke_private($manager, 'count_for_value', array( 'kind', array( 'bad' ), null )));
+
+        $this->assertFalse($this->invoke_private($manager, 'range_order_supported', array( new QueryCondition('rank', 'exists') )));
+        $this->assertTrue($this->invoke_private($manager, 'range_order_supported', array( new QueryCondition('rank', 'prefix', 'a') )));
+        $this->assertFalse($this->invoke_private($manager, 'range_order_supported', array( new QueryCondition('rank', 'prefix', 1) )));
+        $this->assertFalse($this->invoke_private($manager, 'range_order_supported', array( new QueryCondition('rank', 'between', 1, array()) )));
+
+        $sparse_path = $this->invoke_private($manager, 'range_sparse_index_path', array( 'rank' ));
+        AtomicFilesystem::write_atomic(
+            $sparse_path,
+            Jsonc::encode_object(array(
+                'checkpoints' => array(
+                    'skip',
+                    array( 'key' => 123, 'offset' => 'bad' ),
+                    array( 'key' => 'n-00000000000000020d000000', 'offset' => 9 ),
+                ),
+            ))
+        );
+        $this->set_private_property($manager, 'range_sparse_checkpoints_cache', array());
+        $this->assertSame(
+            array( array( 'key' => 'n-00000000000000020d000000', 'offset' => 9 ) ),
+            $this->invoke_private($manager, 'range_sparse_checkpoints', array( 'rank' ))
+        );
+        $this->assertSame(0, $this->invoke_private($manager, 'range_seek_offset', array( 'rank', array( null, true, null, true ) )));
+        $this->assertSame(123, $this->invoke_private($manager, 'range_reverse_seek_offset', array( 'rank', array( null, true, null, true ), 123 )));
+        $this->assertSame(123, $this->invoke_private($manager, 'range_reverse_seek_offset', array( 'rank', array( null, true, 'z', true ), 123 )));
+        $this->set_private_property($manager, 'range_sparse_checkpoints_cache', array( 'rank' => array() ));
+
+        $key10 = $this->invoke_private($manager, 'range_key', array( 10 ));
+        $key20 = $this->invoke_private($manager, 'range_key', array( 20 ));
+        $key30 = $this->invoke_private($manager, 'range_key', array( 30 ));
+        $line10 = $this->range_index_line($key10, 10, 1, array( $ids[0] ));
+        $line20 = $this->range_index_line($key20, 20, 1, array( $ids[1] ));
+        $line30 = $this->range_index_line($key30, 30, 1, array( $ids[2] ));
+        $range_path = $this->root . '/index-helper-range.jsonl';
+        file_put_contents($range_path, $line10 . $line20 . $line30);
+
+        $reverse_ids = array();
+        $this->assertTrue($this->invoke_private(
+            $manager,
+            'collect_reverse_range_line',
+            array( $line10, new QueryCondition('rank', 'gte', 20), &$reverse_ids, array( $key20, true, null, true ), 1 )
+        ));
+        $this->assertSame(array(), $reverse_ids);
+        $this->assertFalse($this->invoke_private(
+            $manager,
+            'collect_reverse_range_line',
+            array( $line20, new QueryCondition('rank', 'gte', 30), &$reverse_ids, array( $key20, true, null, true ), 1 )
+        ));
+
+        $this->assertSame(
+            1,
+            $this->invoke_private($manager, 'count_range_condition_entries', array( $range_path, new QueryCondition('rank', 'between', 10, 20), true, 1 ))
+        );
+        $this->assertSame(
+            1,
+            $this->invoke_private($manager, 'count_range_condition_entries', array( $range_path, new QueryCondition('rank', 'between', 10, 10), true, null ))
+        );
+
+        $prefix_path = $this->root . '/index-helper-prefix.jsonl';
+        file_put_contents(
+            $prefix_path,
+            "not-json\n" .
+            $this->range_index_line('s-alpha', 'alpha', 2, array( $ids[0], $ids[1] )) .
+            $this->range_index_line('s-bravo', 'bravo', 1, array( $ids[2] ))
+        );
+        $this->assertSame(
+            1,
+            $this->invoke_private($manager, 'count_range_condition_entries', array( $prefix_path, new QueryCondition('rank', 'prefix', 'al'), true, 1 ))
+        );
+        $this->assertSame(
+            2,
+            $this->invoke_private($manager, 'count_range_condition_entries', array( $prefix_path, new QueryCondition('rank', 'prefix', 'al'), false, null ))
+        );
+
+        $this->assertStorageException(fn(): mixed => $this->invoke_private($manager, 'range_line_count', array( '{}' )));
+        $this->assertStorageException(fn(): mixed => $this->invoke_private($manager, 'range_line_count', array( '{"key":"x","count":-}' )));
+        $this->assertSame(-3, $this->invoke_private($manager, 'range_line_count', array( '{"key":"x","count":-3}' )));
+        $this->assertStorageException(fn(): mixed => $this->invoke_private($manager, 'range_entry_count', array( array() )));
+        $this->assertSame(2, $this->invoke_private($manager, 'range_entry_count', array( array( 'count' => 2 ) )));
+
+        $value_ids = array();
+        $this->invoke_private(
+            $manager,
+            'collect_range_value_ids',
+            array( $range_path, 'rank', $key20, 20, &$value_ids, false, array( $key20, true, $key20, true ) )
+        );
+        $this->assertSame(array( $ids[1] => true ), $value_ids);
+
+        $mismatched_value_ids = array();
+        $this->invoke_private(
+            $manager,
+            'collect_range_value_ids',
+            array( $prefix_path, 'rank', 's-alpha', 'other', &$mismatched_value_ids, false, array( 's-alpha', true, 's-alpha', true ) )
+        );
+        $this->assertSame(array(), $mismatched_value_ids);
+
+        FaultyStreamWrapper::register();
+        $reverse_empty_ids = array();
+        $this->invoke_private(
+            $manager,
+            'collect_range_condition_ids_reverse',
+            array( FaultyStreamWrapper::path('reverse-empty'), new QueryCondition('rank', 'gte', 20), &$reverse_empty_ids, 1 )
+        );
+        $this->assertSame(array(), $reverse_empty_ids);
+
+        $reverse_path = $this->root . '/index-helper-reverse-no-newline.jsonl';
+        file_put_contents($reverse_path, rtrim($line20, "\n"));
+        $reverse_file_ids = array();
+        $this->invoke_private(
+            $manager,
+            'collect_range_condition_ids_reverse',
+            array( $reverse_path, new QueryCondition('rank', 'gte', 20), &$reverse_file_ids, 1 )
+        );
+        $this->assertSame(array( $ids[1] => true ), $reverse_file_ids);
+
+        $missing_reverse_ids = array();
+        $this->invoke_private(
+            $manager,
+            'collect_range_condition_ids_reverse',
+            array( $this->root . '/missing-reverse-range.jsonl', new QueryCondition('rank', 'gte', 20), &$missing_reverse_ids, 1 )
+        );
+        $this->assertSame(array(), $missing_reverse_ids);
+
+        $this->assertStorageException(fn(): mixed => $this->invoke_private($manager, 'smallest_range_chunk_line', array( array() )));
+        $this->assertSame(1, $this->invoke_private($manager, 'smallest_range_chunk_line', array( array( 0 => "b\tk\t{}\n", 1 => "a\tk\t{}\n" ) )));
+        $this->assertStorageException(fn(): mixed => $this->invoke_private($manager, 'range_chunk_line_parts', array( 'broken' )));
+        $this->assertSame(array( 'a', "{}\n" ), $this->invoke_private($manager, 'range_chunk_line_parts', array( "a\tk\t{}\n" )));
+
+        $unreadable = $this->root . '/unreadable-index-file.jsonc';
+        file_put_contents($unreadable, '{}');
+        $this->assertTrue(chmod($unreadable, 0000));
+        try {
+            $actual = array();
+            $errors = array();
+            $this->invoke_private($manager, 'collect_actual_range_index_file', array( $unreadable, 'rank', &$actual, &$errors ));
+            $this->assertSame(array( 'Unreadable range index file: ' . $unreadable ), $errors);
+
+            $unreadable_ids = array();
+            $this->invoke_private(
+                $manager,
+                'collect_range_condition_ids',
+                array( $unreadable, new QueryCondition('rank', 'gte', 20), &$unreadable_ids, false, null )
+            );
+            $this->assertSame(array(), $unreadable_ids);
+
+            $this->invoke_private(
+                $manager,
+                'collect_range_condition_ids_reverse',
+                array( $unreadable, new QueryCondition('rank', 'gte', 20), &$unreadable_ids, 1 )
+            );
+            $this->assertSame(0, $this->invoke_private($manager, 'count_range_condition_entries', array( $unreadable, new QueryCondition('rank', 'gte', 20), false, null )));
+            $this->invoke_private(
+                $manager,
+                'collect_range_value_ids',
+                array( $unreadable, 'rank', $key20, 20, &$unreadable_ids, false, array( $key20, true, $key20, true ) )
+            );
+            $this->assertStorageException(fn(): mixed => $this->invoke_private($manager, 'merge_range_chunks', array( 'rank', array( $unreadable ) )));
+            $this->assertStorageException(fn(): mixed => $this->invoke_private($manager, 'ids_from_value_file', array( $unreadable, 'key', null )));
+            $this->assertStorageException(fn(): mixed => $this->invoke_private($manager, 'count_ids_from_value_file', array( $unreadable, 'key', null )));
+            $this->assertStorageException(fn(): mixed => $this->invoke_private($manager, 'limited_ids_from_value_file', array( $unreadable, 'key', 1 )));
+        } finally {
+            chmod($unreadable, 0644);
+        }
+
+        $this->invoke_private($manager, 'remove_id_from_entry', array( $this->root . '/missing-index.jsonc', 'key', $ids[0] ));
+        $missing_field = $this->root . '/missing-field-index.jsonc';
+        AtomicFilesystem::write_atomic($missing_field, Jsonc::encode_object(array( 'key' => 'key', 'ids' => array( $ids[0] ) )));
+        $this->invoke_private($manager, 'remove_id_from_entry', array( $missing_field, 'key', $ids[0] ));
+        $wrong_key = $this->root . '/wrong-key-index.jsonc';
+        AtomicFilesystem::write_atomic($wrong_key, Jsonc::encode_object(array( 'field' => 'kind', 'key' => 'other', 'ids' => array( $ids[0] ) )));
+        $this->invoke_private($manager, 'remove_id_from_entry', array( $wrong_key, 'key', $ids[0] ));
+
+        $this->assertSame(array(), $this->ids_from_index_contents($manager, '{"key":"other","ids":["x"]}', 'key'));
+        $this->assertStorageException(fn(): mixed => $this->ids_from_index_contents($manager, '{"key":"key","count":1}', 'key'));
+        $this->assertStorageException(fn(): mixed => $this->ids_from_index_contents($manager, '{"key":"key","ids":["x"', 'key'));
+        $this->assertSame(array(), $this->ids_from_index_contents($manager, '{"key":"key","ids":[]}', 'key'));
+        $this->assertStorageException(fn(): mixed => $this->ids_from_index_contents($manager, '{"key":"key","ids":[1]}', 'key'));
+
+        $this->assertSame(0, $this->count_from_index_contents($manager, '{"key":"other","count":9}', 'key'));
+        $this->assertStorageException(fn(): mixed => $this->count_from_index_contents($manager, '{"key":"key","ids":[]}', 'key'));
+        $this->assertStorageException(fn(): mixed => $this->count_from_index_contents($manager, '{"key":"key","count":x}', 'key'));
+        $this->assertStorageException(
+            fn(): mixed => $this->invoke_private($manager, 'count_ids_from_value_file', array( FaultyStreamWrapper::path('read-fail'), 'key', null ))
+        );
+        $this->assertSame(3, $this->count_from_index_contents($manager, '{"key":"key","count":9}', 'key', 3));
+        $count_prefix = '{"key":"key","pad":"';
+        $count_suffix = '","count":9';
+        $this->assertSame(
+            9,
+            $this->count_from_index_contents(
+                $manager,
+                $count_prefix . str_repeat('x', 512 - strlen($count_prefix) - strlen($count_suffix)) . $count_suffix . '}',
+                'key'
+            )
+        );
+
+        $this->assertSame(array(), $this->limited_ids_from_index_contents($manager, '{"key":"other","ids":["x"]}', 'key', 1));
+        $this->assertSame(array(), $this->limited_ids_from_index_contents($manager, '{"key":"key","ids":[]}', 'key', 1));
+        $this->assertSame(array(), $this->limited_ids_from_index_contents($manager, '{"key":"key","ids":[],"next":"x"}', 'key', 1));
+        $this->assertStorageException(fn(): mixed => $this->limited_ids_from_index_contents($manager, '{"key":"key","count":1}', 'key', 1));
+        $this->assertStorageException(fn(): mixed => $this->limited_ids_from_index_contents($manager, '{"key":"key","ids":[', 'key', 1));
+        $this->assertStorageException(fn(): mixed => $this->limited_ids_from_index_contents($manager, '{"key":"key","ids":["unterminated}', 'key', 1));
+        $this->assertStorageException(
+            fn(): mixed => $this->invoke_private($manager, 'limited_ids_from_value_file', array( FaultyStreamWrapper::path('read-fail'), 'key', 1 ))
+        );
+
+        $this->assertSame(array( 'a', 'b' ), $this->invoke_private($manager, 'ids_from_value_entry', array( array( 'ids' => array( 'a', 'b', 'c' ) ), 2 )));
+        $this->invoke_private($manager, 'append_range_entry', array( 'rank', 10, array(), array() ));
+        $this->assertSame(array(), $this->invoke_private($manager, 'decode_index_line', array( '[1]' )));
+        $this->assertSame(array( 'keep' => 'yes' ), $this->invoke_private($manager, 'decode_index_line', array( '{"0":"drop","keep":"yes"}' )));
+    }
+
+    public function test_lock_failures_and_doc_cache_limit_branches(): void
+    {
+        $ids = $this->fixed_ids(3);
+        $trust = new DocPerFileStore(
+            $this->root,
+            'doc-cache-limit-branches',
+            cache_validation: CacheValidation::TRUST
+        );
+
+        $this->set_private_property($trust, 'record_path_cache', null);
+        $this->assertSame(array(), $this->invoke_private($trust, 'cached_record_paths'));
+
+        $missing_path = $trust->collection_root() . '/data/missing/' . $ids[0] . '.jsonc';
+        AtomicFilesystem::ensure_directory(dirname($missing_path));
+        $this->assertTrue(symlink($this->root . '/missing-symlink-target.jsonc', $missing_path));
+        $this->set_private_property($trust, 'record_path_cache', array( $ids[0] => $missing_path ));
+        $this->assertSame(array( $missing_path ), $this->invoke_private($trust, 'cached_record_paths'));
+        $this->set_private_property($trust, 'record_data_cache', array( $ids[0] => array() ));
+        $this->set_private_property(
+            $trust,
+            'validated_record_cache',
+            array(
+                $ids[0] => array(
+                    'mtime' => 0,
+                    'size'  => 0,
+                    'hash'  => '',
+                    'data'  => array(),
+                ),
+            )
+        );
+        $this->assertFalse($this->invoke_private($trust, 'record_data_cache_matches_filesystem'));
+        $this->assertStorageException(
+            fn(): mixed => $this->invoke_private($trust, 'quarantine_record_file', array( $ids[0], $this->root . '/missing-doc.jsonc' ))
+        );
+
+        $lock_fail = new DocPerFileStore($this->root, 'doc-lock-flock-fail');
+        $doc_lock = fopen('php://memory', 'r+');
+        $this->assertIsResource($doc_lock);
+        $this->set_private_property($lock_fail, 'write_lock_handle', $doc_lock);
+        $this->assertStorageException(fn(): mixed => $lock_fail->with_write_lock(static fn(): null => null));
+        fclose($doc_lock);
+        $this->set_private_property($lock_fail, 'write_lock_handle', null);
+
+        $queue = new LogQueue($this->root, 'queue-lock-flock-fail');
+        $queue_lock = fopen('php://memory', 'r+');
+        $this->assertIsResource($queue_lock);
+        $this->set_private_property($queue, 'lock_handle', $queue_lock);
+        $this->assertStorageException(fn(): mixed => $this->invoke_private($queue, 'with_lock', array( static fn(): null => null )));
+        fclose($queue_lock);
+        $this->set_private_property($queue, 'lock_handle', null);
+
+        FaultyStreamWrapper::register();
+        $write_fail = fopen(FaultyStreamWrapper::path('write-fail'), 'wb');
+        $this->assertIsResource($write_fail);
+        $this->assertStorageException(fn(): mixed => AtomicFilesystem::write_all($write_fail, 'abc', 'write-fail'));
+        fclose($write_fail);
+
+        $flush_fail = fopen(FaultyStreamWrapper::path('flush-fail'), 'wb');
+        $this->assertIsResource($flush_fail);
+        $this->assertStorageException(fn(): mixed => AtomicFilesystem::sync_handle($flush_fail, 'flush-fail'));
+        fclose($flush_fail);
+
+        $segmented = new SegmentedLogStore($this->root, 'segmented-stats-fallbacks');
+        $this->assertSame(
+            array( 'min' => null, 'max' => null, 'records' => 0, 'ordered' => true ),
+            $this->invoke_private($segmented, 'segment_stats_for', array( 'missing.ndjson' ))
+        );
+        $this->invoke_private($segmented, 'remember_segment_record', array( 'manual.ndjson', $ids[0], 0 ));
+        $this->assertSame(
+            array( 'min' => $ids[0], 'max' => $ids[0], 'records' => 1, 'ordered' => true ),
+            $this->invoke_private($segmented, 'segment_stats_for', array( 'manual.ndjson' ))
+        );
+
+        $unreadable_log = new SegmentedLogStore($this->root, 'segmented-unreadable-segment');
+        $unreadable_log->put(array( 'value' => 'stored' ), $ids[1]);
+        $this->invoke_private($unreadable_log, 'close_active_handle');
+        $segments = $this->invoke_private($unreadable_log, 'all_segments');
+        $this->assertIsArray($segments[0] ?? null);
+        $segment_file = $segments[0]['file'] ?? '';
+        $this->assertIsString($segment_file);
+        $segment_path = $this->invoke_private($unreadable_log, 'segment_path', array( $segment_file ));
+        $this->assertTrue(chmod($segment_path, 0000));
+        try {
+            $this->assertSame(array(), $this->invoke_private($unreadable_log, 'build_state_index', array( false, true, false )));
+        } finally {
+            chmod($segment_path, 0644);
+        }
+
+        $noncanonical = new SegmentedLogStore($this->root, 'segmented-noncanonical-compaction', 512, 1);
+        $noncanonical->put(array( 'value' => 'original' ), $ids[2]);
+        $this->invoke_private($noncanonical, 'close_active_handle');
+        $noncanonical_segments = $this->invoke_private($noncanonical, 'all_segments');
+        $this->assertIsArray($noncanonical_segments[0] ?? null);
+        $noncanonical_file = $noncanonical_segments[0]['file'] ?? '';
+        $this->assertIsString($noncanonical_file);
+        $noncanonical_path = $this->invoke_private($noncanonical, 'segment_path', array( $noncanonical_file ));
+        $json = '{"op":"put","id":"' . $ids[2] . '", "data":{"value":"spaced"}}';
+        AtomicFilesystem::write_atomic($noncanonical_path, strlen($json) . "\t" . hash('xxh32', $json) . "\t" . $json);
+        $this->invoke_private($noncanonical, 'build_state_index', array( false, true, true ));
+        $this->assertNotSame(
+            array(),
+            $this->invoke_private($noncanonical, 'write_compacted_segments', array( array( $noncanonical_segments[0] ) ))
+        );
+
+        $active = fopen('php://memory', 'r+');
+        $this->assertIsResource($active);
+        fwrite($active, 'dirty');
+        $this->set_private_property($segmented, 'active_handle', $active);
+        $this->set_private_property($segmented, 'active_handle_dirty', true);
+        $this->set_private_property($segmented, 'active_handle_path', 'active segment');
+        $verify = $segmented->verify();
+        $this->assertFalse($verify['ok']);
+        $this->assertSame(array( 'segments' => 1, 'records' => 0, 'deleted' => 0, 'bytes' => 0 ), $verify['stats']);
+        $this->set_private_property($segmented, 'active_handle_dirty', false);
+        $this->set_private_property($segmented, 'active_handle', null);
+        fclose($active);
+
+        $budget = new DocPerFileStore($this->root, 'validated-budget-branch');
+        $this->set_private_property($budget, 'validated_record_cache_max_bytes', 1);
+        $this->invoke_private($budget, 'remember_validated_record', array( $ids[0], array(), 0, 0, '' ));
+        $this->assertSame(array(), $this->private_property($budget, 'validated_record_cache'));
+
+        $full_path_cache = array();
+        $full_data_cache = array();
+        for ($index = 0; $index < 100000; $index++) {
+            $key = 'cache-' . $index;
+            $full_path_cache[ $key ] = $this->root . '/' . $key . '.jsonc';
+            $full_data_cache[ $key ] = array();
+        }
+
+        $written = new DocPerFileStore($this->root, 'written-cache-limit-branches');
+        $this->set_private_property($written, 'record_path_cache', $full_path_cache);
+        $this->set_private_property($written, 'record_data_cache', $full_data_cache);
+        $this->invoke_private($written, 'remember_written_record', array( $ids[1], $missing_path, array( 'value' => 'new' ), true ));
+        $this->assertNull($this->private_property($written, 'record_path_cache'));
+        $this->assertNull($this->private_property($written, 'record_data_cache'));
+
+        $trust_limit = new DocPerFileStore(
+            $this->root,
+            'trusted-read-cache-limit-branch',
+            cache_validation: CacheValidation::TRUST
+        );
+        $this->set_private_property($trust_limit, 'record_data_cache', $full_data_cache);
+        $this->invoke_private($trust_limit, 'remember_trusted_read_record', array( $ids[2], array( 'value' => 'ignored' ) ));
+        $this->assertArrayNotHasKey($ids[2], $this->private_property($trust_limit, 'record_data_cache'));
+    }
+
     /**
      * @param list<string> $values
      * @return callable(): string
@@ -858,6 +1251,68 @@ final class CacheCorrectnessTest extends TestCase
         clearstatcache(true, $path);
         $this->assertSame($mtime, (int) filemtime($path));
         $this->assertSame($size, (int) filesize($path));
+    }
+
+    /**
+     * @param list<string> $ids
+     */
+    private function range_index_line(string $key, mixed $value, int $count, array $ids): string
+    {
+        return json_encode(
+            array(
+                'key'    => $key,
+                'value'  => $value,
+                'count'  => $count,
+                'ids'    => $ids,
+                'remove' => array(),
+            ),
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
+        ) . "\n";
+    }
+
+    private function ids_from_index_contents(object $manager, string $contents, string $expected_key): array
+    {
+        $path = $this->root . '/index-helper-eq-' . bin2hex(random_bytes(4)) . '.jsonc';
+        file_put_contents($path, $contents);
+
+        return $this->invoke_private($manager, 'ids_from_value_file', array( $path, $expected_key, null ));
+    }
+
+    private function count_from_index_contents(
+        object $manager,
+        string $contents,
+        string $expected_key,
+        ?int $limit = null
+    ): int {
+        $path = $this->root . '/index-helper-count-' . bin2hex(random_bytes(4)) . '.jsonc';
+        file_put_contents($path, $contents);
+
+        return $this->invoke_private($manager, 'count_ids_from_value_file', array( $path, $expected_key, $limit ));
+    }
+
+    private function limited_ids_from_index_contents(
+        object $manager,
+        string $contents,
+        string $expected_key,
+        int $limit
+    ): array {
+        $path = $this->root . '/index-helper-limited-' . bin2hex(random_bytes(4)) . '.jsonc';
+        file_put_contents($path, $contents);
+
+        return $this->invoke_private($manager, 'limited_ids_from_value_file', array( $path, $expected_key, $limit ));
+    }
+
+    /**
+     * @param callable(): mixed $callback
+     */
+    private function assertStorageException(callable $callback): void
+    {
+        try {
+            $callback();
+            $this->fail('Expected storage exception.');
+        } catch (StorageException) {
+            $this->addToAssertionCount(1);
+        }
     }
 
     private function private_property(object $object, string $property): mixed

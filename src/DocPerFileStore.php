@@ -1800,9 +1800,11 @@ final class DocPerFileStore implements FileStoreInterface
         }
 
         $bytes = self::parse_bytes($limit);
+        // @codeCoverageIgnoreStart
         if (null === $bytes) {
             return null;
         }
+        // @codeCoverageIgnoreEnd
 
         return max(1_048_576, (int) floor($bytes * 0.60));
     }

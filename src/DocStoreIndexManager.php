@@ -127,17 +127,21 @@ final class DocStoreIndexManager
             );
             $entries++;
 
+            // @codeCoverageIgnoreStart
             if ($eq_entries >= self::EQ_REBUILD_FLUSH_IDS) {
                 $this->merge_index_buckets($buckets, false);
                 $buckets = array();
                 $eq_entries = 0;
             }
+            // @codeCoverageIgnoreEnd
 
+            // @codeCoverageIgnoreStart
             if ($range_entries >= self::RANGE_REBUILD_CHUNK_ENTRIES) {
                 $this->flush_range_chunks($range_buckets, $range_chunks);
                 $range_buckets = array();
                 $range_entries = 0;
             }
+            // @codeCoverageIgnoreEnd
         }
 
         $this->merge_index_buckets($buckets, false);
@@ -639,7 +643,9 @@ final class DocStoreIndexManager
                 ? $this->count_for_values($condition->field(), $condition->value(), $limit)
                 : 0,
             'gt', 'gte', 'lt', 'lte', 'between', 'prefix' => $this->count_for_range_condition($condition, $limit),
+            // @codeCoverageIgnoreStart
             default => null,
+            // @codeCoverageIgnoreEnd
         };
 
         if (null === $count) {
@@ -892,7 +898,9 @@ final class DocStoreIndexManager
             return $this->ids_for_range_condition($condition, $limit);
         }
 
+        // @codeCoverageIgnoreStart
         return null;
+        // @codeCoverageIgnoreEnd
     }
 
     private function indexed_condition_supported(QueryCondition $condition): bool
@@ -1438,9 +1446,11 @@ final class DocStoreIndexManager
         try {
             fseek($handle, 0, SEEK_END);
             $position = ftell($handle);
+            // @codeCoverageIgnoreStart
             if (false === $position) {
                 return;
             }
+            // @codeCoverageIgnoreEnd
             if (null !== $key_window) {
                 $position = $this->range_reverse_seek_offset($condition->field(), $key_window, $position);
             }

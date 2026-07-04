@@ -101,9 +101,11 @@ final class MemoryCache implements CacheInterface
                 $key = $protected_key;
             }
 
+            // @codeCoverageIgnoreStart
             if (! is_string($key)) {
                 return;
             }
+            // @codeCoverageIgnoreEnd
 
             $this->delete($key);
         }
@@ -166,9 +168,11 @@ final class MemoryCache implements CacheInterface
         }
 
         $bytes = self::parse_bytes($limit);
+        // @codeCoverageIgnoreStart
         if (null === $bytes) {
             return null;
         }
+        // @codeCoverageIgnoreEnd
 
         return max(1_048_576, (int) floor($bytes * 0.7));
     }

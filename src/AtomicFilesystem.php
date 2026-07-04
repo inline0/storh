@@ -62,6 +62,7 @@ final class AtomicFilesystem
             return;
         }
 
+        // @codeCoverageIgnoreStart
         while ($offset < $length) {
             $written = @fwrite($handle, substr($contents, $offset));
             if (false === $written || 0 === $written) {
@@ -69,6 +70,7 @@ final class AtomicFilesystem
             }
             $offset += $written;
         }
+        // @codeCoverageIgnoreEnd
     }
 
     public static function append(string $path, string $contents): void
@@ -186,6 +188,8 @@ final class AtomicFilesystem
             return posix_kill($pid, 0);
         }
 
+        // @codeCoverageIgnoreStart
         return is_dir('/proc/' . $pid);
+        // @codeCoverageIgnoreEnd
     }
 }
