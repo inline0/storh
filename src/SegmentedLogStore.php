@@ -424,16 +424,20 @@ final class SegmentedLogStore implements FileStoreInterface
         }
 
         $state   = $this->state_index();
+        $records = 0;
         $deleted = 0;
         foreach ($state as $entry) {
             if ($entry['deleted']) {
                 $deleted++;
+                continue;
             }
+
+            $records++;
         }
 
         return array(
             'segments' => count($segments),
-            'records'  => count(iterator_to_array($this->stream())),
+            'records'  => $records,
             'deleted'  => $deleted,
             'bytes'    => $bytes,
         );

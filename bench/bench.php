@@ -218,6 +218,10 @@ function bench_log(string $root, int $dataset): array
         $store->query()->where('status')->eq('published')->limit(100)->count();
     });
 
+    $stats = timed(static function () use ($store): void {
+        $store->stats();
+    });
+
     $compact = timed(static function () use ($store): void {
         $store->compact();
     });
@@ -252,6 +256,7 @@ function bench_log(string $root, int $dataset): array
         'query_all_count',
         'query_count',
         'query_limit_count',
+        'stats',
         'compact',
         'bulk_append',
         'bulk_cursor',
