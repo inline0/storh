@@ -7,6 +7,7 @@ namespace Storh\Tests\Unit;
 use PHPUnit\Framework\TestCase;
 use Storh\AtomicFilesystem;
 use Storh\DocPerFileStore;
+use Storh\Jsonc;
 use Storh\LogQueue;
 use Storh\SegmentedLogStore;
 use Storh\StorageRecord;
@@ -157,6 +158,60 @@ final class DurabilityConcurrencyTest extends TestCase
         $this->assertSame(array( $id ), $reopened->indexes()->candidate_ids($reopened->query()->where('kind')->eq('new')));
         $this->assertSame(array( $id ), $reopened->indexes()->candidate_ids($reopened->query()->where('score')->between(60, 80)));
         $this->assertSame(1, $reopened->query()->where('kind')->eq('new')->where('bucket')->eq(3)->count());
+        $this->assertTrue($reopened->verify()['ok']);
+    }
+
+    public function test_doc_reopen_and_repair_ignore_unrenamed_atomic_temp_outputs(): void
+    {
+        $id = UuidV7::generate(1_700_495_000_000);
+        $store = new DocPerFileStore($this->root, 'unrenamed-temp-docs');
+        $store->indexes()->field('kind')->field('bucket')->sync();
+        $committed = array( 'kind' => 'committed', 'bucket' => 1 );
+        $uncommitted = array( 'kind' => 'uncommitted', 'bucket' => 9 );
+        $store->put($committed, $id);
+
+        $record_temp = dirname($store->path_for_id($id)) . '/.' . basename($store->path_for_id($id)) . '.deadbeef.tmp';
+        file_put_contents(
+            $record_temp,
+            Jsonc::encode_compact_object(array( 'id' => $id, 'data' => $uncommitted ))
+        );
+        touch($record_temp, time() - 120);
+
+        $index_files = glob($store->collection_root() . '/.storh/indexes/entries/eq/' . bin2hex('kind') . '/*.jsonc') ?: array();
+        $this->assertNotSame(array(), $index_files);
+        $index_temp = dirname($index_files[0]) . '/.' . basename($index_files[0]) . '.deadbeef.tmp';
+        file_put_contents(
+            $index_temp,
+            Jsonc::encode_compact_object(
+                array(
+                    'field' => 'kind',
+                    'key'   => 's:uncommitted',
+                    'count' => 1,
+                    'value' => 'uncommitted',
+                    'ids'   => array( $id ),
+                )
+            )
+        );
+        touch($index_temp, time() - 120);
+        unset($store);
+
+        $reopened = new DocPerFileStore($this->root, 'unrenamed-temp-docs');
+
+        $this->assertFileDoesNotExist($record_temp);
+        $this->assertFileDoesNotExist($index_temp);
+        $this->assertSame($committed, $reopened->get($id)?->data());
+        $this->assertSame(1, $reopened->query()->where('kind')->eq('committed')->count());
+        $this->assertSame(0, $reopened->query()->where('kind')->eq('uncommitted')->count());
+        $this->assertSame(array( $id ), $reopened->indexes()->candidate_ids($reopened->query()->where('kind')->eq('committed')));
+        $this->assertSame(array(), $reopened->indexes()->candidate_ids($reopened->query()->where('kind')->eq('uncommitted')));
+
+        $repair = $reopened->repair();
+
+        $this->assertTrue($repair['ok']);
+        $this->assertSame(0, $repair['quarantined']);
+        $this->assertSame($committed, $reopened->get($id)?->data());
+        $this->assertSame(1, $reopened->query()->where('kind')->eq('committed')->count());
+        $this->assertSame(0, $reopened->query()->where('kind')->eq('uncommitted')->count());
         $this->assertTrue($reopened->verify()['ok']);
     }
 
