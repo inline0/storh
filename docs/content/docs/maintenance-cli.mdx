@@ -49,3 +49,8 @@ records.
 For SegmentedLog, `verify()` decodes segment lines and compares the current
 derived state index with a fresh segment replay. `repair()` rebuilds the derived
 state and truncates torn trailing lines.
+
+For Queue, `verify()` decodes every durable event and compares pending,
+processing, done, payload, and claim-order state with a fresh `queue.log` replay.
+`repair()` rebuilds queue state from the log and requeues timed-out processing
+jobs.

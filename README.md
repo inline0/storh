@@ -114,10 +114,11 @@ files alone.
 
 `SegmentedLog` and `Queue` use length and checksum guarded log lines. On reopen
 or repair, torn tails are truncated to the last committed event and in-memory
-state is rebuilt from durable log contents. `SegmentedLog::verify()` also
-compares the current derived state index with a fresh segment replay so stale
-or externally modified state is reported. Log and queue writes are serialized
-with filesystem locks.
+state is rebuilt from durable log contents. `SegmentedLog::verify()` compares
+the current derived state index with a fresh segment replay, and
+`Queue::verify()` compares in-memory queue state with a full durable log replay,
+so stale or externally modified state is reported. Log and queue writes are
+serialized with filesystem locks.
 
 `DocStore` mutations are serialized with a collection-level write lock, so
 record files and secondary indexes update as one consistency boundary across

@@ -32,6 +32,11 @@ writes. Verification compares the active derived state index with an independent
 segment replay, so externally changed or stale state is reported before repair
 rebuilds it.
 
+Queue verification decodes every durable queue event and compares the current
+pending, processing, done, payload, and claim-order state with an independent
+log replay. Repair rebuilds that state from `queue.log` and truncates torn
+trailing events.
+
 Compaction writes new `compact-*` segment files and then updates the manifest.
 Old sealed segments are intentionally left in place so readers already streaming
 from them stay valid.

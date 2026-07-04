@@ -307,16 +307,18 @@ final class LogQueue
     {
         return $this->with_lock(function (): array {
             $errors = array();
+            $replayed = null;
             $handle = @fopen($this->log_path(), 'rb');
             if (false === $handle) {
                 $errors[] = 'Could not read log queue file.';
             } else {
                 try {
+                    $replayed = $this->empty_replayed_state();
                     $line_number = 0;
                     while (false !== ( $line = fgets($handle) )) {
                         $line_number++;
                         try {
-                            $this->decode_line($line);
+                            $this->apply_replayed_event($replayed, $this->decode_line($line));
                         } catch (\Throwable $throwable) {
                             $errors[] = 'line ' . $line_number . ': ' . $throwable->getMessage();
                             break;
@@ -327,7 +329,14 @@ final class LogQueue
                 }
             }
 
+            if (null !== $replayed) {
+                $replayed['pendingOrder'] = $this->effective_pending_order($replayed['pending'], $replayed['pendingOrder'], 0);
+            }
+
             $this->sync_from_log();
+            if (null !== $replayed && array() === $errors && ! $this->queue_state_matches_replay($replayed)) {
+                $errors[] = 'Log queue state drift.';
+            }
 
             return array(
                 'ok'     => array() === $errors,
@@ -467,6 +476,8 @@ final class LogQueue
             $this->log_offset = false === $offset ? $this->log_offset : $offset;
         }
 
+        $this->pending_order = $this->effective_pending_order($this->pending, $this->pending_order, 0);
+        $this->pending_offset = 0;
         fseek($handle, 0, SEEK_END);
     }
 
@@ -503,6 +514,8 @@ final class LogQueue
             $this->log_offset = false === $offset ? $this->log_offset : $offset;
         }
 
+        $this->pending_order = $this->effective_pending_order($this->pending, $this->pending_order, 0);
+        $this->pending_offset = 0;
         fseek($handle, 0, SEEK_END);
     }
 
@@ -935,6 +948,154 @@ final class LogQueue
         }
 
         throw new StorageException('Unsupported log queue event: ' . $op);
+    }
+
+    /**
+     * @return array{
+     *     payloads: array<string, array<string, mixed>>,
+     *     pending: array<string, true>,
+     *     processing: array<string, int>,
+     *     done: array<string, int>,
+     *     pendingOrder: list<string>
+     * }
+     */
+    private function empty_replayed_state(): array
+    {
+        return array(
+            'payloads'     => array(),
+            'pending'      => array(),
+            'processing'   => array(),
+            'done'         => array(),
+            'pendingOrder' => array(),
+        );
+    }
+
+    /**
+     * @param array{
+     *     payloads: array<string, array<string, mixed>>,
+     *     pending: array<string, true>,
+     *     processing: array<string, int>,
+     *     done: array<string, int>,
+     *     pendingOrder: list<string>
+     * } $state
+     * @param array<string, mixed> $event
+     */
+    private function apply_replayed_event(array &$state, array $event): void
+    {
+        $op = isset($event['op']) && is_string($event['op']) ? $event['op'] : '';
+        $id = isset($event['id']) && is_string($event['id']) ? $event['id'] : '';
+        if ('' === $op || ! UuidV7::is_valid($id)) {
+            throw new StorageException('Invalid log queue event.');
+        }
+
+        $ts = isset($event['ts']) && is_int($event['ts']) ? $event['ts'] : time();
+
+        if ('enqueue' === $op) {
+            $state['payloads'][ $id ] = $this->payload_from_value($event['payload'] ?? array());
+            $state['pending'][ $id ] = true;
+            unset($state['processing'][ $id ], $state['done'][ $id ]);
+            $state['pendingOrder'][] = $id;
+            return;
+        }
+
+        if ('claim' === $op) {
+            if (isset($state['pending'][ $id ])) {
+                unset($state['pending'][ $id ]);
+                $state['processing'][ $id ] = $ts;
+            }
+            return;
+        }
+
+        if ('complete' === $op) {
+            unset($state['pending'][ $id ], $state['processing'][ $id ], $state['payloads'][ $id ]);
+            if (true === ( $event['done'] ?? false )) {
+                $state['done'][ $id ] = $ts;
+            } else {
+                unset($state['done'][ $id ]);
+            }
+            return;
+        }
+
+        if ('requeue' === $op) {
+            if (isset($state['processing'][ $id ])) {
+                unset($state['processing'][ $id ]);
+                $state['pending'][ $id ] = true;
+                $state['pendingOrder'][] = $id;
+            }
+            return;
+        }
+
+        if ('purge' === $op) {
+            if (isset($state['done'][ $id ])) {
+                unset($state['done'][ $id ]);
+            }
+            unset($state['payloads'][ $id ]);
+            return;
+        }
+
+        throw new StorageException('Unsupported log queue event: ' . $op);
+    }
+
+    /**
+     * @param array{
+     *     payloads: array<string, array<string, mixed>>,
+     *     pending: array<string, true>,
+     *     processing: array<string, int>,
+     *     done: array<string, int>,
+     *     pendingOrder: list<string>
+     * } $replayed
+     */
+    private function queue_state_matches_replay(array $replayed): bool
+    {
+        $payloads = $this->payloads;
+        $pending = $this->pending;
+        $processing = $this->processing;
+        $done = $this->done;
+        ksort($payloads);
+        ksort($pending);
+        ksort($processing);
+        ksort($done);
+        ksort($replayed['payloads']);
+        ksort($replayed['pending']);
+        ksort($replayed['processing']);
+        ksort($replayed['done']);
+
+        return $payloads === $replayed['payloads'] &&
+            $pending === $replayed['pending'] &&
+            $processing === $replayed['processing'] &&
+            $done === $replayed['done'] &&
+            $this->effective_pending_order($this->pending, $this->pending_order, $this->pending_offset) ===
+                $this->effective_pending_order($replayed['pending'], $replayed['pendingOrder'], 0);
+    }
+
+    /**
+     * @param array<string, true> $pending
+     * @param list<string> $pending_order
+     * @return list<string>
+     */
+    private function effective_pending_order(array $pending, array $pending_order, int $offset): array
+    {
+        $latest = array();
+        foreach ($pending_order as $index => $id) {
+            if (isset($pending[ $id ])) {
+                $latest[ $id ] = $index;
+            }
+        }
+
+        $order = array();
+        $seen = array();
+        $count = count($pending_order);
+        for ($index = $offset; $index < $count; $index++) {
+            $id = $pending_order[ $index ];
+            if (! isset($pending[ $id ]) || isset($seen[ $id ]) || ( $latest[ $id ] ?? null ) !== $index) {
+                continue;
+            }
+
+            $seen[ $id ] = true;
+            $order[] = $id;
+        }
+
+        return $order;
     }
 
     private function apply_enqueue_event(string $id, mixed $payload, int $ts): void

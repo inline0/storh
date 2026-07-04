@@ -124,6 +124,49 @@ final class DurabilityConcurrencyTest extends TestCase
         $this->assertSame(array( 'job' => 'second' ), $next?->data());
     }
 
+    public function test_log_queue_verify_detects_state_drift_and_repair_replays_log(): void
+    {
+        $ids = $this->fixed_ids(2, 1_700_510_000_000);
+        $queue = new LogQueue($this->root, 'queue-drift');
+        $queue->enqueue(array( 'job' => 'first' ), $ids[0]);
+        $queue->enqueue(array( 'job' => 'second' ), $ids[1]);
+        $claimed = $queue->claim();
+        $this->assertSame($ids[0], $claimed?->id());
+
+        $this->set_private_property($queue, 'pending', array());
+
+        $verify = $queue->verify();
+        $this->assertFalse($verify['ok']);
+        $this->assertStringContainsString('state drift', implode("\n", $verify['errors']));
+
+        $repair = $queue->repair(3600);
+
+        $this->assertTrue($repair['ok']);
+        $this->assertSame(array( 'pending' => 1, 'processing' => 1, 'done' => 0 ), $queue->counts());
+        $next = $queue->claim();
+        $this->assertSame($ids[1], $next?->id());
+        $this->assertTrue($queue->verify()['ok']);
+    }
+
+    public function test_log_queue_replay_preserves_requeued_claim_order_after_reopen(): void
+    {
+        $ids = $this->fixed_ids(2, 1_700_515_000_000);
+        $queue = new LogQueue($this->root, 'queue-requeue-order');
+        $queue->enqueue(array( 'job' => 'first' ), $ids[0]);
+        $queue->enqueue(array( 'job' => 'second' ), $ids[1]);
+        $first = $queue->claim();
+        $this->assertSame($ids[0], $first?->id());
+        $this->assertSame(1, $queue->requeue_timed_out(0));
+
+        $reopened = new LogQueue($this->root, 'queue-requeue-order');
+        $second = $reopened->claim();
+        $requeued = $reopened->claim();
+
+        $this->assertSame($ids[1], $second?->id());
+        $this->assertSame($ids[0], $requeued?->id());
+        $this->assertTrue($reopened->verify()['ok']);
+    }
+
     public function test_segmented_log_verify_detects_state_drift_and_repair_replays_segments(): void
     {
         $ids = $this->fixed_ids(2, 1_700_520_000_000);
@@ -306,5 +349,11 @@ final class DurabilityConcurrencyTest extends TestCase
         $json = json_encode($envelope, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
 
         return strlen($json) . "\t" . hash('xxh32', $json) . "\t" . $json . "\n";
+    }
+
+    private function set_private_property(object $object, string $property, mixed $value): void
+    {
+        $reflection = new \ReflectionProperty($object, $property);
+        $reflection->setValue($object, $value);
     }
 }
