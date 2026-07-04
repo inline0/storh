@@ -254,6 +254,11 @@ final class DocStoreIndexManager
     {
         $all_candidates = array();
         $groups = $query->groups();
+        $ordered_range_ids = $this->ordered_range_candidate_ids($query, $groups);
+        if (null !== $ordered_range_ids) {
+            return $ordered_range_ids;
+        }
+
         $limit = $this->candidate_limit($query, $groups);
 
         foreach ($groups as $group) {
@@ -440,6 +445,34 @@ final class DocStoreIndexManager
         }
 
         return $limit;
+    }
+
+    /**
+     * @param list<list<QueryCondition>> $groups
+     * @return list<string>|null
+     */
+    private function ordered_range_candidate_ids(QueryBuilder $query, array $groups): ?array
+    {
+        $limit = $query->limit_value();
+        if (null === $limit || null !== $query->cursor_id() || 'desc' !== $query->order_direction()) {
+            return null;
+        }
+
+        if (1 !== count($groups) || 1 !== count($groups[0])) {
+            return null;
+        }
+
+        $condition = $groups[0][0];
+        if ($query->order_field() !== $condition->field() || ! $this->range_condition_supported($condition)) {
+            return null;
+        }
+
+        $definition = $this->definitions()[ $condition->field() ] ?? null;
+        if (null === $definition || ! $definition['range'] || is_file($this->range_delta_field_root($condition->field()))) {
+            return null;
+        }
+
+        return $this->tail_ids_for_range_condition($condition, $limit);
     }
 
     /**
@@ -756,6 +789,17 @@ final class DocStoreIndexManager
         }
 
         return array_slice($result, 0, $limit);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function tail_ids_for_range_condition(QueryCondition $condition, int $limit): array
+    {
+        $ids = array();
+        $this->collect_range_condition_ids($this->range_field_root($condition->field()), $condition, $ids, true);
+
+        return array_slice(array_keys($ids), -$limit);
     }
 
     private function count_for_range_condition(QueryCondition $condition, ?int $limit = null): int
