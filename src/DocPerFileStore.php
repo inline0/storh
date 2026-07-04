@@ -405,6 +405,7 @@ final class DocPerFileStore implements FileStoreInterface
         $records = array();
         $limit   = $query->limit_value();
         $can_stop_early = null !== $limit && ! $query->has_ordering();
+        $simple_equal = $query->simple_equal_filter();
 
         if (null !== $ids) {
             foreach ($ids as $id) {
@@ -423,7 +424,11 @@ final class DocPerFileStore implements FileStoreInterface
         if (null !== $this->record_path_cache && null !== $this->record_data_cache) {
             if ($this->record_cache_ordered) {
                 foreach ($this->record_data_cache as $id => $data) {
-                    if (! $query->matches_data($id, $data)) {
+                    if (
+                        null !== $simple_equal
+                            ? ! $this->record_matches_equal_filter($id, $data, $simple_equal)
+                            : ! $query->matches_data($id, $data)
+                    ) {
                         continue;
                     }
 
@@ -438,7 +443,14 @@ final class DocPerFileStore implements FileStoreInterface
 
             foreach ($this->cached_record_ids() as $id) {
                 $data = $this->record_data_cache[ $id ] ?? null;
-                if (null === $data || ! $query->matches_data($id, $data)) {
+                if (
+                    null === $data ||
+                    (
+                        null !== $simple_equal
+                            ? ! $this->record_matches_equal_filter($id, $data, $simple_equal)
+                            : ! $query->matches_data($id, $data)
+                    )
+                ) {
                     continue;
                 }
 
@@ -491,8 +503,13 @@ final class DocPerFileStore implements FileStoreInterface
         }
 
         if (null !== $this->record_path_cache && null !== $this->record_data_cache) {
+            $simple_equal = $query->simple_equal_filter();
             foreach ($this->record_data_cache as $id => $data) {
-                if (! $query->matches_data($id, $data)) {
+                if (
+                    null !== $simple_equal
+                        ? ! $this->record_matches_equal_filter($id, $data, $simple_equal)
+                        : ! $query->matches_data($id, $data)
+                ) {
                     continue;
                 }
 
@@ -517,6 +534,21 @@ final class DocPerFileStore implements FileStoreInterface
         }
 
         return $count;
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     * @param array{field: string, value: mixed} $filter
+     */
+    private function record_matches_equal_filter(string $id, array $data, array $filter): bool
+    {
+        if ('id' === $filter['field']) {
+            return $id === $filter['value'];
+        }
+
+        $actual = $data[ $filter['field'] ] ?? null;
+
+        return ( null !== $actual || array_key_exists($filter['field'], $data) ) && $actual === $filter['value'];
     }
 
     /**

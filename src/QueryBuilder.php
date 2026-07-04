@@ -204,6 +204,26 @@ final class QueryBuilder
         return null !== $this->order_field;
     }
 
+    /**
+     * @return array{field: string, value: mixed}|null
+     */
+    public function simple_equal_filter(): ?array
+    {
+        if (null !== $this->cursor || 1 !== count($this->groups) || 1 !== count($this->groups[0])) {
+            return null;
+        }
+
+        $condition = $this->groups[0][0];
+        if ('eq' !== $condition->operator()) {
+            return null;
+        }
+
+        return array(
+            'field' => $condition->field(),
+            'value' => $condition->value(),
+        );
+    }
+
     public function matches(StorageRecord $record): bool
     {
         return $this->matches_data($record->id(), $record->data());
