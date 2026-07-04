@@ -1305,6 +1305,511 @@ JSONC
         new SegmentedLogStore($this->root, 'bad-lock', 4096);
     }
 
+    public function test_segmented_log_state_aliases_count_fast_paths_and_line_helpers(): void
+    {
+        $ids   = $this->fixed_ids(32);
+        $store = new SegmentedLogStore($this->root, 'alias-count', 512, 1, $this->id_generator($ids));
+
+        foreach (range(0, 7) as $index) {
+            $store->put(
+                array(
+                    'metric'   => 0 === $index ? 1.5 : $index,
+                    'nullable' => 1 === $index ? null : 'value-' . $index,
+                    'tags'     => array( 'tag-' . $index ),
+                    'blob'     => str_repeat('x', 120),
+                )
+            );
+        }
+
+        $this->assertSame(
+            1,
+            $this->invoke_private(
+                $store,
+                'count_equal_live_records',
+                array( new \Storh\QueryCondition('id', 'eq', $ids[0]), null, 3 )
+            )
+        );
+        $this->assertSame(
+            0,
+            $this->invoke_private(
+                $store,
+                'count_equal_live_records',
+                array( new \Storh\QueryCondition('id', 'eq', array( 'not-a-string' )), null, null )
+            )
+        );
+        $this->assertNull(
+            $this->invoke_private(
+                $store,
+                'count_equal_live_records',
+                array( new \Storh\QueryCondition('tags', 'eq', array( 'tag-0' )), null, null )
+            )
+        );
+
+        $this->assertSame(1, $store->query()->where('metric')->eq(1.5)->count());
+        $this->assertSame(1, $store->query()->where('nullable')->eq(null)->count());
+        $this->assertSame(2, $store->query()->cursor($ids[1])->limit(2)->count());
+        $this->assertSame(2, $store->query()->where('metric')->gt(2)->cursor($ids[1])->limit(2)->count());
+        $this->assertSame(1, $store->query()->where('tags')->eq(array( 'tag-0' ))->count());
+        $this->assertNull($this->invoke_private($store, 'line_match_marker', array( new \Storh\QueryCondition('id', 'eq', $ids[0]) )));
+        $this->assertNull($this->invoke_private($store, 'line_match_marker', array( new \Storh\QueryCondition('metric', 'gt', 1) )));
+
+        $store->compact();
+        $state = $store->state_index();
+        $alias_id = null;
+        $alias_entry = null;
+        foreach ($state as $id => $entry) {
+            if (array() !== $entry['aliases']) {
+                $alias_id    = $id;
+                $alias_entry = $entry;
+                break;
+            }
+        }
+
+        $this->assertIsString($alias_id);
+        $this->assertIsArray($alias_entry);
+        $this->assertTrue(
+            $this->invoke_private(
+                $store,
+                'state_entry_matches',
+                array( $alias_entry, $alias_entry['aliases'][0]['file'], $alias_entry['aliases'][0]['offset'] )
+            )
+        );
+
+        unlink($this->root . '/alias-count/segments/' . $alias_entry['file']);
+        $this->assertSame($alias_id, $store->get($alias_id)?->id());
+
+        $wrong = new SegmentedLogStore($this->root, 'wrong-state', 4096, 2, $this->id_generator(array_slice($ids, 16)));
+        $wrong->put(array( 'name' => 'first' ));
+        $wrong->put(array( 'name' => 'second' ));
+        $wrong_state = $wrong->state_index();
+        $this->set_private_property($wrong, 'state', array( $ids[16] => $wrong_state[ $ids[17] ] ));
+        try {
+            $wrong->get($ids[16]);
+            $this->fail('Expected wrong state entry failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('wrong record', $exception->getMessage());
+        }
+
+        $bad_offset = $wrong_state[ $ids[16] ];
+        $bad_offset['offset'] = 999_999;
+        $this->set_private_property($wrong, 'state', array( $ids[16] => $bad_offset ));
+        try {
+            $wrong->get($ids[16]);
+            $this->fail('Expected unreadable state entry failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('read segment record', $exception->getMessage());
+        }
+
+        $this->set_private_property($wrong, 'state', null);
+        $this->assertArrayHasKey($ids[16], $wrong->state_index());
+        $this->set_private_property($wrong, 'state', null);
+        $this->assertSame('first', $wrong->get($ids[16])?->data()['name'] ?? null);
+
+        $helpers = new SegmentedLogStore($this->root, 'line-helpers', 4096);
+        $canonical = $this->encoded_log_line(
+            array(
+                'op'   => 'put',
+                'id'   => $ids[0],
+                'data' => array( 'keep' => 1 ),
+            )
+        );
+        $canonical_json = explode("\t", rtrim($canonical, "\r\n"), 3)[2];
+
+        $this->assertSame(
+            $canonical,
+            $this->invoke_private(
+                $helpers,
+                'compaction_line',
+                array(
+                    $canonical,
+                    array(
+                        'op'   => 'put',
+                        'id'   => $ids[0],
+                        'data' => array( 'keep' => 1 ),
+                    ),
+                )
+            )
+        );
+
+        $rewritten = $this->invoke_private(
+            $helpers,
+            'compaction_line',
+            array(
+                rtrim($canonical, "\n"),
+                array(
+                    'op' => 'delete',
+                    'id' => $ids[0],
+                ),
+            )
+        );
+        $this->assertSame(array( 'id' => $ids[0], 'op' => 'put', 'data' => array() ), $this->invoke_private($helpers, 'decode_line', array( $rewritten )));
+        $this->assertSame(array(), $this->invoke_private($helpers, 'data_from_envelope', array( array( 'id' => $ids[0], 'op' => 'put' ) )));
+        $this->assertSame(
+            array( 'keep' => 'yes' ),
+            $this->invoke_private(
+                $helpers,
+                'data_from_envelope',
+                array(
+                    array(
+                        'id'   => $ids[0],
+                        'op'   => 'put',
+                        'data' => array(
+                            0      => 'drop',
+                            'keep' => 'yes',
+                        ),
+                    ),
+                )
+            )
+        );
+
+        $noncanonical = $this->encoded_log_line(
+            array(
+                'id'   => $ids[0],
+                'op'   => 'put',
+                'data' => array( 'keep' => 1 ),
+            )
+        );
+        $this->assertSame(array( 'id' => $ids[0], 'op' => 'put' ), $this->invoke_private($helpers, 'state_index_entry_from_line', array( $noncanonical )));
+        $this->assertSame($canonical_json, $this->invoke_private($helpers, 'validated_line_json', array( str_replace("\n", "\r\n", $canonical) )));
+
+        try {
+            $this->invoke_private($helpers, 'validated_line_json', array( 'broken' ));
+            $this->fail('Expected malformed validation failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('Malformed', $exception->getMessage());
+        }
+
+        $parts = explode("\t", $canonical, 3);
+        try {
+            $this->invoke_private($helpers, 'decode_line', array( $parts[0] . "\tbad\t" . $parts[2] ));
+            $this->fail('Expected corrupt line failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('Corrupt', $exception->getMessage());
+        }
+
+        try {
+            $this->invoke_private($helpers, 'decode_json_envelope', array( '{}' ));
+            $this->fail('Expected invalid envelope failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('record envelope', $exception->getMessage());
+        }
+    }
+
+    public function test_segmented_log_count_scans_skip_empty_manifest_entries_and_report_missing_files(): void
+    {
+        $empty_manifest = new SegmentedLogStore($this->root, 'count-empty-file', 4096);
+        $manifest = AtomicFilesystem::read_jsonc_object($this->root . '/count-empty-file/manifest.jsonc');
+        $manifest['sealed'][] = array( 'records' => 1 );
+        AtomicFilesystem::write_atomic($this->root . '/count-empty-file/manifest.jsonc', Jsonc::encode_object($manifest));
+
+        $this->assertSame(0, $empty_manifest->query()->where('value')->gt(0)->count());
+
+        $ids = $this->fixed_ids(16);
+        $missing = new SegmentedLogStore($this->root, 'count-missing-file', 512, 1, $this->id_generator($ids));
+        foreach (range(0, 5) as $index) {
+            $missing->put(array( 'value' => $index, 'blob' => str_repeat('x', 160) ));
+        }
+
+        $missing_manifest = AtomicFilesystem::read_jsonc_object($this->root . '/count-missing-file/manifest.jsonc');
+        $this->assertIsArray($missing_manifest['sealed'] ?? null);
+        $missing_segment = $missing_manifest['sealed'][0]['file'] ?? '';
+        $this->assertIsString($missing_segment);
+        unlink($this->root . '/count-missing-file/segments/' . $missing_segment);
+
+        try {
+            $missing->query()->where('value')->gt(-1)->count();
+            $this->fail('Expected count scan missing segment failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('open segment', $exception->getMessage());
+        }
+    }
+
+    public function test_segmented_log_bulk_append_roll_and_state_defensive_branches(): void
+    {
+        $ids = $this->fixed_ids(48);
+
+        $bad_many = new SegmentedLogStore($this->root, 'append-many-open-fail', 4096, 2, $this->id_generator($ids));
+        $bad_many_active = $this->active_segment_path('append-many-open-fail');
+        unlink($bad_many_active);
+        mkdir($bad_many_active);
+        try {
+            $bad_many->appendMany(array( array( 'value' => 'blocked' ) ));
+            $this->fail('Expected appendMany active segment open failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('active segment', $exception->getMessage());
+        }
+
+        $bad_stream = new SegmentedLogStore($this->root, 'append-stream-open-fail', 4096, 2, $this->id_generator(array_slice($ids, 4)));
+        $bad_stream_active = $this->active_segment_path('append-stream-open-fail');
+        unlink($bad_stream_active);
+        mkdir($bad_stream_active);
+        try {
+            $bad_stream->appendStream(array( array( 'value' => 'blocked' ) ));
+            $this->fail('Expected appendStream active segment open failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('active segment', $exception->getMessage());
+        }
+
+        $roll_many = new SegmentedLogStore($this->root, 'append-many-roll-open-fail', 256, 1, $this->id_generator(array_slice($ids, 8)));
+        mkdir($this->root . '/append-many-roll-open-fail/segments/seg-000002.ndjson');
+        try {
+            $roll_many->appendMany(
+                array(
+                    array( 'value' => 1, 'blob' => str_repeat('x', 220) ),
+                    array( 'value' => 2, 'blob' => str_repeat('x', 220) ),
+                )
+            );
+            $this->fail('Expected appendMany roll reopen failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('active segment', $exception->getMessage());
+        }
+
+        $roll_stream = new SegmentedLogStore($this->root, 'append-stream-roll-open-fail', 256, 1, $this->id_generator(array_slice($ids, 12)));
+        mkdir($this->root . '/append-stream-roll-open-fail/segments/seg-000002.ndjson');
+        try {
+            $roll_stream->appendStream(
+                array(
+                    array( 'value' => 1, 'blob' => str_repeat('x', 220) ),
+                    array( 'value' => 2, 'blob' => str_repeat('x', 220) ),
+                )
+            );
+            $this->fail('Expected appendStream roll reopen failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('active segment', $exception->getMessage());
+        }
+
+        $missing_offsets = new SegmentedLogStore($this->root, 'missing-sparse-offsets', 4096, 2, $this->id_generator(array_slice($ids, 16)));
+        $missing_offsets->put(array( 'value' => 'has stats' ));
+        $this->set_private_property($missing_offsets, 'segment_sparse_offsets', array());
+        try {
+            $this->invoke_private($missing_offsets, 'roll_active_segment');
+            $this->fail('Expected sparse offset roll failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('Sparse offsets', $exception->getMessage());
+        }
+
+        $cursor_count = new SegmentedLogStore($this->root, 'count-deleted-cursor', 4096, 2, $this->id_generator(array_slice($ids, 20)));
+        $cursor_count->put(array( 'value' => 'first' ));
+        $cursor_count->put(array( 'value' => 'deleted' ));
+        $cursor_count->put(array( 'value' => 'kept' ));
+        $cursor_count->delete($ids[21]);
+        $this->assertSame(1, $cursor_count->query()->cursor($ids[20])->count());
+
+        $seek_count = new SegmentedLogStore($this->root, 'count-seek-offset', 900, 1, $this->id_generator(array_slice($ids, 24)));
+        foreach (range(0, 8) as $index) {
+            $seek_count->put(array( 'value' => $index, 'blob' => str_repeat('x', 150) ));
+        }
+        $this->assertSame(3, $seek_count->query()->where('value')->gte(0)->cursor($ids[25])->limit(3)->count());
+        $this->assertSame(
+            0,
+            $this->invoke_private(
+                $seek_count,
+                'seek_offset_for',
+                array(
+                    array(
+                        'file'    => 'seg-000001.ndjson',
+                        'index'   => 'missing.idx.jsonc',
+                        'min'     => $ids[24],
+                        'max'     => $ids[30],
+                        'ordered' => true,
+                    ),
+                    $ids[25],
+                )
+            )
+        );
+
+        $this->assertFalse(
+            $this->invoke_private(
+                $seek_count,
+                'state_indexes_equivalent',
+                array(
+                    array(
+                        $ids[0] => array(
+                            'deleted' => false,
+                            'file'    => 'one.ndjson',
+                            'offset'  => 1,
+                            'aliases' => array(),
+                        ),
+                    ),
+                    array(
+                        $ids[0] => array(
+                            'deleted' => false,
+                            'file'    => 'one.ndjson',
+                            'offset'  => 2,
+                            'aliases' => array(),
+                        ),
+                    ),
+                )
+            )
+        );
+
+        $state_writer = new SegmentedLogStore($this->root, 'state-writer', 4096);
+        $this->set_private_property(
+            $state_writer,
+            'state',
+            array(
+                $ids[0] => array(
+                    'deleted' => true,
+                    'file'    => 'old.ndjson',
+                    'offset'  => 1,
+                    'aliases' => array(),
+                ),
+            )
+        );
+        $this->set_private_property($state_writer, 'deleted_record_count', 1);
+        $this->set_private_property($state_writer, 'live_record_count', 0);
+        $this->invoke_private(
+            $state_writer,
+            'write_compacted_state_entry',
+            array(
+                $ids[0],
+                'compact.ndjson',
+                7,
+                array(
+                    'deleted' => false,
+                    'file'    => 'old.ndjson',
+                    'offset'  => 1,
+                    'aliases' => array(
+                        array(
+                            'file'   => 'older.ndjson',
+                            'offset' => 0,
+                        ),
+                    ),
+                ),
+            )
+        );
+        $this->invoke_private(
+            $state_writer,
+            'write_compacted_state_entry',
+            array(
+                $ids[1],
+                'compact.ndjson',
+                17,
+                array(
+                    'deleted' => false,
+                    'file'    => 'new.ndjson',
+                    'offset'  => 3,
+                    'aliases' => array(),
+                ),
+            )
+        );
+        $this->assertSame(2, $this->private_property($state_writer, 'live_record_count'));
+        $this->assertSame(0, $this->private_property($state_writer, 'deleted_record_count'));
+
+        $delete_state = new SegmentedLogStore($this->root, 'delete-state-entry', 4096);
+        $this->set_private_property(
+            $delete_state,
+            'state',
+            array(
+                $ids[2] => array(
+                    'deleted' => false,
+                    'file'    => 'old.ndjson',
+                    'offset'  => 1,
+                    'aliases' => array(),
+                ),
+            )
+        );
+        $this->set_private_property($delete_state, 'live_record_count', 1);
+        $this->invoke_private($delete_state, 'delete_state_entry', array( $ids[2] ));
+        $this->assertSame(0, $this->private_property($delete_state, 'live_record_count'));
+    }
+
+    public function test_segmented_log_manifest_cleanup_cache_and_flush_defensive_branches(): void
+    {
+        $ids = $this->fixed_ids(16);
+
+        $manifest_stats = new SegmentedLogStore($this->root, 'manifest-stat-defaults', 4096);
+        AtomicFilesystem::write_atomic(
+            $this->root . '/manifest-stat-defaults/manifest.jsonc',
+            Jsonc::encode_object(
+                array(
+                    'sealed' => array(
+                        array( 'file' => 'missing.ndjson' ),
+                    ),
+                    'active' => array( 'file' => 123 ),
+                )
+            )
+        );
+        $this->set_private_property($manifest_stats, 'manifest_state', null);
+        $this->invoke_private($manifest_stats, 'repair_manifest_stats_from_segments');
+        $repaired_manifest = AtomicFilesystem::read_jsonc_object($this->root . '/manifest-stat-defaults/manifest.jsonc');
+        $this->assertSame(0, $repaired_manifest['sealed'][0]['records'] ?? null);
+
+        $buffer_store = new SegmentedLogStore($this->root, 'buffer-flush-empty', 4096);
+        $buffer_path = $this->root . '/buffer-flush-empty/segments/buffer.ndjson';
+        $buffer_handle = fopen($buffer_path, 'c+b');
+        $this->assertIsResource($buffer_handle);
+        $buffer = '';
+        $pending = array();
+        $this->invoke_private($buffer_store, 'flush_compaction_buffer', array( $buffer_handle, &$buffer, $buffer_path, &$pending ));
+        fclose($buffer_handle);
+        $this->assertSame('', file_get_contents($buffer_path));
+
+        $dirty_store = new SegmentedLogStore($this->root, 'dirty-active-flush', 4096);
+        $dirty_path = $this->root . '/dirty-active-flush/segments/dirty.ndjson';
+        $dirty_handle = fopen($dirty_path, 'c+b');
+        $this->assertIsResource($dirty_handle);
+        fwrite($dirty_handle, "dirty\n");
+        $this->set_private_property($dirty_store, 'active_handle', $dirty_handle);
+        $this->set_private_property($dirty_store, 'active_handle_path', $dirty_path);
+        $this->set_private_property($dirty_store, 'active_handle_dirty', true);
+        $this->invoke_private($dirty_store, 'flush_active_handle');
+        $this->assertFalse($this->private_property($dirty_store, 'active_handle_dirty'));
+        $this->set_private_property($dirty_store, 'active_handle', null);
+        fclose($dirty_handle);
+
+        $record_stats = new SegmentedLogStore($this->root, 'remember-record-stats', 4096);
+        $this->invoke_private($record_stats, 'remember_segment_record', array( 'manual.ndjson', $ids[0], 0 ));
+        $stats = $this->private_property($record_stats, 'segment_stats');
+        $this->assertSame(1, $stats['manual.ndjson']['records'] ?? null);
+
+        mkdir($this->root . '/cleanup-leftovers/index.rebuild-old/nested', 0777, true);
+        mkdir($this->root . '/cleanup-leftovers/index.backup-old/nested', 0777, true);
+        new SegmentedLogStore($this->root, 'cleanup-leftovers', 4096);
+        $this->assertDirectoryDoesNotExist($this->root . '/cleanup-leftovers/index.rebuild-old');
+        $this->assertDirectoryDoesNotExist($this->root . '/cleanup-leftovers/index.backup-old');
+
+        $invalid_manifest = new SegmentedLogStore($this->root, 'invalid-cleanup-manifest', 4096);
+        file_put_contents($this->root . '/invalid-cleanup-manifest/manifest.jsonc', '{broken');
+        touch($this->root . '/invalid-cleanup-manifest/segments/compact-orphan.ndjson');
+        $this->invoke_private($invalid_manifest, 'delete_compaction_leftovers');
+        $this->assertFileExists($this->root . '/invalid-cleanup-manifest/segments/compact-orphan.ndjson');
+
+        $referenced = new SegmentedLogStore($this->root, 'referenced-artifacts', 4096);
+        AtomicFilesystem::write_atomic(
+            $this->root . '/referenced-artifacts/manifest.jsonc',
+            Jsonc::encode_object(
+                array(
+                    'sealed' => array(
+                        'not-a-segment',
+                        array(
+                            'file'  => 'seg-000001.ndjson',
+                            'index' => 'custom.idx.jsonc',
+                        ),
+                    ),
+                    'active' => array( 'file' => 'active.ndjson' ),
+                )
+            )
+        );
+        $artifacts = $this->invoke_private($referenced, 'referenced_segment_artifacts');
+        $this->assertArrayHasKey('custom.idx.jsonc', $artifacts);
+        $this->assertArrayHasKey('active.idx.jsonc', $artifacts);
+
+        $trust_cache = new \Storh\MemoryCache();
+        $trust = new SegmentedLogStore($this->root, 'trust-jsonc-cache', 4096, 2, null, $trust_cache, null, null, \Storh\CacheValidation::TRUST);
+        $trust_path = $this->root . '/trust-jsonc-cache/segments/trust.jsonc';
+        AtomicFilesystem::write_atomic($trust_path, Jsonc::encode_object(array( 'fresh' => true )));
+        $trust_cache->set('manual-trust', array( 'data' => array( 'cached' => true ) ));
+        $this->assertSame(array( 'cached' => true ), $this->invoke_private($trust, 'read_cached_jsonc_object', array( $trust_path, 'manual-trust' )));
+
+        $hash_cache = new \Storh\MemoryCache();
+        $hash = new SegmentedLogStore($this->root, 'hash-jsonc-cache', 4096, 2, null, $hash_cache, null, null, \Storh\CacheValidation::HASH);
+        $hash_path = $this->root . '/hash-jsonc-cache/segments/hash.jsonc';
+        AtomicFilesystem::write_atomic($hash_path, Jsonc::encode_object(array( 'fresh' => true )));
+        $this->assertSame(array( 'fresh' => true ), $this->invoke_private($hash, 'read_cached_jsonc_object', array( $hash_path, 'manual-hash' )));
+        $this->assertSame(array( 'fresh' => true ), $this->invoke_private($hash, 'read_cached_jsonc_object', array( $hash_path, 'manual-hash' )));
+    }
+
     public function test_segmented_log_cursor_time_range_and_limit_reads_are_bounded_at_scale(): void
     {
         $ids   = $this->fixed_ids(420);
