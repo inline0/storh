@@ -15,6 +15,7 @@ composer bench -- --dataset=100000 --engine=queue
 composer bench -- --dataset=100000 --engine=cache --cache-validation=trust
 composer bench -- --dataset=100000 --engine=filter
 composer bench -- --dataset=1000000 --engine=uuid
+composer bench:jit -- --dataset=1000000 --engine=uuid
 composer bench:repeat -- --dataset=100000 --engine=doc --repeat=5
 composer bench:repeat -- --dataset=1000000 --engine=filter --repeat=5 --memory-limit=512M
 composer bench:range -- --datasets=1000,10000,50000,100000
@@ -41,3 +42,8 @@ build/bench-current.json
 
 Range runs write one JSON file per dataset and engine under
 `build/bench-ranges/`.
+
+`bench:jit` runs the same harness with CLI opcache and tracing JIT enabled,
+and disables Xdebug for the benchmark process so PHP can actually turn JIT on.
+The generated JSON includes runtime flags that show whether opcache and JIT
+were active for that run.

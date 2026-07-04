@@ -58,7 +58,7 @@
         "test:unit": "phpunit --testsuite=unit",
         "test:coverage": "phpunit --coverage-text --colors=never",
         "bench": "php bench/bench.php",
-        "bench:jit": "php -d opcache.enable_cli=1 -d opcache.jit=tracing -d opcache.jit_buffer_size=128M bench/bench.php",
+        "bench:jit": "XDEBUG_MODE=off php -d opcache.enable_cli=1 -d opcache.jit=tracing -d opcache.jit_buffer_size=128M bench/bench.php",
         "bench:compare": "php bench/compare.php",
         "bench:range": "php bench/range.php",
         "bench:repeat": "php bench/repeat.php",
