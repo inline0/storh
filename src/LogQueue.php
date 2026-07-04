@@ -115,8 +115,9 @@ final class LogQueue
     {
         return $this->with_lock(function (): ?StorageRecord {
             $this->sync_from_log();
+            $pending_count = count($this->pending_order);
 
-            while ($this->pending_offset < count($this->pending_order)) {
+            while ($this->pending_offset < $pending_count) {
                 $id = $this->pending_order[ $this->pending_offset ];
                 $this->pending_offset++;
                 if (! isset($this->pending[ $id ])) {
@@ -150,8 +151,10 @@ final class LogQueue
             $this->sync_from_log();
             $records = array();
             $now = time();
+            $claimed = 0;
+            $pending_count = count($this->pending_order);
 
-            while (count($records) < $limit && $this->pending_offset < count($this->pending_order)) {
+            while ($claimed < $limit && $this->pending_offset < $pending_count) {
                 $id = $this->pending_order[ $this->pending_offset ];
                 $this->pending_offset++;
                 if (! isset($this->pending[ $id ])) {
@@ -159,6 +162,7 @@ final class LogQueue
                 }
 
                 $records[] = new StorageRecord($id, $this->payload_for_id($id));
+                $claimed++;
             }
 
             $this->compact_pending_order();
@@ -499,23 +503,26 @@ final class LogQueue
      */
     private function append_enqueue_event(string $id, array $payload, int $now): void
     {
-        $handle = $this->append_event_line($this->encode_enqueue_line($id, $payload, $now));
+        $line = $this->encode_enqueue_line($id, $payload, $now);
+        $handle = $this->append_event_line($line);
         $this->apply_enqueue_event($id, $payload, $now);
-        $this->finish_appended_event($handle);
+        $this->finish_appended_event($handle, strlen($line));
     }
 
     private function append_claim_event(string $id, int $now): void
     {
-        $handle = $this->append_event_line($this->encode_id_line('claim', $id, $now));
+        $line = $this->encode_id_line('claim', $id, $now);
+        $handle = $this->append_event_line($line);
         $this->apply_claim_event($id, $now);
-        $this->finish_appended_event($handle);
+        $this->finish_appended_event($handle, strlen($line));
     }
 
     private function append_complete_event(string $id, bool $keep_done, int $now): void
     {
-        $handle = $this->append_event_line($this->encode_complete_line($id, $keep_done, $now));
+        $line = $this->encode_complete_line($id, $keep_done, $now);
+        $handle = $this->append_event_line($line);
         $this->apply_complete_event($id, $keep_done, $now);
-        $this->finish_appended_event($handle);
+        $this->finish_appended_event($handle, strlen($line));
     }
 
     /**
@@ -532,9 +539,13 @@ final class LogQueue
     /**
      * @param resource $handle
      */
-    private function finish_appended_event(mixed $handle): void
+    private function finish_appended_event(mixed $handle, ?int $written_bytes = null): void
     {
         fflush($handle);
+        if (null !== $written_bytes) {
+            $this->log_offset += $written_bytes;
+            return;
+        }
 
         $offset = ftell($handle);
         $this->log_offset = false === $offset ? $this->log_offset : $offset;
