@@ -136,6 +136,11 @@ final class QueryBuilder
 
     public function first(): ?StorageRecord
     {
+        $id_records = $this->direct_id_records();
+        if (null !== $id_records) {
+            return $id_records[0] ?? null;
+        }
+
         return $this->limit(1)->get()[0] ?? null;
     }
 
