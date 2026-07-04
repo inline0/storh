@@ -403,7 +403,7 @@ final class DocPerFileStore implements FileStoreInterface
      */
     public function query_records(QueryBuilder $query): array
     {
-        $ids     = $this->indexes()->candidate_ids($query);
+        $ids     = $this->active_indexes()?->candidate_ids($query);
         $records = array();
         $limit   = $query->limit_value();
         $can_stop_early = null !== $limit && ! $query->has_ordering();
@@ -479,7 +479,7 @@ final class DocPerFileStore implements FileStoreInterface
 
     public function query_records_are_ordered(QueryBuilder $query): bool
     {
-        return $this->indexes()->candidate_order_satisfies($query);
+        return $this->active_indexes()?->candidate_order_satisfies($query) ?? false;
     }
 
     public function count_records(QueryBuilder $query): int
@@ -492,7 +492,7 @@ final class DocPerFileStore implements FileStoreInterface
         $limit = $query->limit_value();
         $count = 0;
 
-        $ids = $this->indexes()->candidate_ids($query);
+        $ids = $this->active_indexes()?->candidate_ids($query);
         if (null !== $ids) {
             foreach ($ids as $id) {
                 $record = $this->get($id);
