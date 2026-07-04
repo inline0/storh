@@ -265,6 +265,10 @@ final class DocStoreIndexManager
             return $this->candidate_count_for_condition($groups[0][0], $query->limit_value());
         }
 
+        if (1 === count($groups)) {
+            return $this->candidate_count_for_group($groups[0], $query->limit_value());
+        }
+
         $all_candidates = array();
         foreach ($groups as $group) {
             $group_ids = $this->candidate_ids_for_group($group, null, true);
@@ -301,6 +305,46 @@ final class DocStoreIndexManager
         if (null === $count) {
             return null;
         }
+
+        return null === $limit ? $count : min($count, $limit);
+    }
+
+    /**
+     * @param list<QueryCondition> $group
+     */
+    private function candidate_count_for_group(array $group, ?int $limit): ?int
+    {
+        $candidate_sets = array();
+        foreach ($group as $condition) {
+            $ids = $this->indexed_condition_ids($condition);
+            if (null === $ids) {
+                return null;
+            }
+
+            $candidate_sets[] = $ids;
+        }
+
+        if (array() === $candidate_sets) {
+            return null;
+        }
+
+        usort($candidate_sets, static fn(array $left, array $right): int => count($left) <=> count($right));
+
+        $ids = array_fill_keys($candidate_sets[0], true);
+        for ($index = 1; $index < count($candidate_sets); $index++) {
+            if (array() === $ids) {
+                return 0;
+            }
+
+            $next = array_fill_keys($candidate_sets[ $index ], true);
+            foreach ($ids as $id => $_) {
+                if (! isset($next[ $id ])) {
+                    unset($ids[ $id ]);
+                }
+            }
+        }
+
+        $count = count($ids);
 
         return null === $limit ? $count : min($count, $limit);
     }
