@@ -685,6 +685,19 @@ final class AdvancedStorageTest extends TestCase
             array( 12, 13, 14 ),
             array_map(static fn($record): int => $record->data()['index'], $middleRange)
         );
+        $rangeSeek->compact();
+        $compactedMiddleRange = iterator_to_array(
+            $rangeSeek->stream(
+                RecordQuery::all()->time_range_ms(
+                    UuidV7::timestamp_ms($rangeIds[12]),
+                    UuidV7::timestamp_ms($rangeIds[14])
+                )
+            )
+        );
+        $this->assertSame(
+            array( 12, 13, 14 ),
+            array_map(static fn($record): int => $record->data()['index'], $compactedMiddleRange)
+        );
 
         $unordered = new SegmentedLogStore($this->root, 'unordered-range', 4096, 1);
         $unordered->appendStream(
@@ -698,6 +711,11 @@ final class AdvancedStorageTest extends TestCase
             $unordered->stream(RecordQuery::all()->time_range_ms(1_700_000_000_010, 1_700_000_000_010))
         );
         $this->assertSame(array( 10 ), array_map(static fn($record): int => $record->data()['index'], $unorderedRange));
+        $unordered->compact();
+        $compactedUnorderedRange = iterator_to_array(
+            $unordered->stream(RecordQuery::all()->time_range_ms(1_700_000_000_010, 1_700_000_000_010))
+        );
+        $this->assertSame(array( 10 ), array_map(static fn($record): int => $record->data()['index'], $compactedUnorderedRange));
 
         $deleted = $store->retain()->olderThanMs(UuidV7::timestamp_ms($ids[0]))->compact();
         $this->assertSame(1, $deleted);

@@ -320,6 +320,10 @@ function bench_log(string $root, int $dataset): array
         $bulk_store->compact();
     });
 
+    $bulk_compacted_range = timed(static function () use ($bulk_store): void {
+        iterator_to_array($bulk_store->stream(RecordQuery::all()->time_range_ms(1_700_000_000_010, 1_700_000_000_200)));
+    });
+
     return compact(
         'append',
         'cursor',
@@ -337,7 +341,8 @@ function bench_log(string $root, int $dataset): array
         'bulk_query_count',
         'bulk_cursor',
         'bulk_range',
-        'bulk_compact'
+        'bulk_compact',
+        'bulk_compacted_range'
     );
 }
 

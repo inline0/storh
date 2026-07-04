@@ -879,6 +879,8 @@ final class SegmentedLogStore implements FileStoreInterface
         $output_records  = 0;
         $output_min      = null;
         $output_max      = null;
+        $output_ordered  = true;
+        $output_last_id  = null;
         $output_buffer   = '';
         $output_position = 0;
         $pending_state_entries = array();
@@ -932,6 +934,8 @@ final class SegmentedLogStore implements FileStoreInterface
                             $output_number = $opened['nextNumber'];
                             $output_buffer   = '';
                             $output_position = 0;
+                            $output_ordered  = true;
+                            $output_last_id  = null;
                             $pending_state_entries = array();
                         }
 
@@ -954,6 +958,10 @@ final class SegmentedLogStore implements FileStoreInterface
                         }
 
                         $output_records++;
+                        if (null !== $output_last_id && strcmp($id, $output_last_id) < 0) {
+                            $output_ordered = false;
+                        }
+                        $output_last_id = $id;
                         $output_min = null === $output_min || strcmp($id, $output_min) < 0 ? $id : $output_min;
                         $output_max = null === $output_max || strcmp($id, $output_max) > 0 ? $id : $output_max;
 
@@ -973,7 +981,8 @@ final class SegmentedLogStore implements FileStoreInterface
                                 $output_offsets,
                                 $output_records,
                                 $output_min,
-                                $output_max
+                                $output_max,
+                                $output_ordered
                             );
                             $output_handle  = null;
                             $output_file    = '';
@@ -982,6 +991,8 @@ final class SegmentedLogStore implements FileStoreInterface
                             $output_records = 0;
                             $output_min     = null;
                             $output_max     = null;
+                            $output_ordered = true;
+                            $output_last_id = null;
                             $output_buffer   = '';
                             $output_position = 0;
                             $pending_state_entries = array();
@@ -1001,7 +1012,8 @@ final class SegmentedLogStore implements FileStoreInterface
                     $output_offsets,
                     $output_records,
                     $output_min,
-                    $output_max
+                    $output_max,
+                    $output_ordered
                 );
             }
         }
@@ -1057,8 +1069,16 @@ final class SegmentedLogStore implements FileStoreInterface
      * @param list<array{0: string, 1: int}> $offsets
      * @return array<string, mixed>
      */
-    private function finish_compaction_segment(mixed $handle, string $file, string $path, array $offsets, int $records, ?string $min, ?string $max): array
-    {
+    private function finish_compaction_segment(
+        mixed $handle,
+        string $file,
+        string $path,
+        array $offsets,
+        int $records,
+        ?string $min,
+        ?string $max,
+        bool $ordered = true
+    ): array {
         fclose($handle);
 
         if (0 === $records) {
@@ -1087,7 +1107,7 @@ final class SegmentedLogStore implements FileStoreInterface
             'min'     => $min,
             'max'     => $max,
             'records' => $records,
-            'ordered' => false,
+            'ordered' => $ordered,
         );
 
         return array(
@@ -1096,7 +1116,7 @@ final class SegmentedLogStore implements FileStoreInterface
             'max'       => $max,
             'min'       => $min,
             'records'   => $records,
-            'ordered'   => false,
+            'ordered'   => $ordered,
             'compacted' => true,
         );
     }
