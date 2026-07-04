@@ -93,15 +93,17 @@ final class DocStoreIndexManager
         $range_buckets = array();
         $range_chunks = array();
         $range_entries = 0;
+        $eq_entries = 0;
         $entries = 0;
-        $definitions = $this->definitions();
+        $definitions = $this->rebuild_definitions($this->definitions());
         foreach ($this->store->stream() as $record) {
-            $this->collect_rebuild_index_entries($buckets, $range_buckets, $range_entries, $definitions, $record->id(), $record->data());
+            $this->collect_rebuild_index_entries($buckets, $range_buckets, $range_entries, $eq_entries, $definitions, $record->id(), $record->data());
             $entries++;
 
-            if ($this->bucket_id_count($buckets) >= self::EQ_REBUILD_FLUSH_IDS) {
+            if ($eq_entries >= self::EQ_REBUILD_FLUSH_IDS) {
                 $this->merge_index_buckets($buckets, false);
                 $buckets = array();
+                $eq_entries = 0;
             }
 
             if ($range_entries >= self::RANGE_REBUILD_CHUNK_ENTRIES) {
@@ -1119,15 +1121,31 @@ final class DocStoreIndexManager
     }
 
     /**
+     * @param array<string, array{field: string, unique: bool, range: bool}> $definitions
+     * @return array<string, array{field: string, unique: bool, range: bool, eqRoot: string}>
+     */
+    private function rebuild_definitions(array $definitions): array
+    {
+        $prepared = array();
+        foreach ($definitions as $field => $definition) {
+            $definition['eqRoot'] = $this->entries_root() . '/eq/' . $this->field_key($definition['field']);
+            $prepared[ $field ] = $definition;
+        }
+
+        return $prepared;
+    }
+
+    /**
      * @param array<string, array{path: string, field: string, key: string, value: mixed, ids: array<string, true>}> $buckets
      * @param array<string, list<string>> $range_buckets
-     * @param array<string, array{field: string, unique: bool, range: bool}> $definitions
+     * @param array<string, array{field: string, unique: bool, range: bool, eqRoot: string}> $definitions
      * @param array<string, mixed> $data
      */
     private function collect_rebuild_index_entries(
         array &$buckets,
         array &$range_buckets,
         int &$range_entries,
+        int &$eq_entries,
         array $definitions,
         string $id,
         array $data
@@ -1144,14 +1162,16 @@ final class DocStoreIndexManager
                 continue;
             }
 
+            $value_key = $this->value_key($value);
             $this->collect_index_entry(
                 $buckets,
-                $this->eq_entry_path($field, $value),
+                $definition['eqRoot'] . '/' . $value_key . '.jsonc',
                 $field,
-                $this->value_key($value),
+                $value_key,
                 $value,
                 $id
             );
+            $eq_entries++;
         }
     }
 
@@ -1659,19 +1679,6 @@ final class DocStoreIndexManager
     private function indexable(mixed $value): bool
     {
         return null === $value || is_scalar($value);
-    }
-
-    /**
-     * @param array<string, array{path: string, field: string, key: string, value: mixed, ids: array<string, true>}> $buckets
-     */
-    private function bucket_id_count(array $buckets): int
-    {
-        $count = 0;
-        foreach ($buckets as $bucket) {
-            $count += count($bucket['ids']);
-        }
-
-        return $count;
     }
 
     private function assert_field(string $field): void
