@@ -854,6 +854,38 @@ final class AdvancedStorageTest extends TestCase
         $bounded->set('large', str_repeat('x', 1024));
         $this->assertNull($bounded->get('large'));
 
+        $compacting = new MemoryCache(1);
+        for ($index = 0; $index < 1100; $index++) {
+            $compacting->set('key-' . $index, $index);
+        }
+        $this->assertSame(1099, $compacting->get('key-1099'));
+
+        $fallback = new MemoryCache(1);
+        $fallback->set('first', 1);
+        $offset = new \ReflectionProperty(MemoryCache::class, 'access_offset');
+        $offset->setValue($fallback, 1);
+        $fallback->set('second', 2);
+        $this->assertNull($fallback->get('first'));
+        $this->assertSame(2, $fallback->get('second'));
+
+        $parse_bytes = new \ReflectionMethod(MemoryCache::class, 'parse_bytes');
+        $this->assertNull($parse_bytes->invoke(null, ''));
+        $this->assertNull($parse_bytes->invoke(null, '0'));
+        $this->assertSame(1024 * 1024 * 1024, $parse_bytes->invoke(null, '1g'));
+        $this->assertSame(1024, $parse_bytes->invoke(null, '1k'));
+        $this->assertSame(512, $parse_bytes->invoke(null, '512'));
+
+        $default_max_bytes = new \ReflectionMethod(MemoryCache::class, 'default_max_bytes');
+        $memory_limit = ini_get('memory_limit');
+        try {
+            ini_set('memory_limit', '-1');
+            $this->assertNull($default_max_bytes->invoke(null));
+        } finally {
+            if (false !== $memory_limit) {
+                ini_set('memory_limit', $memory_limit);
+            }
+        }
+
         try {
             new MemoryCache(0);
             $this->fail('Expected memory cache size failure.');
@@ -1043,9 +1075,29 @@ final class AdvancedStorageTest extends TestCase
             }
         };
 
+        $this->assertFalse($store->query()->has_conditions());
+        $this->assertTrue($store->query()->where('kind')->eq('page')->has_conditions());
+        $this->assertSame('full_scan', $store->query()->explain()['plan']);
         $this->assertSame(4, $store->query()->count());
         $this->assertSame(1, $store->query()->limit(1)->count());
         $this->assertSame(1, $store->query()->cursor($ids[2])->count());
+        $this->assertSame($ids[0], $store->query()->where('kind')->eq('page')->andWhere(static fn($query) => $query->where('id')->eq($ids[0]))->first()?->id());
+        $this->assertSame($ids[0], $store->query()->where('kind')->eq('page')->first()?->id());
+        $this->assertNull($store->query()->where('kind')->eq('missing')->first());
+        $this->assertSame($ids[0], $store->query()->where('kind')->prefix('p')->first()?->id());
+        $this->assertNull($store->query()->where('kind')->prefix('missing')->first());
+        $this->assertSame(0, $store->query()->where('kind')->eq('page')->where('id')->eq('not-a-uuid')->count());
+        $this->assertSame(0, $store->query()->where('id')->eq($ids[0])->where('id')->eq($ids[1])->count());
+        $this->assertSame(0, $store->query()->where('id')->eq($ids[0])->cursor($ids[1])->count());
+        $this->assertSame(0, $store->query()->where('kind')->eq('page')->where('id')->eq($ids[0])->cursor($ids[1])->count());
+        $this->assertSame(array( $ids[0] ), array_map(static fn(StorageRecord $record): string => $record->id(), $store->query()->limit(1)->get()));
+        $this->assertSame(array( $ids[0] ), array_map(static fn(StorageRecord $record): string => $record->id(), $store->query()->where('kind')->prefix('p')->limit(1)->get()));
+        $this->assertSame(1, $store->query()->where('kind')->prefix('p')->limit(1)->count());
+        $this->assertSame(0, $store->query()->where('kind')->prefix('missing')->count());
+        $this->assertSame(0, $store->query()->where('kind')->eq(array( 'page' ))->count());
+        $this->assertSame(0, $store->query()->where('kind')->eq('page')->where('kind')->eq('post')->count());
+        $this->assertSame(array(), $store->query()->where('kind')->eq(array( 'page' ))->get());
+        $this->assertSame(array(), $store->query()->where('kind')->eq('page')->where('kind')->eq('post')->get());
         $this->assertSame(2, $store->query()->where('kind')->eq('page')->count());
         $this->assertSame(
             $ids,

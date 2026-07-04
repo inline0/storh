@@ -75,6 +75,14 @@ final class FileStorageTest extends TestCase
         $this->assertSame(1_700_000_000_000, UuidV7::timestamp_ms($uuid));
     }
 
+    public function test_uuid_v7_entropy_increment_helper_covers_partial_carries(): void
+    {
+        $reflection = new \ReflectionMethod(UuidV7::class, 'increment_entropy');
+
+        $this->assertSame(str_repeat("\0", 9) . "\x01", $reflection->invoke(null, str_repeat("\0", 10)));
+        $this->assertSame(str_repeat("\0", 8) . "\x01\0", $reflection->invoke(null, str_repeat("\0", 9) . "\xff"));
+    }
+
     public function test_jsonc_accepts_comments_trailing_commas_and_rejects_bad_documents(): void
     {
         $decoded = Jsonc::decode_object(
@@ -142,9 +150,22 @@ JSONC
         AtomicFilesystem::append($this->root . '/atomic/events.log', "first\n");
         AtomicFilesystem::append($this->root . '/atomic/events.log', "second\n");
         $this->assertSame("first\nsecond\n", file_get_contents($this->root . '/atomic/events.log'));
+        $empty = fopen($this->root . '/atomic/empty.txt', 'wb');
+        $this->assertIsResource($empty);
+        AtomicFilesystem::write_all($empty, '', $this->root . '/atomic/empty.txt');
+        fclose($empty);
+        $fresh = dirname($path) . '/.fresh.tmp';
+        file_put_contents($fresh, 'partial');
+        $alive = dirname($path) . '/.' . getmypid() . '.abcdef.1.tmp';
+        file_put_contents($alive, 'partial');
         AtomicFilesystem::cleanup_temp_files(dirname($path));
         $this->assertFileDoesNotExist($leftover);
+        $this->assertFileExists($fresh);
+        $this->assertFileExists($alive);
+        unlink($fresh);
+        unlink($alive);
         AtomicFilesystem::cleanup_temp_files($this->root . '/missing');
+        AtomicFilesystem::sync_directory($this->root . '/missing-directory');
     }
 
     public function test_atomic_filesystem_reports_write_failures(): void
@@ -178,6 +199,13 @@ JSONC
             $this->fail('Expected atomic rename into a directory to fail.');
         } catch (StorageException $exception) {
             $this->assertStringContainsString('atomically replace', $exception->getMessage());
+        }
+
+        try {
+            AtomicFilesystem::append($target_directory, 'x');
+            $this->fail('Expected append open failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('appending', $exception->getMessage());
         }
 
         try {
@@ -550,6 +578,7 @@ JSONC
         $this->assertTrue($data_filter->filters_data());
         $this->assertFalse($data_filter->matches_data($ids[1], array( 'kind' => 'post' )));
         $this->assertTrue($data_filter->matches_data($ids[1], array( 'kind' => 'page' )));
+        $this->assertFalse($data_filter->matches_data($ids[3], array( 'kind' => 'page' )));
     }
 
     public function test_log_queue_claim_complete_requeue_counts_and_verify(): void
