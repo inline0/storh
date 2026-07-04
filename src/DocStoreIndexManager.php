@@ -18,6 +18,9 @@ final class DocStoreIndexManager
     /** @var array<string, array{field: string, unique: bool, range: bool}>|null */
     private ?array $definitions_cache = null;
 
+    /** @var array<string, list<array{key: string, offset: int}>> */
+    private array $range_sparse_checkpoints_cache = array();
+
     public function __construct(private readonly DocPerFileStore $store)
     {
         $this->pending = $this->definitions();
@@ -84,6 +87,7 @@ final class DocStoreIndexManager
     {
         $this->delete_directory($this->entries_root());
         AtomicFilesystem::ensure_directory($this->entries_root());
+        $this->range_sparse_checkpoints_cache = array();
 
         $buckets = array();
         $range_buckets = array();
@@ -666,14 +670,37 @@ final class DocStoreIndexManager
             return 0;
         }
 
+        $offset = 0;
+        foreach ($this->range_sparse_checkpoints($field) as $item) {
+            if (strcmp($item['key'], $lower) >= 0) {
+                break;
+            }
+
+            $offset = $item['offset'];
+        }
+
+        return $offset;
+    }
+
+    /**
+     * @return list<array{key: string, offset: int}>
+     */
+    private function range_sparse_checkpoints(string $field): array
+    {
+        if (isset($this->range_sparse_checkpoints_cache[ $field ])) {
+            return $this->range_sparse_checkpoints_cache[ $field ];
+        }
+
         $path = $this->range_sparse_index_path($field);
         if (! is_file($path)) {
-            return 0;
+            $this->range_sparse_checkpoints_cache[ $field ] = array();
+
+            return array();
         }
 
         $decoded = AtomicFilesystem::read_jsonc_object($path);
         $items = isset($decoded['checkpoints']) && is_array($decoded['checkpoints']) ? $decoded['checkpoints'] : array();
-        $offset = 0;
+        $checkpoints = array();
         foreach ($items as $item) {
             if (! is_array($item)) {
                 continue;
@@ -685,14 +712,12 @@ final class DocStoreIndexManager
                 continue;
             }
 
-            if (strcmp($key, $lower) >= 0) {
-                break;
-            }
-
-            $offset = $candidate_offset;
+            $checkpoints[] = array( 'key' => $key, 'offset' => $candidate_offset );
         }
 
-        return $offset;
+        $this->range_sparse_checkpoints_cache[ $field ] = $checkpoints;
+
+        return $checkpoints;
     }
 
     private function range_line_key(string $line): ?string
@@ -1239,6 +1264,7 @@ final class DocStoreIndexManager
                 )
             )
         );
+        $this->range_sparse_checkpoints_cache[ $field ] = $checkpoints;
 
         foreach ($chunks as $chunk) {
             @unlink($chunk);
