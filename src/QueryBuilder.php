@@ -416,6 +416,26 @@ final class QueryBuilder
             return iterator_to_array($this->store->stream($record_query), false);
         }
 
+        if (! $this->has_conditions) {
+            $records = array();
+            $limit = $this->limit;
+            $can_stop_early = null !== $limit && null === $this->order_field;
+            $matched = 0;
+            foreach ($this->store->stream(null) as $record) {
+                if (null !== $this->cursor && strcmp($record->id(), $this->cursor) <= 0) {
+                    continue;
+                }
+
+                $records[] = $record;
+                $matched++;
+                if ($can_stop_early && $matched >= $limit) {
+                    break;
+                }
+            }
+
+            return $records;
+        }
+
         $records = array();
         $limit = $this->limit;
         $can_stop_early = null !== $limit && null === $this->order_field;

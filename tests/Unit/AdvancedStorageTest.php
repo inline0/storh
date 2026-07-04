@@ -1024,6 +1024,24 @@ final class AdvancedStorageTest extends TestCase
         $this->assertSame(1, $store->query()->limit(1)->count());
         $this->assertSame(1, $store->query()->cursor($ids[2])->count());
         $this->assertSame(2, $store->query()->where('kind')->eq('page')->count());
+        $this->assertSame(
+            $ids,
+            array_map(static fn(StorageRecord $record): string => $record->id(), $store->query()->orderBy('id')->get())
+        );
+        $this->assertSame(
+            array( $ids[3] ),
+            array_map(
+                static fn(StorageRecord $record): string => $record->id(),
+                $store->query()->cursor($ids[2])->orderBy('id')->get()
+            )
+        );
+        $this->assertSame(
+            array( $ids[0], $ids[2] ),
+            array_map(
+                static fn(StorageRecord $record): string => $record->id(),
+                $store->query()->where('kind')->eq('page')->orderBy('id')->get()
+            )
+        );
     }
 
     public function test_cli_and_bench_scripts_run(): void
