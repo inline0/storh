@@ -22,6 +22,10 @@ final class SegmentedLogStore implements FileStoreInterface
     /** @var null|array<string, array{deleted: bool, file: string, offset: int, aliases: list<array{file: string, offset: int}>}> */
     private ?array $state = null;
 
+    private int $live_record_count = 0;
+
+    private int $deleted_record_count = 0;
+
     /** @var array<string, array{min: string|null, max: string|null, records: int}> */
     private array $segment_stats = array();
 
@@ -337,6 +341,7 @@ final class SegmentedLogStore implements FileStoreInterface
         }
 
         $single_condition = $this->query_single_condition($groups);
+        $match_marker = null === $single_condition ? null : $this->line_match_marker($single_condition);
         $state = $this->state_index();
         $segment_query = RecordQuery::all();
         if (null !== $cursor) {
@@ -367,7 +372,16 @@ final class SegmentedLogStore implements FileStoreInterface
                         break;
                     }
 
-                    $envelope = $this->decode_line($line);
+                    if (null !== $match_marker) {
+                        $json = $this->validated_line_json($line);
+                        if (! str_contains($json, $match_marker)) {
+                            continue;
+                        }
+
+                        $envelope = $this->decode_json_envelope($json);
+                    } else {
+                        $envelope = $this->decode_line($line);
+                    }
                     $id       = $envelope['id'];
                     $entry    = $state[ $id ] ?? null;
                     if (null === $entry || $entry['deleted']) {
@@ -424,22 +438,10 @@ final class SegmentedLogStore implements FileStoreInterface
             $bytes += is_file($path) ? (int) filesize($path) : 0;
         }
 
-        $state   = $this->state_index();
-        $records = 0;
-        $deleted = 0;
-        foreach ($state as $entry) {
-            if ($entry['deleted']) {
-                $deleted++;
-                continue;
-            }
-
-            $records++;
-        }
-
         return array(
             'segments' => count($segments),
-            'records'  => $records,
-            'deleted'  => $deleted,
+            'records'  => $this->count_live_state_records(null, null),
+            'deleted'  => $this->deleted_state_records(),
             'bytes'    => $bytes,
         );
     }
@@ -1208,6 +1210,13 @@ final class SegmentedLogStore implements FileStoreInterface
             return 0;
         }
 
+        $file = isset($segment['file']) && is_string($segment['file']) ? $segment['file'] : '';
+        $stats = '' !== $file && isset($this->segment_stats[ $file ]) ? $this->segment_stats[ $file ] : null;
+        $min = is_array($stats) ? $stats['min'] : ( isset($segment['min']) && is_string($segment['min']) ? $segment['min'] : null );
+        if (null !== $min && strcmp($min, $after_id) >= 0) {
+            return 0;
+        }
+
         $path = $this->segment_path($segment['index']);
         if (! is_file($path)) {
             return 0;
@@ -1374,8 +1383,19 @@ final class SegmentedLogStore implements FileStoreInterface
         }
 
         $this->state ??= array();
+        $deleted = $encoded['deleted'];
+        if (isset($this->state[ $id ])) {
+            $previous_deleted = $this->state[ $id ]['deleted'];
+            if ($previous_deleted !== $deleted) {
+                $previous_deleted ? $this->deleted_record_count-- : $this->live_record_count--;
+                $deleted ? $this->deleted_record_count++ : $this->live_record_count++;
+            }
+        } else {
+            $deleted ? $this->deleted_record_count++ : $this->live_record_count++;
+        }
+
         $this->state[ $id ] = array(
-            'deleted' => $encoded['deleted'],
+            'deleted' => $deleted,
             'file'    => $encoded['file'],
             'offset'  => $encoded['offset'],
             'aliases' => isset($encoded['aliases']) && is_array($encoded['aliases']) ? $encoded['aliases'] : array(),
@@ -1394,6 +1414,7 @@ final class SegmentedLogStore implements FileStoreInterface
             $this->cache->clear_prefix($this->state_cache_prefix());
         }
         $this->state = $state;
+        $this->refresh_state_counts();
     }
 
     /**
@@ -1494,6 +1515,26 @@ final class SegmentedLogStore implements FileStoreInterface
         return $data;
     }
 
+    private function line_match_marker(QueryCondition $condition): ?string
+    {
+        if ('eq' !== $condition->operator() || 'id' === $condition->field()) {
+            return null;
+        }
+
+        $value = $condition->value();
+        if (null !== $value && ! is_scalar($value)) {
+            return null;
+        }
+
+        return json_encode(
+            $condition->field(),
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
+        ) . ':' . json_encode(
+            $value,
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
+        );
+    }
+
     /**
      * @param list<list<QueryCondition>> $groups
      */
@@ -1512,13 +1553,19 @@ final class SegmentedLogStore implements FileStoreInterface
 
     private function count_live_state_records(?string $cursor, ?int $limit): int
     {
+        if (null === $cursor) {
+            $this->state_index();
+
+            return null === $limit ? $this->live_record_count : min($this->live_record_count, $limit);
+        }
+
         $count = 0;
         foreach ($this->state_index() as $id => $entry) {
             if ($entry['deleted']) {
                 continue;
             }
 
-            if (null !== $cursor && $id <= $cursor) {
+            if ($id <= $cursor) {
                 continue;
             }
 
@@ -1529,6 +1576,30 @@ final class SegmentedLogStore implements FileStoreInterface
         }
 
         return $count;
+    }
+
+    private function deleted_state_records(): int
+    {
+        $this->state_index();
+
+        return $this->deleted_record_count;
+    }
+
+    private function refresh_state_counts(): void
+    {
+        $live = 0;
+        $deleted = 0;
+        foreach ($this->state ?? array() as $entry) {
+            if ($entry['deleted']) {
+                $deleted++;
+                continue;
+            }
+
+            $live++;
+        }
+
+        $this->live_record_count = $live;
+        $this->deleted_record_count = $deleted;
     }
 
     /**
@@ -1595,6 +1666,59 @@ final class SegmentedLogStore implements FileStoreInterface
             throw new StorageException('Corrupt segmented log line.');
         }
 
+        $decoded = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+        if (
+            ! is_array($decoded) ||
+            ! isset($decoded['id'], $decoded['op']) ||
+            ! is_string($decoded['id']) ||
+            ! is_string($decoded['op'])
+        ) {
+            throw new StorageException('Segmented log line does not contain a record envelope.');
+        }
+
+        $envelope = array(
+            'id' => $decoded['id'],
+            'op' => $decoded['op'],
+        );
+
+        if (array_key_exists('data', $decoded)) {
+            $envelope['data'] = $decoded['data'];
+        }
+
+        return $envelope;
+    }
+
+    private function validated_line_json(string $line): string
+    {
+        $length = strlen($line);
+        if ($length > 0 && "\n" === $line[ $length - 1 ]) {
+            $line = substr($line, 0, $length - 1);
+            $length--;
+        }
+        if ($length > 0 && "\r" === $line[ $length - 1 ]) {
+            $line = substr($line, 0, $length - 1);
+        }
+
+        $first = strpos($line, "\t");
+        $second = false === $first ? false : strpos($line, "\t", $first + 1);
+        if (false === $first || false === $second) {
+            throw new StorageException('Malformed segmented log line.');
+        }
+
+        $json = substr($line, $second + 1);
+        $checksum = substr($line, $first + 1, $second - $first - 1);
+        if ((int) substr($line, 0, $first) !== strlen($json) || ! hash_equals($checksum, hash('crc32b', $json))) {
+            throw new StorageException('Corrupt segmented log line.');
+        }
+
+        return $json;
+    }
+
+    /**
+     * @return array{id: string, op: string, data?: mixed}
+     */
+    private function decode_json_envelope(string $json): array
+    {
         $decoded = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
         if (
             ! is_array($decoded) ||
@@ -1763,6 +1887,11 @@ final class SegmentedLogStore implements FileStoreInterface
     private function delete_state_entry(string $id): void
     {
         if (null !== $this->state) {
+            if (isset($this->state[ $id ])) {
+                $previous = $this->state[ $id ];
+                $previous['deleted'] ? $this->deleted_record_count-- : $this->live_record_count--;
+            }
+
             unset($this->state[ $id ]);
         }
         if ($this->cache_enabled) {
