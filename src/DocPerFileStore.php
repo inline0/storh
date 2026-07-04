@@ -676,17 +676,39 @@ final class DocPerFileStore implements FileStoreInterface
         $count = 0;
         $buffer = '';
         try {
-            foreach ($this->stream() as $record) {
-                $buffer .= json_encode(
-                    array( 'id' => $record->id(), 'data' => $record->data() ),
-                    JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
-                );
-                $buffer .= "\n";
-                $count++;
+            if (null !== $this->record_path_cache && null !== $this->record_data_cache) {
+                $ids = $this->record_cache_ordered ? array_keys($this->record_data_cache) : $this->cached_record_ids();
+                foreach ($ids as $id) {
+                    $data = $this->record_data_cache[ $id ] ?? null;
+                    if (null === $data) {
+                        continue;
+                    }
 
-                if (strlen($buffer) >= self::JSONL_EXPORT_BUFFER_BYTES) {
-                    AtomicFilesystem::write_all($handle, $buffer, $path);
-                    $buffer = '';
+                    $buffer .= json_encode(
+                        array( 'id' => $id, 'data' => $data ),
+                        JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
+                    );
+                    $buffer .= "\n";
+                    $count++;
+
+                    if (strlen($buffer) >= self::JSONL_EXPORT_BUFFER_BYTES) {
+                        AtomicFilesystem::write_all($handle, $buffer, $path);
+                        $buffer = '';
+                    }
+                }
+            } else {
+                foreach ($this->stream() as $record) {
+                    $buffer .= json_encode(
+                        array( 'id' => $record->id(), 'data' => $record->data() ),
+                        JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
+                    );
+                    $buffer .= "\n";
+                    $count++;
+
+                    if (strlen($buffer) >= self::JSONL_EXPORT_BUFFER_BYTES) {
+                        AtomicFilesystem::write_all($handle, $buffer, $path);
+                        $buffer = '';
+                    }
                 }
             }
 
