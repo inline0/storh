@@ -123,6 +123,107 @@ final class CacheCorrectnessTest extends TestCase
         $this->assertSame(array( $ids[0] ), array_map(static fn(StorageRecord $record): string => $record->id(), $records));
     }
 
+    public function test_validating_complete_cache_fast_paths_recheck_external_deletes(): void
+    {
+        foreach (array( CacheValidation::STAT, CacheValidation::HASH ) as $mode) {
+            $ids = $this->fixed_ids(2);
+            $store = new DocPerFileStore(
+                $this->root,
+                'external-delete-' . $mode,
+                $this->id_generator($ids),
+                Cache::memory(10),
+                cache_validation: $mode
+            );
+
+            $store->putMany(array(
+                array( 'value' => 'alpha' ),
+                array( 'value' => 'bravo' ),
+            ));
+            $this->assertSame($ids, $this->record_ids($store->query()->get()));
+            $this->assertSame(2, $store->query()->count());
+            $this->assertSame($ids[0], $store->query()->first()?->id());
+
+            $path = $this->path_for_id('external-delete-' . $mode, $ids[0]);
+            $this->assertTrue(@unlink($path));
+            clearstatcache(true, $path);
+
+            $this->assertNull($store->get($ids[0]));
+            $this->assertSame(1, $store->query()->count());
+            $this->assertSame($ids[1], $store->query()->first()?->id());
+            $this->assertSame(array( $ids[1] ), $this->record_ids($store->query()->get()));
+            $this->assertSame(array( $ids[1] ), $this->record_ids(iterator_to_array($store->stream(), false)));
+        }
+    }
+
+    public function test_hash_complete_cache_fast_paths_recheck_same_stat_external_rewrite(): void
+    {
+        $ids = $this->fixed_ids(2);
+        $store = new DocPerFileStore(
+            $this->root,
+            'hash-complete-cache',
+            $this->id_generator($ids),
+            Cache::memory(10),
+            cache_validation: CacheValidation::HASH
+        );
+
+        $store->putMany(array(
+            array( 'value' => 'alpha' ),
+            array( 'value' => 'other' ),
+        ));
+        $this->assertSame(array( 'alpha', 'other' ), $this->record_values($store->query()->get()));
+        $this->assertSame('alpha', $store->query()->first()?->data()['value'] ?? null);
+        $this->assertSame(2, $store->query()->count());
+
+        $path = $this->path_for_id('hash-complete-cache', $ids[0]);
+        $mtime = (int) filemtime($path);
+        $size = (int) filesize($path);
+        $this->write_raw_record($path, $ids[0], array( 'value' => 'bravo' ));
+        $this->force_stat($path, $mtime, $size);
+
+        $this->assertSame('bravo', $store->get($ids[0])?->data()['value'] ?? null);
+        $this->assertSame('bravo', $store->query()->first()?->data()['value'] ?? null);
+        $this->assertSame(2, $store->query()->count());
+        $this->assertSame(array( 'bravo', 'other' ), $this->record_values($store->query()->get()));
+        $this->assertSame(array( 'bravo', 'other' ), $this->record_values(iterator_to_array($store->stream(), false)));
+        $this->assertSame(0, $store->query()->where('value')->eq('alpha')->count());
+        $this->assertSame(1, $store->query()->where('value')->eq('bravo')->count());
+    }
+
+    public function test_trust_complete_cache_fast_paths_follow_same_instance_mutations(): void
+    {
+        $ids = $this->fixed_ids(3);
+        $store = new DocPerFileStore(
+            $this->root,
+            'trust-local-fast-paths',
+            $this->id_generator($ids),
+            Cache::memory(10),
+            cache_validation: CacheValidation::TRUST
+        );
+
+        $store->putMany(array(
+            array( 'value' => 'alpha' ),
+            array( 'value' => 'bravo' ),
+            array( 'value' => 'charlie' ),
+        ));
+        $this->assertSame(array( 'alpha', 'bravo', 'charlie' ), $this->record_values($store->query()->get()));
+        $this->assertSame(3, $store->query()->count());
+        $this->assertSame($ids[0], $store->query()->first()?->id());
+
+        $store->put(array( 'value' => 'zulu' ), $ids[0]);
+        $this->assertSame('zulu', $store->get($ids[0])?->data()['value'] ?? null);
+        $this->assertSame('zulu', $store->query()->first()?->data()['value'] ?? null);
+        $this->assertSame(array( 'zulu', 'bravo', 'charlie' ), $this->record_values($store->query()->get()));
+        $this->assertSame(0, $store->query()->where('value')->eq('alpha')->count());
+        $this->assertSame(1, $store->query()->where('value')->eq('zulu')->count());
+
+        $store->delete($ids[0]);
+        $this->assertNull($store->get($ids[0]));
+        $this->assertSame(2, $store->query()->count());
+        $this->assertSame($ids[1], $store->query()->first()?->id());
+        $this->assertSame(array( $ids[1], $ids[2] ), $this->record_ids($store->query()->get()));
+        $this->assertSame(array( $ids[1], $ids[2] ), $this->record_ids(iterator_to_array($store->stream(), false)));
+    }
+
     public function test_reindex_reads_filesystem_records_and_clears_stat_caches_after_same_stat_change(): void
     {
         $ids = $this->fixed_ids(1);
@@ -222,6 +323,24 @@ final class CacheCorrectnessTest extends TestCase
     private function path_for_id(string $collection, string $id): string
     {
         return ( new DocPerFileStore($this->root, $collection) )->path_for_id($id);
+    }
+
+    /**
+     * @param list<StorageRecord> $records
+     * @return list<string>
+     */
+    private function record_ids(array $records): array
+    {
+        return array_map(static fn(StorageRecord $record): string => $record->id(), $records);
+    }
+
+    /**
+     * @param list<StorageRecord> $records
+     * @return list<string>
+     */
+    private function record_values(array $records): array
+    {
+        return array_map(static fn(StorageRecord $record): string => (string) ( $record->data()['value'] ?? '' ), $records);
     }
 
     private function force_stat(string $path, int $mtime, int $size): void

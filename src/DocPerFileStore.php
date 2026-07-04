@@ -1780,6 +1780,10 @@ final class DocPerFileStore implements FileStoreInterface
             'hash'  => $hash,
             'data'  => $data,
         );
+
+        if (null !== $this->record_data_cache && isset($this->record_data_cache[ $id ])) {
+            $this->record_data_cache[ $id ] = $data;
+        }
     }
 
     private function over_validated_record_cache_budget(): bool
