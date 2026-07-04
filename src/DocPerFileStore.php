@@ -684,11 +684,10 @@ final class DocPerFileStore implements FileStoreInterface
                         continue;
                     }
 
-                    $buffer .= json_encode(
-                        array( 'id' => $id, 'data' => $data ),
+                    $buffer .= '{"id":"' . $id . '","data":' . json_encode(
+                        $data,
                         JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
-                    );
-                    $buffer .= "\n";
+                    ) . "}\n";
                     $count++;
 
                     if (strlen($buffer) >= self::JSONL_EXPORT_BUFFER_BYTES) {
@@ -698,11 +697,10 @@ final class DocPerFileStore implements FileStoreInterface
                 }
             } else {
                 foreach ($this->stream() as $record) {
-                    $buffer .= json_encode(
-                        array( 'id' => $record->id(), 'data' => $record->data() ),
+                    $buffer .= '{"id":"' . $record->id() . '","data":' . json_encode(
+                        $record->data(),
                         JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
-                    );
-                    $buffer .= "\n";
+                    ) . "}\n";
                     $count++;
 
                     if (strlen($buffer) >= self::JSONL_EXPORT_BUFFER_BYTES) {
