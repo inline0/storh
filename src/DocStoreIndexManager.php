@@ -1019,7 +1019,27 @@ final class DocStoreIndexManager
 
     private function value_key(mixed $value): string
     {
-        return hash('sha256', serialize($value));
+        if (is_int($value)) {
+            return 'i-' . str_replace('-', 'm', (string) $value);
+        }
+
+        if (is_string($value)) {
+            return strlen($value) <= 96 ? 's-' . bin2hex($value) : 's-' . hash('xxh128', $value);
+        }
+
+        if (is_bool($value)) {
+            return 'b-' . ( $value ? '1' : '0' );
+        }
+
+        if (is_float($value)) {
+            return 'f-' . str_replace(array( '-', '.', '+' ), array( 'm', 'd', 'p' ), sprintf('%.17G', $value));
+        }
+
+        if (null === $value) {
+            return 'n';
+        }
+
+        return 'z-' . hash('xxh128', serialize($value));
     }
 
     private function range_key(mixed $value): string
