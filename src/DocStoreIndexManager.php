@@ -815,9 +815,9 @@ final class DocStoreIndexManager
     private function tail_ids_for_range_condition(QueryCondition $condition, int $limit): array
     {
         $ids = array();
-        $this->collect_range_condition_ids($this->range_field_root($condition->field()), $condition, $ids, true);
+        $this->collect_range_condition_ids_reverse($this->range_field_root($condition->field()), $condition, $ids, $limit);
 
-        return array_reverse(array_slice(array_keys($ids), -$limit));
+        return array_keys($ids);
     }
 
     private function count_for_range_condition(QueryCondition $condition, ?int $limit = null): int
@@ -930,6 +930,21 @@ final class DocStoreIndexManager
         $comparison = strcmp($key, $upper);
 
         return $comparison > 0 || (0 === $comparison && ! $window[3]);
+    }
+
+    /**
+     * @param array{0: string|null, 1: bool, 2: string|null, 3: bool} $window
+     */
+    private function range_key_before_window(string $key, array $window): bool
+    {
+        $lower = $window[0];
+        if (null === $lower) {
+            return false;
+        }
+
+        $comparison = strcmp($key, $lower);
+
+        return $comparison < 0 || (0 === $comparison && ! $window[1]);
     }
 
     /**
@@ -1067,6 +1082,109 @@ final class DocStoreIndexManager
         } finally {
             fclose($handle);
         }
+    }
+
+    /**
+     * @param array<string, true> $ids
+     */
+    private function collect_range_condition_ids_reverse(
+        string $path,
+        QueryCondition $condition,
+        array &$ids,
+        int $limit
+    ): void {
+        if (! is_file($path)) {
+            return;
+        }
+
+        $handle = @fopen($path, 'rb');
+        if (false === $handle) {
+            return;
+        }
+
+        $key_window = $this->range_key_window($condition);
+        $buffer = '';
+
+        try {
+            fseek($handle, 0, SEEK_END);
+            $position = ftell($handle);
+            if (false === $position) {
+                return;
+            }
+
+            while ($position > 0) {
+                $read = min(8192, $position);
+                $position -= $read;
+                fseek($handle, $position);
+                $chunk = fread($handle, $read);
+                if (false === $chunk || '' === $chunk) {
+                    break;
+                }
+
+                $buffer = $chunk . $buffer;
+                $lines = explode("\n", $buffer);
+                $buffer = array_shift($lines) ?? '';
+
+                for ($index = count($lines) - 1; $index >= 0; $index--) {
+                    $line = $lines[ $index ];
+                    if ('' === $line) {
+                        continue;
+                    }
+
+                    if ($this->collect_reverse_range_line($line, $condition, $ids, $key_window, $limit)) {
+                        return;
+                    }
+                }
+            }
+
+            if ('' !== $buffer) {
+                $this->collect_reverse_range_line($buffer, $condition, $ids, $key_window, $limit);
+            }
+        } finally {
+            fclose($handle);
+        }
+    }
+
+    /**
+     * @param array<string, true> $ids
+     * @param array{0: string|null, 1: bool, 2: string|null, 3: bool}|null $key_window
+     */
+    private function collect_reverse_range_line(
+        string $line,
+        QueryCondition $condition,
+        array &$ids,
+        ?array $key_window,
+        int $limit
+    ): bool {
+        if (null !== $key_window) {
+            $line_key = $this->range_line_key($line);
+            if (null !== $line_key) {
+                if ($this->range_key_after_window($line_key, $key_window)) {
+                    return false;
+                }
+
+                if ($this->range_key_before_window($line_key, $key_window)) {
+                    return true;
+                }
+            }
+        }
+
+        $entry = $this->decode_index_line($line);
+        if (
+            array() === $entry ||
+            ! $this->range_value_matches(
+                $condition->operator(),
+                $entry['value'] ?? null,
+                $condition->value(),
+                $condition->second_value()
+            )
+        ) {
+            return false;
+        }
+
+        $this->apply_range_entry_ids($entry, $ids);
+
+        return count($ids) >= $limit;
     }
 
     private function count_range_condition_entries(string $path, QueryCondition $condition, bool $sorted, ?int $limit = null): int
