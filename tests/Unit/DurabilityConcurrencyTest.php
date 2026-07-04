@@ -50,6 +50,58 @@ final class DurabilityConcurrencyTest extends TestCase
         $this->assertTrue($store->verify()['ok']);
     }
 
+    public function test_doc_repair_quarantines_corrupt_records_and_rebuilds_indexes(): void
+    {
+        $ids = $this->fixed_ids(2, 1_700_450_000_000);
+        $store = new DocPerFileStore($this->root, 'corrupt-docs');
+        $store->indexes()->field('kind')->field('bucket')->field('score')->range()->sync();
+        $store->put(array( 'kind' => 'page', 'bucket' => 1, 'score' => 10 ), $ids[0]);
+        $store->put(array( 'kind' => 'page', 'bucket' => 2, 'score' => 20 ), $ids[1]);
+
+        file_put_contents($store->path_for_id($ids[1]), '{"id":');
+
+        $this->assertFalse($store->verify()['ok']);
+        $repair = $store->repair();
+
+        $this->assertTrue($repair['ok']);
+        $this->assertSame(1, $repair['quarantined']);
+        $this->assertCount(1, glob($this->root . '/corrupt-docs/.storh/corrupt/*.jsonc') ?: array());
+        $this->assertNull($store->get($ids[1]));
+        $this->assertSame(1, $store->query()->where('kind')->eq('page')->count());
+        $this->assertSame(1, $store->query()->where('score')->gte(0)->count());
+        $this->assertTrue($store->verify()['ok']);
+    }
+
+    public function test_doc_verify_detects_index_drift_and_repair_rebuilds_indexes(): void
+    {
+        $ids = $this->fixed_ids(3, 1_700_470_000_000);
+        $store = new DocPerFileStore($this->root, 'drift-docs');
+        $store->indexes()->field('kind')->field('bucket')->field('score')->range()->sync();
+        $first = array( 'kind' => 'page', 'bucket' => 1, 'score' => 10 );
+        $second = array( 'kind' => 'page', 'bucket' => 2, 'score' => 20 );
+        $store->put($first, $ids[0]);
+        $store->put($second, $ids[1]);
+
+        $store->indexes()->remove_record($ids[0], $first);
+        $store->indexes()->update_record($ids[2], array( 'kind' => 'page', 'bucket' => 9, 'score' => 90 ), null);
+
+        $verify = $store->verify();
+        $this->assertFalse($verify['ok']);
+        $this->assertStringContainsString('Index mismatch', implode("\n", $verify['errors']));
+        $this->assertSame(
+            array( $ids[1], $ids[2] ),
+            $store->indexes()->candidate_ids($store->query()->where('kind')->eq('page'))
+        );
+
+        $repair = $store->repair();
+
+        $this->assertTrue($repair['ok']);
+        $this->assertSame(0, $repair['quarantined']);
+        $this->assertSame(2, $store->query()->where('kind')->eq('page')->count());
+        $this->assertSame(2, $store->query()->where('score')->gte(0)->count());
+        $this->assertTrue($store->verify()['ok']);
+    }
+
     public function test_log_queue_reopen_truncates_torn_tail_without_losing_committed_events(): void
     {
         $ids = $this->fixed_ids(3, 1_700_500_000_000);

@@ -123,6 +123,36 @@ final class CacheCorrectnessTest extends TestCase
         $this->assertSame(array( $ids[0] ), array_map(static fn(StorageRecord $record): string => $record->id(), $records));
     }
 
+    public function test_reindex_reads_filesystem_records_and_clears_stat_caches_after_same_stat_change(): void
+    {
+        $ids = $this->fixed_ids(1);
+        $store = new DocPerFileStore(
+            $this->root,
+            'stat-reindex',
+            $this->id_generator($ids),
+            Cache::memory(10),
+            cache_validation: CacheValidation::STAT
+        );
+        $store->indexes()->field('value')->sync();
+
+        $store->put(array( 'value' => 'alpha' ));
+        $this->assertSame('alpha', $store->get($ids[0])?->data()['value'] ?? null);
+
+        $path = $this->path_for_id('stat-reindex', $ids[0]);
+        $mtime = (int) filemtime($path);
+        $size = (int) filesize($path);
+        $this->write_raw_record($path, $ids[0], array( 'value' => 'bravo' ));
+        $this->force_stat($path, $mtime, $size);
+
+        $this->assertFalse($store->verify()['ok']);
+        $store->reindex();
+
+        $this->assertTrue($store->verify()['ok']);
+        $this->assertSame('bravo', $store->get($ids[0])?->data()['value'] ?? null);
+        $this->assertSame(0, $store->query()->where('value')->eq('alpha')->count());
+        $this->assertSame(1, $store->query()->where('value')->eq('bravo')->count());
+    }
+
     public function test_trust_validation_uses_shared_cache_updates_before_private_fast_path(): void
     {
         $ids = $this->fixed_ids(1);

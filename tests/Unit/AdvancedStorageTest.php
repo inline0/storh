@@ -205,9 +205,12 @@ final class AdvancedStorageTest extends TestCase
             array( 'explicit-null' ),
             array_map(static fn(StorageRecord $record): string => $record->data()['slug'], $nullable_cache->query()->where('marker')->eq(null)->get())
         );
-        $this->assertTrue($store->health()['ok']);
-        $this->assertTrue($store->verify()['ok']);
+        $health = $store->health();
+        $this->assertFalse($health['ok']);
+        $this->assertStringContainsString('Index mismatch', implode("\n", $health['errors']));
+        $this->assertFalse($store->verify()['ok']);
         $this->assertSame(3, $store->reindex()['fields']);
+        $this->assertTrue($store->verify()['ok']);
         $this->assertTrue($store->repair()['ok']);
         $this->assertTrue($store->compact()['ok']);
     }

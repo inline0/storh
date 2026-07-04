@@ -89,15 +89,15 @@ final class DocStoreIndexManager
     /**
      * @return array{fields: int, entries: int}
      */
-    public function rebuild(): array
+    public function rebuild(bool $from_filesystem = false): array
     {
-        return $this->store->with_write_lock(fn(): array => $this->rebuild_unlocked());
+        return $this->store->with_write_lock(fn(): array => $this->rebuild_unlocked($from_filesystem));
     }
 
     /**
      * @return array{fields: int, entries: int}
      */
-    private function rebuild_unlocked(): array
+    private function rebuild_unlocked(bool $from_filesystem): array
     {
         $this->delete_directory($this->entries_root());
         AtomicFilesystem::ensure_directory($this->entries_root());
@@ -112,7 +112,8 @@ final class DocStoreIndexManager
         $definitions = $this->rebuild_definitions($this->definitions());
         $compound_roots = $this->rebuild_compound_roots($definitions);
         $compound_key_cache = array();
-        foreach ($this->store->stream() as $record) {
+        $records = $from_filesystem ? $this->store->records_from_filesystem() : $this->store->stream();
+        foreach ($records as $record) {
             $this->collect_rebuild_index_entries(
                 $buckets,
                 $range_buckets,
@@ -147,6 +148,290 @@ final class DocStoreIndexManager
             'fields'  => count($this->definitions()),
             'entries' => $entries,
         );
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function verify_against_store(): array
+    {
+        $definitions = $this->definitions();
+        if (array() === $definitions) {
+            return array();
+        }
+
+        $expected = $this->expected_index_maps($definitions);
+        $errors = array();
+
+        $actual_eq = array();
+        $actual_range = array();
+        $actual_compound = array();
+        $this->collect_actual_eq_index_map($definitions, $actual_eq, $errors);
+        $this->collect_actual_range_index_map($definitions, $actual_range, $errors);
+        $this->collect_actual_compound_index_map($definitions, $actual_compound, $errors);
+
+        $this->compare_index_maps('equality', $expected['eq'], $actual_eq, $errors);
+        $this->compare_index_maps('range', $expected['range'], $actual_range, $errors);
+        $this->compare_index_maps('compound', $expected['compound'], $actual_compound, $errors);
+
+        return $errors;
+    }
+
+    /**
+     * @param array<string, array{field: string, unique: bool, range: bool}> $definitions
+     * @return array{
+     *     eq: array<string, array<string, true>>,
+     *     range: array<string, array<string, true>>,
+     *     compound: array<string, array<string, true>>
+     * }
+     */
+    private function expected_index_maps(array $definitions): array
+    {
+        $eq = array();
+        $range = array();
+        $compound = array();
+
+        foreach ($this->store->records_from_filesystem() as $record) {
+            $compound_values = array();
+            foreach ($definitions as $definition) {
+                $field = $definition['field'];
+                $data = $record->data();
+                if (! array_key_exists($field, $data) || ! $this->indexable($data[ $field ])) {
+                    continue;
+                }
+
+                $value = $data[ $field ];
+                if ($definition['range']) {
+                    $this->add_index_map_id(
+                        $range,
+                        $field . "\0" . $this->range_key($value) . "\0" . $this->value_key($value),
+                        $record->id()
+                    );
+                    continue;
+                }
+
+                $this->add_index_map_id($eq, $field . "\0" . $this->value_key($value), $record->id());
+                if (! $definition['unique']) {
+                    $compound_values[ $field ] = $value;
+                }
+            }
+
+            $fields = array_keys($compound_values);
+            $field_count = count($fields);
+            for ($left_index = 0; $left_index < $field_count - 1; $left_index++) {
+                $left = $fields[ $left_index ];
+                for ($right_index = $left_index + 1; $right_index < $field_count; $right_index++) {
+                    $right = $fields[ $right_index ];
+                    $this->add_index_map_id(
+                        $compound,
+                        $left . "\t" . $right . "\0" . $this->compound_value_key(
+                            $compound_values[ $left ],
+                            $compound_values[ $right ]
+                        ),
+                        $record->id()
+                    );
+                }
+            }
+        }
+
+        return array(
+            'eq'       => $eq,
+            'range'    => $range,
+            'compound' => $compound,
+        );
+    }
+
+    /**
+     * @param array<string, array{field: string, unique: bool, range: bool}> $definitions
+     * @param array<string, array<string, true>> $actual
+     * @param list<string> $errors
+     */
+    private function collect_actual_eq_index_map(array $definitions, array &$actual, array &$errors): void
+    {
+        foreach ($definitions as $definition) {
+            if ($definition['range']) {
+                continue;
+            }
+
+            $root = $this->entries_root() . '/eq/' . $this->field_key($definition['field']);
+            foreach (glob($root . '/*.jsonc') ?: array() as $path) {
+                $this->collect_actual_value_index_file($path, $definition['field'], false, $actual, $errors);
+            }
+        }
+    }
+
+    /**
+     * @param array<string, array{field: string, unique: bool, range: bool}> $definitions
+     * @param array<string, array<string, true>> $actual
+     * @param list<string> $errors
+     */
+    private function collect_actual_range_index_map(array $definitions, array &$actual, array &$errors): void
+    {
+        foreach ($definitions as $definition) {
+            if (! $definition['range']) {
+                continue;
+            }
+
+            $field = $definition['field'];
+            $this->collect_actual_range_index_file($this->range_field_root($field), $field, $actual, $errors);
+            $this->collect_actual_range_index_file($this->range_delta_field_root($field), $field, $actual, $errors);
+        }
+    }
+
+    /**
+     * @param array<string, array{field: string, unique: bool, range: bool}> $definitions
+     * @param array<string, array<string, true>> $actual
+     * @param list<string> $errors
+     */
+    private function collect_actual_compound_index_map(array $definitions, array &$actual, array &$errors): void
+    {
+        $fields = array_keys(array_filter(
+            $definitions,
+            static fn(array $definition): bool => ! $definition['range'] && ! $definition['unique']
+        ));
+        $field_count = count($fields);
+        for ($left_index = 0; $left_index < $field_count - 1; $left_index++) {
+            $left = $fields[ $left_index ];
+            for ($right_index = $left_index + 1; $right_index < $field_count; $right_index++) {
+                $right = $fields[ $right_index ];
+                $root = $this->entries_root()
+                    . '/compound/'
+                    . $this->field_key($left)
+                    . '-'
+                    . $this->field_key($right);
+                foreach (glob($root . '/*.jsonc') ?: array() as $path) {
+                    $this->collect_actual_value_index_file($path, $left . "\t" . $right, true, $actual, $errors);
+                }
+            }
+        }
+    }
+
+    /**
+     * @param array<string, array<string, true>> $actual
+     * @param list<string> $errors
+     */
+    private function collect_actual_value_index_file(
+        string $path,
+        string $expected_field,
+        bool $compound,
+        array &$actual,
+        array &$errors
+    ): void {
+        try {
+            $entry = AtomicFilesystem::read_jsonc_object($path);
+        } catch (\Throwable $throwable) {
+            $errors[] = 'Unreadable index file: ' . $path . ' (' . $throwable->getMessage() . ')';
+            return;
+        }
+
+        $field = $entry['field'] ?? null;
+        $key = $entry['key'] ?? null;
+        if (! is_string($field) || ! is_string($key)) {
+            $errors[] = 'Malformed index file: ' . $path;
+            return;
+        }
+        if ($field !== $expected_field) {
+            $errors[] = 'Index field mismatch: ' . $path;
+        }
+        if (! $compound && $key !== $this->value_key($entry['value'] ?? null)) {
+            $errors[] = 'Index key mismatch: ' . $path;
+        }
+
+        $ids = $this->ids_from_value_entry($entry);
+        if (isset($entry['count']) && is_int($entry['count']) && $entry['count'] !== count($ids)) {
+            $errors[] = 'Index count mismatch: ' . $path;
+        }
+
+        foreach ($ids as $id) {
+            $this->add_index_map_id($actual, $field . "\0" . $key, $id);
+        }
+    }
+
+    /**
+     * @param array<string, array<string, true>> $actual
+     * @param list<string> $errors
+     */
+    private function collect_actual_range_index_file(string $path, string $field, array &$actual, array &$errors): void
+    {
+        if (! is_file($path)) {
+            return;
+        }
+
+        $handle = @fopen($path, 'rb');
+        if (false === $handle) {
+            $errors[] = 'Unreadable range index file: ' . $path;
+            return;
+        }
+
+        try {
+            while (false !== ( $line = fgets($handle) )) {
+                $entry = $this->decode_index_line($line);
+                $key = $entry['key'] ?? null;
+                $value = $entry['value'] ?? null;
+                if (array() === $entry || ! is_string($key) || ! $this->indexable($value)) {
+                    $errors[] = 'Malformed range index line: ' . $path;
+                    continue;
+                }
+                if ($key !== $this->range_key($value)) {
+                    $errors[] = 'Range index key mismatch: ' . $path;
+                }
+
+                $identity = $field . "\0" . $key . "\0" . $this->value_key($value);
+                foreach ($this->ids_from_value_entry($entry) as $id) {
+                    $this->add_index_map_id($actual, $identity, $id);
+                }
+
+                $removed = isset($entry['remove']) && is_array($entry['remove']) ? $entry['remove'] : array();
+                foreach ($removed as $id) {
+                    if (is_string($id)) {
+                        $this->remove_index_map_id($actual, $identity, $id);
+                    }
+                }
+            }
+        } finally {
+            fclose($handle);
+        }
+    }
+
+    /**
+     * @param array<string, array<string, true>> $map
+     */
+    private function add_index_map_id(array &$map, string $identity, string $id): void
+    {
+        $map[ $identity ] ??= array();
+        $map[ $identity ][ $id ] = true;
+    }
+
+    /**
+     * @param array<string, array<string, true>> $map
+     */
+    private function remove_index_map_id(array &$map, string $identity, string $id): void
+    {
+        unset($map[ $identity ][ $id ]);
+        if (isset($map[ $identity ]) && array() === $map[ $identity ]) {
+            unset($map[ $identity ]);
+        }
+    }
+
+    /**
+     * @param array<string, array<string, true>> $expected
+     * @param array<string, array<string, true>> $actual
+     * @param list<string> $errors
+     */
+    private function compare_index_maps(string $label, array $expected, array $actual, array &$errors): void
+    {
+        $identities = array_values(array_unique(array_merge(array_keys($expected), array_keys($actual))));
+        sort($identities, SORT_STRING);
+
+        foreach ($identities as $identity) {
+            $expected_ids = array_keys($expected[ $identity ] ?? array());
+            $actual_ids = array_keys($actual[ $identity ] ?? array());
+            sort($expected_ids, SORT_STRING);
+            sort($actual_ids, SORT_STRING);
+            if ($expected_ids !== $actual_ids) {
+                $errors[] = 'Index mismatch (' . $label . '): ' . str_replace("\0", ' ', $identity);
+            }
+        }
     }
 
     /**

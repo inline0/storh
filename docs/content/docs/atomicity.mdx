@@ -10,6 +10,12 @@ fsyncs that file handle, renames it over the target path, and attempts to fsync
 the parent directory. Temporary files left behind by crashes are cleaned up when
 stores initialize or repair.
 
+DocStore repair quarantines corrupt or truncated record files under
+`.storh/corrupt/` and rebuilds secondary indexes from the remaining valid
+records. DocStore verification also compares index files against a full record
+scan so missing or stale index entries are reported before they can be treated
+as healthy.
+
 Append-only engines flush and fsync their log file handles before considering
 events committed in memory. Power-loss durability still depends on the
 underlying filesystem and mount options honoring file and directory syncs.

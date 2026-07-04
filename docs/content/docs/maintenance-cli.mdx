@@ -40,3 +40,8 @@ vendor/bin/storh reindex var/storh pages
 
 The CLI prints stable JSON so it can be used from cron jobs and deployment
 health checks.
+
+For DocStore, `verify()` checks that records parse cleanly and that equality,
+range, and compound indexes match a full record scan. `repair()` quarantines
+corrupt record files under `.storh/corrupt/` and rebuilds indexes from valid
+records.

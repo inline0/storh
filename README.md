@@ -123,6 +123,11 @@ processes. Concurrent writes to distinct record ids are safe under the same
 filesystem atomic-rename assumptions. Concurrent writes to the same id are
 last-rename-wins.
 
+`DocStore::verify()` checks record parseability and secondary-index drift
+against a full record scan. `repair()` moves corrupt record files into
+`.storh/corrupt/` for inspection and rebuilds indexes from the remaining valid
+records.
+
 storh flushes and fsyncs file handles before rename or append completion, and
 attempts to fsync parent directories after atomic renames. Power-loss durability
 still depends on the underlying filesystem and mount options honoring those

@@ -1070,7 +1070,14 @@ final class DocPerFileStore implements FileStoreInterface
      */
     public function reindex(): array
     {
-        return $this->with_write_lock(fn(): array => $this->indexes()->rebuild());
+        return $this->with_write_lock(
+            function (): array {
+                $result = $this->indexes()->rebuild(true);
+                $this->forget_all_record_caches();
+
+                return $result;
+            }
+        );
     }
 
     /**
@@ -1110,6 +1117,11 @@ final class DocPerFileStore implements FileStoreInterface
         if ($stats['corrupt'] > 0) {
             $errors[] = 'Corrupt records: ' . $stats['corrupt'];
         }
+        if (array() === $errors) {
+            foreach ($this->indexes()->verify_against_store() as $error) {
+                $errors[] = $error;
+            }
+        }
 
         return array(
             'ok'     => array() === $errors,
@@ -1127,20 +1139,74 @@ final class DocPerFileStore implements FileStoreInterface
     }
 
     /**
-     * @return array{ok: bool, reindexed: array{fields: int, entries: int}}
+     * @return array{ok: bool, quarantined: int, reindexed: array{fields: int, entries: int}}
      */
     public function repair(): array
     {
         return $this->with_write_lock(
             function (): array {
                 AtomicFilesystem::cleanup_temp_files($this->collection_root());
+                $quarantined = $this->quarantine_corrupt_records();
 
                 return array(
-                    'ok'        => true,
-                    'reindexed' => $this->reindex(),
+                    'ok'          => true,
+                    'quarantined' => $quarantined,
+                    'reindexed'   => $this->reindex(),
                 );
             }
         );
+    }
+
+    private function quarantine_corrupt_records(): int
+    {
+        $count = 0;
+        foreach ($this->record_paths_from_filesystem() as $path) {
+            $id = basename($path, '.jsonc');
+            try {
+                $this->record_from_file($path, $id);
+                continue;
+            } catch (\Throwable) {
+                $this->quarantine_record_file($id, $path);
+                $count++;
+            }
+        }
+
+        if ($count > 0) {
+            $this->forget_written_record_cache();
+        }
+
+        return $count;
+    }
+
+    private function quarantine_record_file(string $id, string $path): void
+    {
+        $quarantine_root = $this->collection_root() . '/.storh/corrupt';
+        AtomicFilesystem::ensure_directory($quarantine_root);
+
+        $target = $quarantine_root . '/' . basename($path);
+        if (file_exists($target)) {
+            $target = $quarantine_root . '/' . basename($path, '.jsonc') . '-' . bin2hex(random_bytes(4)) . '.jsonc';
+        }
+
+        if (! @rename($path, $target)) {
+            throw new StorageException('Could not quarantine corrupt storage record: ' . $path);
+        }
+
+        AtomicFilesystem::sync_directory(dirname($path));
+        AtomicFilesystem::sync_directory($quarantine_root);
+
+        if (null !== $this->record_path_cache) {
+            unset($this->record_path_cache[ $id ]);
+            $this->record_sorted_ids_cache = null;
+        }
+        if (null !== $this->record_data_cache) {
+            unset($this->record_data_cache[ $id ]);
+        }
+        unset($this->validated_record_cache[ $id ]);
+
+        if ($this->cache_enabled) {
+            $this->cache_missing($id, $path);
+        }
     }
 
     /**
@@ -1341,6 +1407,17 @@ final class DocPerFileStore implements FileStoreInterface
         }
 
         return $this->record_paths_from_filesystem();
+    }
+
+    /**
+     * @internal
+     * @return \Generator<int, StorageRecord>
+     */
+    public function records_from_filesystem(): \Generator
+    {
+        foreach ($this->record_paths_from_filesystem() as $path) {
+            yield $this->record_from_file($path, basename($path, '.jsonc'));
+        }
     }
 
     /**
@@ -1851,6 +1928,14 @@ final class DocPerFileStore implements FileStoreInterface
         $this->record_cache_ordered = true;
         $this->record_sorted_ids_cache = null;
         $this->record_cache_last_id = null;
+    }
+
+    private function forget_all_record_caches(): void
+    {
+        $this->forget_written_record_cache();
+        if ($this->cache_enabled) {
+            $this->cache->clear_prefix('doc:' . $this->collection . ':');
+        }
     }
 
     /**
