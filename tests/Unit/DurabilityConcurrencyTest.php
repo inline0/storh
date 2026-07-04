@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace Storh\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
+use Storh\AtomicFilesystem;
 use Storh\DocPerFileStore;
 use Storh\LogQueue;
+use Storh\SegmentedLogStore;
 use Storh\StorageRecord;
 use Storh\Tests\Support\TestFilesystem;
 use Storh\UuidV7;
@@ -120,6 +122,33 @@ final class DurabilityConcurrencyTest extends TestCase
         $next = $reopened->claim();
         $this->assertSame($ids[1], $next?->id());
         $this->assertSame(array( 'job' => 'second' ), $next?->data());
+    }
+
+    public function test_segmented_log_verify_detects_state_drift_and_repair_replays_segments(): void
+    {
+        $ids = $this->fixed_ids(2, 1_700_520_000_000);
+        $store = new SegmentedLogStore($this->root, 'log-drift', 4096, 2);
+        $store->put(array( 'value' => 'first' ), $ids[0]);
+
+        $this->assertSame(1, $store->query()->count());
+        $active_path = $this->active_segment_path('log-drift');
+        file_put_contents(
+            $active_path,
+            $this->encoded_log_line(array( 'op' => 'put', 'id' => $ids[1], 'data' => array( 'value' => 'external' ) )),
+            FILE_APPEND
+        );
+
+        $verify = $store->verify();
+        $this->assertFalse($verify['ok']);
+        $this->assertStringContainsString('state index drift', implode("\n", $verify['errors']));
+        $this->assertNull($store->get($ids[1]));
+
+        $repair = $store->repair();
+
+        $this->assertTrue($repair['ok']);
+        $this->assertSame('external', $store->get($ids[1])?->data()['value'] ?? null);
+        $this->assertSame(2, $store->query()->count());
+        $this->assertTrue($store->verify()['ok']);
     }
 
     public function test_doc_store_accepts_concurrent_distinct_writes_without_lost_records(): void
@@ -256,5 +285,26 @@ final class DurabilityConcurrencyTest extends TestCase
     private function record_ids(array $records): array
     {
         return array_map(static fn(StorageRecord $record): string => $record->id(), $records);
+    }
+
+    private function active_segment_path(string $collection): string
+    {
+        $manifest = AtomicFilesystem::read_jsonc_object($this->root . '/' . $collection . '/manifest.jsonc');
+        $active = $manifest['active'] ?? null;
+        if (! is_array($active) || ! isset($active['file']) || ! is_string($active['file'])) {
+            throw new \RuntimeException('Missing active segment in test manifest.');
+        }
+
+        return $this->root . '/' . $collection . '/segments/' . $active['file'];
+    }
+
+    /**
+     * @param array<string, mixed> $envelope
+     */
+    private function encoded_log_line(array $envelope): string
+    {
+        $json = json_encode($envelope, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+
+        return strlen($json) . "\t" . hash('xxh32', $json) . "\t" . $json . "\n";
     }
 }

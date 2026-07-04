@@ -28,7 +28,9 @@ The segmented log writes each line as:
 
 Reads verify the byte length and checksum. Recovery scans each segment and
 truncates the file at the last complete valid line, which removes torn trailing
-writes.
+writes. Verification compares the active derived state index with an independent
+segment replay, so externally changed or stale state is reported before repair
+rebuilds it.
 
 Compaction writes new `compact-*` segment files and then updates the manifest.
 Old sealed segments are intentionally left in place so readers already streaming

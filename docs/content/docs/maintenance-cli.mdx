@@ -45,3 +45,7 @@ For DocStore, `verify()` checks that records parse cleanly and that equality,
 range, and compound indexes match a full record scan. `repair()` quarantines
 corrupt record files under `.storh/corrupt/` and rebuilds indexes from valid
 records.
+
+For SegmentedLog, `verify()` decodes segment lines and compares the current
+derived state index with a fresh segment replay. `repair()` rebuilds the derived
+state and truncates torn trailing lines.

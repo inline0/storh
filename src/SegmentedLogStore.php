@@ -515,6 +515,15 @@ final class SegmentedLogStore implements FileStoreInterface
     {
         $errors = array();
         try {
+            $fresh_state = $this->build_state_index(false, true, false);
+            if (! $this->state_indexes_equivalent($this->state_index(), $fresh_state)) {
+                $errors[] = 'Segmented log state index drift.';
+            }
+        } catch (\Throwable $throwable) {
+            $errors[] = $throwable->getMessage();
+        }
+
+        try {
             iterator_to_array($this->stream());
         } catch (\Throwable $throwable) {
             $errors[] = $throwable->getMessage();
@@ -1409,7 +1418,7 @@ final class SegmentedLogStore implements FileStoreInterface
     /**
      * @return array<string, array{deleted: bool, file: string, offset: int, aliases: list<array{file: string, offset: int}>}>
      */
-    private function build_state_index(bool $truncate_torn = false, bool $build_equality_counts = true): array
+    private function build_state_index(bool $truncate_torn = false, bool $build_equality_counts = true, bool $apply = true): array
     {
         $this->flush_active_handle();
 
@@ -1515,15 +1524,47 @@ final class SegmentedLogStore implements FileStoreInterface
         }
 
         ksort($state);
-        $this->segment_stats          = $stats;
-        $this->segment_sparse_offsets = $sparse_offsets;
-        if ($build_equality_counts) {
-            $this->equality_counts        = $equality_counts;
-            $this->disabled_equality_count_fields = $disabled_equality_count_fields;
-            $this->equality_counts_valid = $equality_counts_valid;
+        if ($apply) {
+            $this->segment_stats          = $stats;
+            $this->segment_sparse_offsets = $sparse_offsets;
+            if ($build_equality_counts) {
+                $this->equality_counts        = $equality_counts;
+                $this->disabled_equality_count_fields = $disabled_equality_count_fields;
+                $this->equality_counts_valid = $equality_counts_valid;
+            }
         }
 
         return $state;
+    }
+
+    /**
+     * @param array<string, array{deleted: bool, file: string, offset: int, aliases: list<array{file: string, offset: int}>}> $left
+     * @param array<string, array{deleted: bool, file: string, offset: int, aliases: list<array{file: string, offset: int}>}> $right
+     */
+    private function state_indexes_equivalent(array $left, array $right): bool
+    {
+        $left_keys = array_keys($left);
+        $right_keys = array_keys($right);
+        sort($left_keys, SORT_STRING);
+        sort($right_keys, SORT_STRING);
+
+        if ($left_keys !== $right_keys) {
+            return false;
+        }
+
+        foreach ($left_keys as $id) {
+            $entry = $left[ $id ];
+            $other = $right[ $id ];
+            if (
+                $entry['deleted'] !== $other['deleted'] ||
+                $entry['file'] !== $other['file'] ||
+                $entry['offset'] !== $other['offset']
+            ) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
