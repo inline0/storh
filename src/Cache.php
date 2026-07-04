@@ -6,6 +6,8 @@ namespace Storh;
 
 final class Cache
 {
+    private static ?NullCache $null_cache = null;
+
     public static function memory(int $maxEntries = 10000, ?int $maxBytes = null): CacheInterface
     {
         return new MemoryCache($maxEntries, $maxBytes);
@@ -18,6 +20,6 @@ final class Cache
 
     public static function null(): CacheInterface
     {
-        return new NullCache();
+        return self::$null_cache ??= new NullCache();
     }
 }
