@@ -6,7 +6,7 @@ namespace Storh;
 
 final class DocStoreIndexManager
 {
-    private const EQ_REBUILD_FLUSH_IDS = 262144;
+    private const EQ_REBUILD_FLUSH_IDS = 1048576;
 
     private const RANGE_REBUILD_CHUNK_ENTRIES = 16384;
 
@@ -212,7 +212,9 @@ final class DocStoreIndexManager
      */
     public function remove_record(string $id, array $data): void
     {
-        foreach ($this->definitions() as $definition) {
+        $definitions = $this->definitions();
+        $compound_values = array();
+        foreach ($definitions as $definition) {
             $field = $definition['field'];
             if (! array_key_exists($field, $data) || ! $this->indexable($data[ $field ])) {
                 continue;
@@ -222,8 +224,13 @@ final class DocStoreIndexManager
                 $this->append_range_entry($field, $data[ $field ], array(), array( $id ));
             } else {
                 $this->remove_id_from_entry($this->eq_entry_path($field, $data[ $field ]), $this->value_key($data[ $field ]), $id);
+                if (! $definition['unique']) {
+                    $compound_values[ $field ] = $data[ $field ];
+                }
             }
         }
+
+        $this->remove_compound_entries($id, $compound_values);
     }
 
     /**
@@ -314,6 +321,11 @@ final class DocStoreIndexManager
      */
     private function candidate_count_for_group(array $group, ?int $limit): ?int
     {
+        $compound_count = $this->compound_count_for_group($group, $limit);
+        if (null !== $compound_count) {
+            return $compound_count;
+        }
+
         $candidate_sets = array();
         foreach ($group as $condition) {
             $ids = $this->indexed_condition_ids($condition);
@@ -403,6 +415,11 @@ final class DocStoreIndexManager
      */
     private function candidate_ids_for_group(array $group, ?int $limit = null, bool $require_all_conditions = false): ?array
     {
+        $compound_ids = $this->compound_ids_for_group($group, $limit);
+        if (null !== $compound_ids) {
+            return $compound_ids;
+        }
+
         $candidate_sets = array();
         foreach ($group as $condition) {
             $ids = $this->indexed_condition_ids($condition, $limit);
@@ -603,6 +620,87 @@ final class DocStoreIndexManager
 
         return 0;
     }
+
+    /**
+     * @param list<QueryCondition> $group
+     * @return list<string>|null
+     */
+    private function compound_ids_for_group(array $group, ?int $limit): ?array
+    {
+        $compound = $this->compound_group($group);
+        if (null === $compound) {
+            return null;
+        }
+
+        $key = $this->compound_value_key($compound[1], $compound[3]);
+        $path = $this->compound_entry_path($compound[0], $compound[2], $key);
+
+        return is_file($path)
+            ? $this->ids_from_value_file($path, $key, $limit)
+            : array();
+    }
+
+    /**
+     * @param list<QueryCondition> $group
+     */
+    private function compound_count_for_group(array $group, ?int $limit): ?int
+    {
+        $compound = $this->compound_group($group);
+        if (null === $compound) {
+            return null;
+        }
+
+        $key = $this->compound_value_key($compound[1], $compound[3]);
+        $path = $this->compound_entry_path($compound[0], $compound[2], $key);
+
+        return is_file($path)
+            ? $this->count_ids_from_value_file($path, $key, $limit)
+            : 0;
+    }
+
+    /**
+     * @param list<QueryCondition> $group
+     * @return array{0: string, 1: mixed, 2: string, 3: mixed}|null
+     */
+    private function compound_group(array $group): ?array
+    {
+        if (2 !== count($group)) {
+            return null;
+        }
+
+        $left = $group[0];
+        $right = $group[1];
+        if ('eq' !== $left->operator() || 'eq' !== $right->operator()) {
+            return null;
+        }
+
+        if ($left->field() === $right->field()) {
+            return null;
+        }
+
+        $definitions = $this->definitions();
+        $left_definition = $definitions[ $left->field() ] ?? null;
+        $right_definition = $definitions[ $right->field() ] ?? null;
+        if (
+            null === $left_definition ||
+            null === $right_definition ||
+            $left_definition['range'] ||
+            $right_definition['range'] ||
+            $left_definition['unique'] ||
+            $right_definition['unique'] ||
+            ! $this->indexable($left->value()) ||
+            ! $this->indexable($right->value())
+        ) {
+            return null;
+        }
+
+        if (strcmp($left->field(), $right->field()) <= 0) {
+            return array( $left->field(), $left->value(), $right->field(), $right->value() );
+        }
+
+        return array( $right->field(), $right->value(), $left->field(), $left->value() );
+    }
+
     /**
      * @return list<string>
      */
@@ -1063,6 +1161,18 @@ final class DocStoreIndexManager
         return $this->eq_value_root($field, $value);
     }
 
+    private function compound_entry_path(string $left_field, string $right_field, string $compound_key): string
+    {
+        return $this->entries_root()
+            . '/compound/'
+            . $this->field_key($left_field)
+            . '-'
+            . $this->field_key($right_field)
+            . '/'
+            . $compound_key
+            . '.jsonc';
+    }
+
     private function range_field_root(string $field): string
     {
         return $this->entries_root() . '/range/' . $this->field_key($field) . '.jsonl';
@@ -1113,6 +1223,11 @@ final class DocStoreIndexManager
         return 'z-' . hash('xxh128', serialize($value));
     }
 
+    private function compound_value_key(mixed $left, mixed $right): string
+    {
+        return 'c-' . hash('xxh128', $this->value_key($left) . "\0" . $this->value_key($right));
+    }
+
     private function range_key(mixed $value): string
     {
         if (is_int($value) && $value >= 0) {
@@ -1136,11 +1251,12 @@ final class DocStoreIndexManager
 
     /**
      * @param array<string, array{path: string, field: string, key: string, value: mixed, ids: array<string, true>}> $buckets
-     * @param array<string, array{field: string, unique: bool, range: bool}> $definitions
+     * @param array<string, array{field: string, unique: bool, range: bool, eqRoot?: string}> $definitions
      * @param array<string, mixed> $data
      */
     private function collect_index_entries(array &$buckets, array $definitions, string $id, array $data): void
     {
+        $compound_values = array();
         foreach ($definitions as $definition) {
             $field = $definition['field'];
             if (! array_key_exists($field, $data) || ! $this->indexable($data[ $field ])) {
@@ -1161,7 +1277,12 @@ final class DocStoreIndexManager
                 $value,
                 $id
             );
+            if (! $definition['unique']) {
+                $compound_values[ $field ] = $value;
+            }
         }
+
+        $this->collect_compound_index_entries($buckets, $compound_values, $id);
     }
 
     /**
@@ -1194,6 +1315,7 @@ final class DocStoreIndexManager
         string $id,
         array $data
     ): void {
+        $compound_values = array();
         foreach ($definitions as $definition) {
             $field = $definition['field'];
             if (! array_key_exists($field, $data) || ! $this->indexable($data[ $field ])) {
@@ -1215,7 +1337,70 @@ final class DocStoreIndexManager
                 $value,
                 $id
             );
+            if (! $definition['unique']) {
+                $compound_values[ $field ] = $value;
+            }
             $eq_entries++;
+        }
+
+        $eq_entries += $this->collect_compound_index_entries($buckets, $compound_values, $id);
+    }
+
+    /**
+     * @param array<string, array{path: string, field: string, key: string, value: mixed, ids: array<string, true>}> $buckets
+     * @param array<string, mixed> $values
+     */
+    private function collect_compound_index_entries(array &$buckets, array $values, string $id): int
+    {
+        if (count($values) < 2) {
+            return 0;
+        }
+
+        $fields = array_keys($values);
+        $entries = 0;
+        $field_count = count($fields);
+        for ($left_index = 0; $left_index < $field_count - 1; $left_index++) {
+            $left = $fields[ $left_index ];
+            for ($right_index = $left_index + 1; $right_index < $field_count; $right_index++) {
+                $right = $fields[ $right_index ];
+                $key = $this->compound_value_key($values[ $left ], $values[ $right ]);
+                $this->collect_index_entry(
+                    $buckets,
+                    $this->compound_entry_path($left, $right, $key),
+                    $left . "\t" . $right,
+                    $key,
+                    array( $left => $values[ $left ], $right => $values[ $right ] ),
+                    $id
+                );
+                $entries++;
+            }
+        }
+
+        return $entries;
+    }
+
+    /**
+     * @param array<string, mixed> $values
+     */
+    private function remove_compound_entries(string $id, array $values): void
+    {
+        if (count($values) < 2) {
+            return;
+        }
+
+        $fields = array_keys($values);
+        $field_count = count($fields);
+        for ($left_index = 0; $left_index < $field_count - 1; $left_index++) {
+            $left = $fields[ $left_index ];
+            for ($right_index = $left_index + 1; $right_index < $field_count; $right_index++) {
+                $right = $fields[ $right_index ];
+                $key = $this->compound_value_key($values[ $left ], $values[ $right ]);
+                $this->remove_id_from_entry(
+                    $this->compound_entry_path($left, $right, $key),
+                    $key,
+                    $id
+                );
+            }
         }
     }
 

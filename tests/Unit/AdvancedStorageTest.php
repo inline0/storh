@@ -188,6 +188,11 @@ final class AdvancedStorageTest extends TestCase
         $this->assertSame(1, $store->query()->where('score')->in(array( 1, 3 ))->limit(1)->count());
         $this->assertSame(1, $store->query()->where('metric')->eq(1)->count());
         $this->assertSame(1, $store->query()->where('metric')->eq(1.0)->count());
+        $this->assertSame(1, $store->query()->where('metric')->eq(1)->where('score')->eq(1)->count());
+        $this->assertSame(0, $store->query()->where('metric')->eq(1)->where('score')->eq(2)->count());
+        $this->assertSame(1, $store->query()->where('score')->eq(1)->where('score')->eq(1)->count());
+        $this->assertSame(array( $ids[0] ), $store->indexes()->candidate_ids($store->query()->where('metric')->eq(1)->where('score')->eq(1)));
+        $this->assertSame(array(), $store->indexes()->candidate_ids($store->query()->where('score')->eq(2)->where('metric')->eq(1)));
         $this->assertSame(2, $store->query()->where('active')->eq(true)->where('score')->in(array( 1, 3 ))->count());
         $this->assertSame(0, $store->query()->where('active')->eq(false)->where('score')->eq(1)->count());
         $this->assertSame(2, $store->indexes()->candidate_count($store->query()->where('active')->eq(true)->where('score')->in(array( 1, 3 ))));
@@ -257,6 +262,36 @@ final class AdvancedStorageTest extends TestCase
         $store->indexes()->define_field('arrayUnique', unique: true)->sync(false);
         $store->indexes()->validate_unique(null, array( 'arrayUnique' => array( 'not' => 'indexable' ) ));
         $store->indexes()->remove_record($ids[0], array( 'arrayUnique' => array( 'not' => 'indexable' ) ));
+    }
+
+    public function test_doc_store_compound_equality_indexes_update_and_remove(): void
+    {
+        $ids = $this->fixed_ids(4);
+        $store = new DocPerFileStore($this->root, 'compound-index', $this->id_generator($ids));
+        $store->putMany(
+            array(
+                array( 'kind' => 'page', 'bucket' => 1, 'slug' => 'home' ),
+                array( 'kind' => 'page', 'bucket' => 2, 'slug' => 'about' ),
+                array( 'kind' => 'post', 'bucket' => 1, 'slug' => 'news' ),
+            )
+        );
+        $store->indexes()->field('kind')->field('bucket')->sync();
+
+        $hit = $store->query()->where('kind')->eq('page')->where('bucket')->eq(1);
+        $this->assertSame(1, $hit->count());
+        $this->assertSame(array( $ids[0] ), $store->indexes()->candidate_ids($hit));
+        $this->assertSame(array( 'home' ), array_map(static fn($record): string => $record->data()['slug'], $hit->get()));
+
+        $miss = $store->query()->where('kind')->eq('post')->where('bucket')->eq(2);
+        $this->assertSame(0, $miss->count());
+        $this->assertSame(array(), $store->indexes()->candidate_ids($miss));
+
+        $store->put(array( 'kind' => 'page', 'bucket' => 2, 'slug' => 'home' ), $ids[0]);
+        $this->assertSame(0, $hit->count());
+        $this->assertSame(2, $store->query()->where('kind')->eq('page')->where('bucket')->eq(2)->count());
+
+        $store->delete($ids[0]);
+        $this->assertSame(1, $store->query()->where('kind')->eq('page')->where('bucket')->eq(2)->count());
     }
 
     public function test_index_manifest_and_range_defensive_paths(): void

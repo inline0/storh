@@ -27,6 +27,10 @@ the matching value file. Writes update index entries after the record file is at
 Deletes remove matching index entries. `reindex()` rebuilds every configured
 index from the record files.
 
+When a query combines two `eq` predicates on non-unique equality-indexed fields,
+storh can use an automatic compound bucket for that field pair. This keeps
+selective two-field filters fast without requiring another index declaration.
+
 ```php
 $docs->reindex();
 

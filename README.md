@@ -132,6 +132,10 @@ $docs->reindex();
 $docs->query()->where('slug')->eq('home')->explain();
 ```
 
+Two `eq` predicates on non-unique equality-indexed fields use automatic
+compound buckets, so common filters like `kind = page AND bucket = 4` avoid
+intersecting large single-field result sets.
+
 ## Operations
 
 ```bash

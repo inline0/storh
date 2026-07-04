@@ -28,6 +28,10 @@ $docs->query()->cursor($lastId)->page(100)->get();
 $docs->query()->where('slug')->eq('home')->explain();
 ```
 
+On `DocStore`, two `eq` conditions on non-unique equality-indexed fields can
+use an automatic compound bucket. Single equality, `in`, and range operators
+continue to use their configured field indexes.
+
 Operators:
 
 - `eq`, `neq`
