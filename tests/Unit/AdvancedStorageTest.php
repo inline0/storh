@@ -953,6 +953,79 @@ final class AdvancedStorageTest extends TestCase
         $this->assertSame('changed-value', $reader->get($ids[0])?->data()['value'] ?? null);
     }
 
+    public function test_generic_query_builder_count_handles_no_conditions_cursor_limit_and_filters(): void
+    {
+        $ids = $this->fixed_ids(4);
+        $store = new class (
+            array(
+                new StorageRecord($ids[0], array( 'kind' => 'page' )),
+                new StorageRecord($ids[1], array( 'kind' => 'post' )),
+                new StorageRecord($ids[2], array( 'kind' => 'page' )),
+                new StorageRecord($ids[3], array( 'kind' => 'post' )),
+            )
+        ) implements \Storh\FileStoreInterface {
+            /** @var list<StorageRecord> */
+            private array $records;
+
+            /** @var array<string, StorageRecord> */
+            private array $records_by_id = array();
+
+            /**
+             * @param list<StorageRecord> $records
+             */
+            public function __construct(array $records)
+            {
+                $this->records = $records;
+                foreach ($records as $record) {
+                    $this->records_by_id[ $record->id() ] = $record;
+                }
+            }
+
+            public function query(): \Storh\QueryBuilder
+            {
+                return new \Storh\QueryBuilder($this);
+            }
+
+            /**
+             * @param array<string, mixed> $data
+             */
+            public function put(array $data, ?string $id = null): StorageRecord
+            {
+                $record = new StorageRecord($id ?? UuidV7::generate(), $data);
+                $this->records[] = $record;
+                $this->records_by_id[ $record->id() ] = $record;
+
+                return $record;
+            }
+
+            public function get(string $id): ?StorageRecord
+            {
+                return $this->records_by_id[ $id ] ?? null;
+            }
+
+            public function delete(string $id): void
+            {
+                unset($this->records_by_id[ $id ]);
+            }
+
+            public function stream(?RecordQuery $query = null): \Generator
+            {
+                foreach ($this->records as $record) {
+                    if (null !== $query && ! $query->matches($record)) {
+                        continue;
+                    }
+
+                    yield $record;
+                }
+            }
+        };
+
+        $this->assertSame(4, $store->query()->count());
+        $this->assertSame(1, $store->query()->limit(1)->count());
+        $this->assertSame(1, $store->query()->cursor($ids[2])->count());
+        $this->assertSame(2, $store->query()->where('kind')->eq('page')->count());
+    }
+
     public function test_cli_and_bench_scripts_run(): void
     {
         $store = new DocPerFileStore($this->root, 'cli', $this->id_generator($this->fixed_ids(2)));

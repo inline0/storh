@@ -232,6 +232,22 @@ final class QueryBuilder
             return $this->store->count_records($this);
         }
 
+        if (! $this->has_conditions) {
+            $count = 0;
+            foreach ($this->store->stream(null) as $record) {
+                if (null !== $this->cursor && strcmp($record->id(), $this->cursor) <= 0) {
+                    continue;
+                }
+
+                $count++;
+                if (null !== $this->limit && $count >= $this->limit) {
+                    return $count;
+                }
+            }
+
+            return $count;
+        }
+
         $count = 0;
         foreach ($this->store->stream(null) as $record) {
             if (! $this->matches($record)) {
