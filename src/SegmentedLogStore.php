@@ -42,6 +42,8 @@ final class SegmentedLogStore implements FileStoreInterface
 
     private bool $equality_counts_valid = true;
 
+    private bool $equality_counts_rebuild_attempted = false;
+
     /** @var array<string, array{min: string|null, max: string|null, records: int}> */
     private array $segment_stats = array();
 
@@ -322,7 +324,7 @@ final class SegmentedLogStore implements FileStoreInterface
     {
         $this->with_lock(
             function (): void {
-                $this->recover_unlocked();
+                $this->recover_unlocked(false);
             }
         );
     }
@@ -552,7 +554,7 @@ final class SegmentedLogStore implements FileStoreInterface
                     @touch($this->segment_path($file));
                 }
 
-                $this->recover_unlocked();
+                $this->recover_unlocked(false);
             }
         );
     }
@@ -563,6 +565,10 @@ final class SegmentedLogStore implements FileStoreInterface
             $this->invalidate_equality_counts();
         }
         $this->replace_state_index($this->build_state_index(true, $build_equality_counts));
+        if (! $build_equality_counts && array() === $this->state) {
+            $this->equality_counts_valid = true;
+            $this->equality_counts_rebuild_attempted = false;
+        }
         $this->repair_manifest_stats_from_segments();
     }
 
@@ -1355,7 +1361,9 @@ final class SegmentedLogStore implements FileStoreInterface
                     }
 
                     try {
-                        $envelope = $this->decode_line($line);
+                        $envelope = $build_equality_counts
+                            ? $this->decode_line($line)
+                            : $this->state_index_entry_from_line($line);
                     } catch (\Throwable $throwable) {
                         if ($truncate_torn) {
                             ftruncate($handle, max(0, $last_good_offset));
@@ -1676,6 +1684,10 @@ final class SegmentedLogStore implements FileStoreInterface
             return null;
         }
 
+        if (! $this->equality_counts_valid && ! $this->equality_counts_rebuild_attempted) {
+            $this->rebuild_equality_counts();
+        }
+
         if (! $this->equality_counts_valid || isset($this->disabled_equality_count_fields[ $condition->field() ])) {
             return null;
         }
@@ -1725,6 +1737,13 @@ final class SegmentedLogStore implements FileStoreInterface
         $this->equality_counts = array();
         $this->disabled_equality_count_fields = array();
         $this->equality_counts_valid = false;
+        $this->equality_counts_rebuild_attempted = false;
+    }
+
+    private function rebuild_equality_counts(): void
+    {
+        $this->equality_counts_rebuild_attempted = true;
+        $this->replace_state_index($this->build_state_index(false, true));
     }
 
     private function countable_equality_value(mixed $value): bool
@@ -1913,6 +1932,46 @@ final class SegmentedLogStore implements FileStoreInterface
                 is_array($envelope['data']) &&
                 str_ends_with($line, "\n"),
             'envelope' => $envelope,
+        );
+    }
+
+    /**
+     * @return array{id: string, op: string}
+     */
+    private function state_index_entry_from_line(string $line): array
+    {
+        $json = $this->validated_line_json($line);
+        if (str_starts_with($json, self::CANONICAL_PUT_PREFIX)) {
+            $id_start = strlen(self::CANONICAL_PUT_PREFIX);
+            $id       = substr($json, $id_start, 36);
+            if (
+                36 === strlen($id) &&
+                str_starts_with(substr($json, $id_start + 36), '","data":') &&
+                str_ends_with($json, '}')
+            ) {
+                return array(
+                    'id' => $id,
+                    'op' => 'put',
+                );
+            }
+        }
+
+        if (str_starts_with($json, self::CANONICAL_DELETE_PREFIX)) {
+            $id_start = strlen(self::CANONICAL_DELETE_PREFIX);
+            $id       = substr($json, $id_start, 36);
+            if (36 === strlen($id) && '"}' === substr($json, $id_start + 36)) {
+                return array(
+                    'id' => $id,
+                    'op' => 'delete',
+                );
+            }
+        }
+
+        $envelope = $this->decode_json_envelope($json);
+
+        return array(
+            'id' => $envelope['id'],
+            'op' => $envelope['op'],
         );
     }
 
