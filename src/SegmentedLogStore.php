@@ -247,7 +247,7 @@ final class SegmentedLogStore implements FileStoreInterface
                 continue;
             }
 
-            $offset = $this->seek_offset_for($segment, $query->after_id());
+            $offset = $this->seek_offset_for($segment, $this->seek_id_for_query($query));
             $query->notify_segment_open($file);
 
             $handle = @fopen($this->segment_path($file), 'rb');
@@ -1276,16 +1276,16 @@ final class SegmentedLogStore implements FileStoreInterface
     /**
      * @param array<string, mixed> $segment
      */
-    private function seek_offset_for(array $segment, ?string $after_id): int
+    private function seek_offset_for(array $segment, ?string $seek_id): int
     {
-        if (null === $after_id || ! isset($segment['index']) || ! is_string($segment['index'])) {
+        if (null === $seek_id || ! isset($segment['index']) || ! is_string($segment['index'])) {
             return 0;
         }
 
         $file = isset($segment['file']) && is_string($segment['file']) ? $segment['file'] : '';
         $stats = '' !== $file && isset($this->segment_stats[ $file ]) ? $this->segment_stats[ $file ] : null;
         $min = is_array($stats) ? $stats['min'] : ( isset($segment['min']) && is_string($segment['min']) ? $segment['min'] : null );
-        if (null !== $min && strcmp($min, $after_id) >= 0) {
+        if (null !== $min && strcmp($min, $seek_id) >= 0) {
             return 0;
         }
 
@@ -1306,13 +1306,28 @@ final class SegmentedLogStore implements FileStoreInterface
                 isset($entry['id'], $entry['offset']) &&
                 is_string($entry['id']) &&
                 is_int($entry['offset']) &&
-                strcmp($entry['id'], $after_id) <= 0
+                strcmp($entry['id'], $seek_id) <= 0
             ) {
                 $offset = $entry['offset'];
             }
         }
 
         return $offset;
+    }
+
+    private function seek_id_for_query(RecordQuery $query): ?string
+    {
+        $after = $query->after_id();
+        $lower = $query->lower_id();
+        if (null === $after) {
+            return $lower;
+        }
+
+        if (null === $lower) {
+            return $after;
+        }
+
+        return strcmp($after, $lower) >= 0 ? $after : $lower;
     }
 
     /**

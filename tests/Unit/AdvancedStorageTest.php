@@ -666,6 +666,26 @@ final class AdvancedStorageTest extends TestCase
         $this->assertSame(1, $counted->query()->where('type')->eq('published')->count());
         $this->assertSame(2, $counted->query()->where('type')->eq('draft')->count());
 
+        $rangeIds = $this->fixed_ids(24);
+        $rangeSeek = new SegmentedLogStore($this->root, 'range-seek', 4096, 4, $this->id_generator($rangeIds));
+        $rangeSeekRows = array();
+        for ($index = 0; $index < 24; $index++) {
+            $rangeSeekRows[] = array( 'index' => $index );
+        }
+        $rangeSeek->appendStream($rangeSeekRows);
+        $middleRange = iterator_to_array(
+            $rangeSeek->stream(
+                RecordQuery::all()->time_range_ms(
+                    UuidV7::timestamp_ms($rangeIds[12]),
+                    UuidV7::timestamp_ms($rangeIds[14])
+                )
+            )
+        );
+        $this->assertSame(
+            array( 12, 13, 14 ),
+            array_map(static fn($record): int => $record->data()['index'], $middleRange)
+        );
+
         $deleted = $store->retain()->olderThanMs(UuidV7::timestamp_ms($ids[0]))->compact();
         $this->assertSame(1, $deleted);
         $this->assertNull($store->get($ids[0]));
