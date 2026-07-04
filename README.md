@@ -120,6 +120,11 @@ the current derived state index with a fresh segment replay, and
 so stale or externally modified state is reported. Log and queue writes are
 serialized with filesystem locks.
 
+Queue claims and completions sync from the durable log while holding the queue
+lock, so multiple worker processes claim each pending job at most once. Jobs
+left in processing by a dead worker can be requeued by `repair()` or
+`requeue_timed_out()`.
+
 `SegmentedLog` compaction writes new `compact-*` segment files before swapping
 the manifest. If a process exits before that swap, reopen discards unreferenced
 compaction output and keeps replaying the old manifest segments. Completed

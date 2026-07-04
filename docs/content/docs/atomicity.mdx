@@ -35,7 +35,8 @@ rebuilds it.
 Queue verification decodes every durable queue event and compares the current
 pending, processing, done, payload, and claim-order state with an independent
 log replay. Repair rebuilds that state from `queue.log` and truncates torn
-trailing events.
+trailing events. Claims and completions hold the queue lock while syncing from
+the durable log, so multiple worker processes do not claim the same pending job.
 
 Compaction writes new `compact-*` segment files and then updates the manifest.
 If a process exits before that manifest swap, reopen removes unreferenced

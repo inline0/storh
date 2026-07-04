@@ -223,6 +223,82 @@ final class DurabilityConcurrencyTest extends TestCase
         $this->assertTrue($reopened->verify()['ok']);
     }
 
+    public function test_log_queue_concurrent_workers_claim_each_job_once(): void
+    {
+        if (! function_exists('pcntl_fork') || ! function_exists('pcntl_waitpid')) {
+            $this->markTestSkipped('pcntl is required for forked queue workers.');
+        }
+
+        $workers = 5;
+        $jobs = 60;
+        $ids = $this->fixed_ids($jobs, 1_700_518_000_000);
+        $queue = new LogQueue($this->root, 'queue-workers');
+        $queue->enqueueMany(
+            array_map(
+                static fn(string $id, int $index): array => array(
+                    'id'      => $id,
+                    'payload' => array( 'index' => $index ),
+                ),
+                $ids,
+                array_keys($ids)
+            )
+        );
+        unset($queue);
+
+        $claim_root = $this->root . '/queue-worker-claims';
+        mkdir($claim_root, 0777, true);
+        $children = array();
+        for ($worker = 0; $worker < $workers; $worker++) {
+            $pid = pcntl_fork();
+            if (0 === $pid) {
+                try {
+                    $worker_queue = new LogQueue($this->root, 'queue-workers');
+                    $claim_path = $claim_root . '/worker-' . $worker . '.txt';
+                    while (true) {
+                        $record = $worker_queue->claim();
+                        if (null === $record) {
+                            break;
+                        }
+
+                        file_put_contents($claim_path, $record->id() . "\n", FILE_APPEND | LOCK_EX);
+                        usleep(( ( $worker + (int) ( $record->data()['index'] ?? 0 ) ) % 5 ) * 1000);
+                        $worker_queue->complete($record->id());
+                    }
+                    exit(0);
+                } catch (\Throwable) {
+                    exit(1);
+                }
+            }
+
+            $this->assertIsInt($pid);
+            $children[] = $pid;
+        }
+
+        foreach ($children as $child) {
+            pcntl_waitpid($child, $status);
+            $this->assertSame(0, pcntl_wexitstatus($status));
+        }
+
+        $claimed = array();
+        foreach (glob($claim_root . '/worker-*.txt') ?: array() as $path) {
+            $lines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+            $this->assertIsArray($lines);
+            foreach ($lines as $line) {
+                $claimed[] = $line;
+            }
+        }
+
+        sort($claimed);
+        $expected = $ids;
+        sort($expected);
+        $this->assertSame($expected, $claimed);
+        $this->assertSame($jobs, count(array_unique($claimed)));
+
+        $reopened = new LogQueue($this->root, 'queue-workers');
+        $this->assertSame(array( 'pending' => 0, 'processing' => 0, 'done' => $jobs ), $reopened->counts());
+        $this->assertTrue($reopened->verify()['ok']);
+    }
+
     public function test_segmented_log_verify_detects_state_drift_and_repair_replays_segments(): void
     {
         $ids = $this->fixed_ids(2, 1_700_520_000_000);
