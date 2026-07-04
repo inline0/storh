@@ -33,12 +33,15 @@ Validation modes:
 
 - `CacheValidation::STAT`: validate existence, mtime, and size.
 - `CacheValidation::HASH`: validate existence, mtime, size, and content hash.
-- `CacheValidation::TRUST`: skip filesystem validation on hits and trust
-  explicit storh writes to invalidate cache entries.
+- `CacheValidation::TRUST`: skip filesystem validation on hits and trust the
+  current storh instance or a shared cache backend to publish explicit storh
+  writes.
 
 `STAT` is the default fast validation mode. Use `HASH` when every cache hit must
-also validate file contents. `TRUST` is the fastest mode for single-process or
-explicit-invalidation workloads.
+also validate file contents, including same-size writes that preserve mtime.
+`STAT` cannot detect an out-of-band content change that preserves both mtime and
+size. `TRUST` is the fastest mode for single-process or shared-cache workloads;
+it intentionally does not detect files changed outside storh.
 
 `Cache::memory()` is bounded by entry count and by bytes. When `maxBytes` is not
 provided, it derives a budget from PHP's `memory_limit`.

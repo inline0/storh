@@ -53,6 +53,10 @@ final class DocPerFileStore implements FileStoreInterface
 
     private ?string $last_record_content_hash = null;
 
+    private ?int $last_record_content_mtime = null;
+
+    private ?int $last_record_content_size = null;
+
     private ?bool $index_manifest_exists = null;
 
     /** @var resource|null */
@@ -246,15 +250,11 @@ final class DocPerFileStore implements FileStoreInterface
         UuidV7::assert_valid($id);
         $path = $this->record_path_for_id($id);
 
-        if (isset($this->record_data_cache[ $id ])) {
-            if (CacheValidation::TRUST === $this->cache_validation || is_file($path)) {
-                return new StorageRecord($id, $this->record_data_cache[ $id ]);
+        if (CacheValidation::TRUST !== $this->cache_validation) {
+            $local = $this->validated_record($id, $path);
+            if ($local instanceof StorageRecord || false === $local) {
+                return false === $local ? null : $local;
             }
-        }
-
-        $local = $this->validated_record($id, $path);
-        if ($local instanceof StorageRecord || false === $local) {
-            return false === $local ? null : $local;
         }
 
         if ($this->cache_enabled) {
@@ -262,6 +262,10 @@ final class DocPerFileStore implements FileStoreInterface
             if ($cached instanceof StorageRecord || false === $cached) {
                 return false === $cached ? null : $cached;
             }
+        }
+
+        if (CacheValidation::TRUST === $this->cache_validation && isset($this->record_data_cache[ $id ])) {
+            return new StorageRecord($id, $this->record_data_cache[ $id ]);
         }
 
         if (! is_file($path)) {
@@ -326,7 +330,7 @@ final class DocPerFileStore implements FileStoreInterface
         $filters_records = $query->filters_records();
         $limit = $query->limit_value();
 
-        if (null !== $this->record_path_cache && null !== $this->record_data_cache) {
+        if ($this->can_use_record_data_fast_path()) {
             if (! $filters_records) {
                 if ($this->record_cache_ordered) {
                     foreach ($this->record_data_cache as $id => $data) {
@@ -490,7 +494,7 @@ final class DocPerFileStore implements FileStoreInterface
             return $records;
         }
 
-        if (null !== $this->record_path_cache && null !== $this->record_data_cache) {
+        if ($this->can_use_record_data_fast_path()) {
             if (null !== $simple_equal) {
                 $field = $simple_equal['field'];
                 $value = $simple_equal['value'];
@@ -654,7 +658,7 @@ final class DocPerFileStore implements FileStoreInterface
             return null;
         }
 
-        if (null !== $this->record_path_cache && null !== $this->record_data_cache) {
+        if ($this->can_use_record_data_fast_path()) {
             if (null !== $simple_equal) {
                 $field = $simple_equal['field'];
                 $value = $simple_equal['value'];
@@ -803,7 +807,7 @@ final class DocPerFileStore implements FileStoreInterface
             return $count;
         }
 
-        if (null !== $this->record_path_cache && null !== $this->record_data_cache) {
+        if ($this->can_use_record_data_fast_path()) {
             $simple_equal = $query->simple_equal_filter();
             if (null !== $simple_equal) {
                 $field = $simple_equal['field'];
@@ -891,9 +895,75 @@ final class DocPerFileStore implements FileStoreInterface
         return $count;
     }
 
-    public function cached_record_count(?int $limit = null): ?int
+    /**
+     * @phpstan-assert-if-true array<string, string> $this->record_path_cache
+     * @phpstan-assert-if-true array<string, array<string, mixed>> $this->record_data_cache
+     */
+    private function can_use_record_data_fast_path(): bool
     {
         if (null === $this->record_path_cache || null === $this->record_data_cache) {
+            return false;
+        }
+
+        return CacheValidation::TRUST === $this->cache_validation || $this->record_data_cache_matches_filesystem();
+    }
+
+    private function record_data_cache_matches_filesystem(): bool
+    {
+        if (null === $this->record_path_cache || null === $this->record_data_cache) {
+            return false;
+        }
+
+        $paths = $this->record_paths_from_filesystem();
+        if (count($paths) !== count($this->record_path_cache)) {
+            return false;
+        }
+
+        foreach ($paths as $path) {
+            $id = basename($path, '.jsonc');
+            if (
+                ! isset($this->record_path_cache[ $id ]) ||
+                $this->record_path_cache[ $id ] !== $path ||
+                ! isset($this->record_data_cache[ $id ])
+            ) {
+                return false;
+            }
+
+            $cached = $this->validated_record_cache[ $id ] ?? null;
+            if (null === $cached) {
+                return false;
+            }
+
+            clearstatcache(true, $path);
+            if (! is_file($path)) {
+                return false;
+            }
+
+            $mtime = (int) filemtime($path);
+            $size  = (int) filesize($path);
+            if ($mtime !== $cached['mtime'] || $size !== $cached['size']) {
+                return false;
+            }
+
+            if (CacheValidation::HASH === $this->cache_validation) {
+                $hash = (string) hash_file(self::CACHE_HASH_ALGORITHM, $path);
+                if ($hash !== $cached['hash']) {
+                    return false;
+                }
+
+                $this->last_record_content_path = $path;
+                $this->last_record_content_hash = $hash;
+                $this->last_record_content_mtime = $mtime;
+                $this->last_record_content_size = $size;
+            }
+        }
+
+        return true;
+    }
+
+    public function cached_record_count(?int $limit = null): ?int
+    {
+        if (! $this->can_use_record_data_fast_path()) {
             return null;
         }
 
@@ -904,7 +974,7 @@ final class DocPerFileStore implements FileStoreInterface
 
     public function cached_first_record(): StorageRecord|false|null
     {
-        if (null === $this->record_path_cache || null === $this->record_data_cache) {
+        if (! $this->can_use_record_data_fast_path()) {
             return false;
         }
 
@@ -931,7 +1001,7 @@ final class DocPerFileStore implements FileStoreInterface
      */
     public function cached_records(?int $limit = null): ?array
     {
-        if (null === $this->record_path_cache || null === $this->record_data_cache) {
+        if (! $this->can_use_record_data_fast_path()) {
             return null;
         }
 
@@ -1109,7 +1179,7 @@ final class DocPerFileStore implements FileStoreInterface
         $count = 0;
         $buffer = '';
         try {
-            if (null !== $this->record_path_cache && null !== $this->record_data_cache) {
+            if ($this->can_use_record_data_fast_path()) {
                 if ($this->record_cache_ordered) {
                     foreach ($this->record_data_cache as $id => $data) {
                         $buffer .= '{"id":"' . $id . '","data":' . json_encode(
@@ -1266,17 +1336,42 @@ final class DocPerFileStore implements FileStoreInterface
             return array();
         }
 
-        if (null !== $this->record_path_cache) {
-            if ($this->record_cache_ordered) {
-                return array_values($this->record_path_cache);
-            }
+        if (CacheValidation::TRUST === $this->cache_validation && null !== $this->record_path_cache) {
+            return $this->cached_record_paths();
+        }
 
-            $paths = array();
-            foreach ($this->cached_record_ids() as $id) {
-                $paths[] = $this->record_path_cache[ $id ];
-            }
+        return $this->record_paths_from_filesystem();
+    }
 
-            return $paths;
+    /**
+     * @return list<string>
+     */
+    private function cached_record_paths(): array
+    {
+        if (null === $this->record_path_cache) {
+            return array();
+        }
+
+        if ($this->record_cache_ordered) {
+            return array_values($this->record_path_cache);
+        }
+
+        $paths = array();
+        foreach ($this->cached_record_ids() as $id) {
+            $paths[] = $this->record_path_cache[ $id ];
+        }
+
+        return $paths;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function record_paths_from_filesystem(): array
+    {
+        $root = $this->data_root();
+        if (! is_dir($root)) {
+            return array();
         }
 
         $paths    = array();
@@ -1344,6 +1439,8 @@ final class DocPerFileStore implements FileStoreInterface
 
             $this->last_record_content_path = $path;
             $this->last_record_content_hash = $hash;
+            $this->last_record_content_mtime = $mtime;
+            $this->last_record_content_size = $size;
         }
 
         return new StorageRecord($id, $cached['data']);
@@ -1445,10 +1542,20 @@ final class DocPerFileStore implements FileStoreInterface
             return;
         }
 
-        clearstatcache(true, $path);
-        $exists = is_file($path);
-        $mtime  = $exists ? (int) filemtime($path) : 0;
-        $size   = $exists ? (int) filesize($path) : -1;
+        if (
+            $this->last_record_content_path === $path &&
+            null !== $this->last_record_content_mtime &&
+            null !== $this->last_record_content_size
+        ) {
+            $exists = true;
+            $mtime  = $this->last_record_content_mtime;
+            $size   = $this->last_record_content_size;
+        } else {
+            clearstatcache(true, $path);
+            $exists = is_file($path);
+            $mtime  = $exists ? (int) filemtime($path) : 0;
+            $size   = $exists ? (int) filesize($path) : -1;
+        }
         $hash   = '';
 
         if ($exists && CacheValidation::HASH === $this->cache_validation) {
@@ -1548,10 +1655,22 @@ final class DocPerFileStore implements FileStoreInterface
      */
     private function remember_validated_record_from_path(string $id, array $data, string $path): void
     {
-        clearstatcache(true, $path);
-        if (! is_file($path)) {
-            unset($this->validated_record_cache[ $id ]);
-            return;
+        if (
+            $this->last_record_content_path === $path &&
+            null !== $this->last_record_content_mtime &&
+            null !== $this->last_record_content_size
+        ) {
+            $mtime = $this->last_record_content_mtime;
+            $size  = $this->last_record_content_size;
+        } else {
+            clearstatcache(true, $path);
+            if (! is_file($path)) {
+                unset($this->validated_record_cache[ $id ]);
+                return;
+            }
+
+            $mtime = (int) filemtime($path);
+            $size  = (int) filesize($path);
         }
 
         $hash = '';
@@ -1563,7 +1682,7 @@ final class DocPerFileStore implements FileStoreInterface
             }
         }
 
-        $this->remember_validated_record($id, $data, (int) filemtime($path), (int) filesize($path), $hash);
+        $this->remember_validated_record($id, $data, $mtime, $size, $hash);
     }
 
     /**
@@ -1650,9 +1769,16 @@ final class DocPerFileStore implements FileStoreInterface
             throw new StorageException('Could not open temporary storage file for writing: ' . $temp);
         }
 
+        $mtime = null;
+        $size  = null;
         try {
             AtomicFilesystem::write_all($handle, $contents, $temp);
             AtomicFilesystem::sync_handle($handle, $temp);
+            $stat = @fstat($handle);
+            if (is_array($stat)) {
+                $mtime = isset($stat['mtime']) ? (int) $stat['mtime'] : null;
+                $size  = isset($stat['size']) ? (int) $stat['size'] : strlen($contents);
+            }
         } finally {
             fclose($handle);
         }
@@ -1668,6 +1794,8 @@ final class DocPerFileStore implements FileStoreInterface
         $this->last_record_content_hash = CacheValidation::HASH === $this->cache_validation
             ? hash(self::CACHE_HASH_ALGORITHM, $contents)
             : null;
+        $this->last_record_content_mtime = $mtime;
+        $this->last_record_content_size = $size;
     }
 
     /**
@@ -1684,6 +1812,8 @@ final class DocPerFileStore implements FileStoreInterface
         $this->last_record_content_hash = CacheValidation::HASH === $this->cache_validation
             ? hash(self::CACHE_HASH_ALGORITHM, $contents)
             : null;
+        $this->last_record_content_mtime = null;
+        $this->last_record_content_size = null;
 
         try {
             $decoded = json_decode($contents, true, 512, JSON_THROW_ON_ERROR);
@@ -1761,6 +1891,10 @@ final class DocPerFileStore implements FileStoreInterface
             } else {
                 $this->record_data_cache[ $id ] = $data;
             }
+        }
+
+        if (! $this->cache_enabled && CacheValidation::TRUST !== $this->cache_validation) {
+            $this->remember_validated_record_from_path($id, $data, $path);
         }
     }
 

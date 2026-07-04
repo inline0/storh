@@ -128,6 +128,15 @@ attempts to fsync parent directories after atomic renames. Power-loss durability
 still depends on the underlying filesystem and mount options honoring those
 syncs.
 
+## Cache Validation
+
+`STAT` cache validation checks record existence, mtime, and size. `HASH` also
+checks file contents and catches same-size rewrites that preserve mtime. `TRUST`
+skips filesystem validation and is intended for single-process or shared-cache
+workloads where explicit storh writes publish the newest value. Files changed
+outside storh are not detected by `TRUST`, and same-stat content edits require
+`HASH`.
+
 ## Querying and Indexes
 
 `DocStore` exposes a fluent query builder:
