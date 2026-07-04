@@ -105,7 +105,7 @@ final class UuidV7
 
     private static function now_ms(): int
     {
-        return (int) floor(microtime(true) * 1000);
+        return (int) ( microtime(true) * 1000 );
     }
 
     private static function timestamp_hex(int $timestamp_ms): string
