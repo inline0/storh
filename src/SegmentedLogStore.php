@@ -241,6 +241,7 @@ final class SegmentedLogStore implements FileStoreInterface
         $filters_records = $query->filters_records();
         $filters_id_only = $filters_records && ! $query->filters_data();
         $limit = $query->limit_value();
+        $state = $this->state_index();
 
         foreach ($this->query_segments($query) as $segment) {
             $file = isset($segment['file']) && is_string($segment['file']) ? $segment['file'] : '';
@@ -285,7 +286,7 @@ final class SegmentedLogStore implements FileStoreInterface
                         break;
                     }
 
-                    $entry = $this->state_entry($id);
+                    $entry = $state[ $id ] ?? null;
                     if (null === $entry || $entry['deleted'] || ! $this->state_entry_matches($entry, $file, $line_offset)) {
                         continue;
                     }
