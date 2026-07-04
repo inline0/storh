@@ -175,7 +175,6 @@ final class DocPerFileStore implements FileStoreInterface
         $count = 0;
         $indexes = $this->active_indexes();
         $has_indexes = null !== $indexes;
-        $this->forget_written_record_cache();
 
         foreach ($records as $record) {
             $id   = isset($record['id']) && is_string($record['id']) ? $record['id'] : null;
@@ -195,6 +194,7 @@ final class DocPerFileStore implements FileStoreInterface
             $directory = $this->record_directory_for_id($id);
             $path = $directory . '/' . $id . '.jsonc';
             $this->write_record_file($directory, $path, $id, $data);
+            $this->remember_written_record($id, $path, $data);
 
             if ($has_indexes) {
                 $indexes->update_record($id, $data, $old?->data());
