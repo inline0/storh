@@ -166,6 +166,9 @@ JSONC
         unlink($alive);
         AtomicFilesystem::cleanup_temp_files($this->root . '/missing');
         AtomicFilesystem::sync_directory($this->root . '/missing-directory');
+
+        $owner_alive = new \ReflectionMethod(AtomicFilesystem::class, 'temp_file_owner_is_alive');
+        $this->assertFalse($owner_alive->invoke(null, '.0.abcdef.1.tmp'));
     }
 
     public function test_atomic_filesystem_reports_write_failures(): void
@@ -725,6 +728,46 @@ JSONC
         $repaired = new LogQueue($this->root, 'invalid-framed-log-queue');
         $this->assertSame(array( 'pending' => 1, 'processing' => 0, 'done' => 0 ), $repaired->counts());
         $this->assertTrue($repaired->verify()['ok']);
+    }
+
+    public function test_log_queue_reports_lock_log_and_verify_open_failures(): void
+    {
+        $verify_queue = new LogQueue($this->root, 'verify-open-fail');
+        $verify_path = $this->root . '/verify-open-fail/queue.log';
+        unlink($verify_path);
+        $verify = $verify_queue->verify();
+        $this->assertFalse($verify['ok']);
+        $this->assertContains('Could not read log queue file.', $verify['errors']);
+
+        $lock_queue = new LogQueue($this->root, 'lock-open-fail');
+        $lock_handle = $this->private_property($lock_queue, 'lock_handle');
+        if (is_resource($lock_handle)) {
+            fclose($lock_handle);
+        }
+        $this->set_private_property($lock_queue, 'lock_handle', null);
+        unlink($this->root . '/lock-open-fail/queue.lock');
+        mkdir($this->root . '/lock-open-fail/queue.lock');
+        try {
+            $lock_queue->counts();
+            $this->fail('Expected log queue lock open failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('queue lock', $exception->getMessage());
+        }
+
+        $log_queue = new LogQueue($this->root, 'log-open-fail');
+        $log_handle = $this->private_property($log_queue, 'log_handle');
+        if (is_resource($log_handle)) {
+            fclose($log_handle);
+        }
+        $this->set_private_property($log_queue, 'log_handle', null);
+        unlink($this->root . '/log-open-fail/queue.log');
+        mkdir($this->root . '/log-open-fail/queue.log');
+        try {
+            $log_queue->counts();
+            $this->fail('Expected log queue file open failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('queue file', $exception->getMessage());
+        }
     }
 
     public function test_log_queue_invalid_event_edges_and_compaction_helpers(): void
