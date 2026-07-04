@@ -541,6 +541,9 @@ final class AdvancedStorageTest extends TestCase
 
         $this->assertDirectoryExists($this->root . '/events/partitions/2023-11-14');
         $this->assertSame(2, $store->query()->where('type')->eq('new')->count());
+        $limited = $store->query()->where('type')->eq('new')->limit(1)->get();
+        $this->assertCount(1, $limited);
+        $this->assertSame(2, $limited[0]->data()['value']);
         $this->assertGreaterThanOrEqual(1, $store->stats()['segments']);
         $this->assertTrue($store->health()['ok']);
         $this->assertTrue($store->verify()['ok']);

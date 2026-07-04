@@ -280,9 +280,16 @@ final class QueryBuilder
         }
 
         $records = array();
+        $limit = $this->limit;
+        $can_stop_early = null !== $limit && null === $this->order_field;
+        $matched = 0;
         foreach ($this->store->stream(null) as $record) {
             if ($this->matches($record)) {
                 $records[] = $record;
+                $matched++;
+                if ($can_stop_early && $matched >= $limit) {
+                    break;
+                }
             }
         }
 
