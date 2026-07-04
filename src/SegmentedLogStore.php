@@ -8,6 +8,12 @@ final class SegmentedLogStore implements FileStoreInterface
 {
     private const CACHE_HASH_ALGORITHM = 'xxh128';
 
+    private const CANONICAL_PUT_PREFIX = '{"op":"put","id":"';
+
+    private const CANONICAL_DELETE_PREFIX = '{"op":"delete","id":"';
+
+    private const LINE_HASH_ALGORITHM = 'xxh32';
+
     private const EQUALITY_COUNT_MAX_VALUES_PER_FIELD = 64;
 
     /** @var callable(): string */
@@ -586,15 +592,7 @@ final class SegmentedLogStore implements FileStoreInterface
             $this->invalidate_equality_counts();
         }
 
-        $this->write_state_entry(
-            $id,
-            array(
-                'deleted' => 'delete' === $envelope['op'],
-                'file'    => $file,
-                'offset'  => $offset,
-                'aliases' => array(),
-            )
-        );
+        $this->write_state_entry_without_aliases($id, 'delete' === $envelope['op'], $file, $offset);
         if ('put' === $envelope['op'] && ! $replaces_existing) {
             $this->remember_record_equality_counts($envelope['data'] ?? array());
         }
@@ -780,15 +778,7 @@ final class SegmentedLogStore implements FileStoreInterface
                 $this->invalidate_equality_counts();
             }
 
-            $this->write_state_entry(
-                $id,
-                array(
-                    'deleted' => false,
-                    'file'    => $entry[1],
-                    'offset'  => $entry[2],
-                    'aliases' => array(),
-                )
-            );
+            $this->write_state_entry_without_aliases($id, false, $entry[1], $entry[2]);
         }
 
         $buffer = '';
@@ -893,11 +883,11 @@ final class SegmentedLogStore implements FileStoreInterface
                             break;
                         }
 
-                        $envelope = $this->decode_line($line);
-                        $id    = $envelope['id'];
+                        $compaction_entry = $this->compaction_entry_from_line($line);
+                        $id    = $compaction_entry['id'];
                         $entry = $this->state_entry($id);
 
-                        if ('delete' === $envelope['op']) {
+                        if ('delete' === $compaction_entry['op']) {
                             if (null !== $entry && $entry['deleted'] && $this->state_entry_matches($entry, $input_file, $input_offset)) {
                                 $this->delete_state_entry($id);
                             }
@@ -905,7 +895,7 @@ final class SegmentedLogStore implements FileStoreInterface
                             continue;
                         }
 
-                        if ('put' !== $envelope['op']) {
+                        if ('put' !== $compaction_entry['op']) {
                             continue;
                         }
 
@@ -925,7 +915,15 @@ final class SegmentedLogStore implements FileStoreInterface
                         $output_offset = ftell($output_handle);
                         $output_offset = false === $output_offset ? 0 : $output_offset;
 
-                        $output_line = $this->compaction_line($line, $envelope);
+                        if ($compaction_entry['copy']) {
+                            $output_line = $line;
+                        } else {
+                            if (! isset($compaction_entry['envelope'])) {
+                                throw new StorageException('Segmented log compaction entry is missing its envelope.');
+                            }
+
+                            $output_line = $this->compaction_line($line, $compaction_entry['envelope']);
+                        }
                         AtomicFilesystem::write_all($output_handle, $output_line, $output_path);
                         $output_position = $output_offset + strlen($output_line);
 
@@ -1470,6 +1468,30 @@ final class SegmentedLogStore implements FileStoreInterface
         }
     }
 
+    private function write_state_entry_without_aliases(string $id, bool $deleted, string $file, int $offset): void
+    {
+        $this->state ??= array();
+        if (isset($this->state[ $id ])) {
+            $previous_deleted = $this->state[ $id ]['deleted'];
+            if ($previous_deleted !== $deleted) {
+                $previous_deleted ? $this->deleted_record_count-- : $this->live_record_count--;
+                $deleted ? $this->deleted_record_count++ : $this->live_record_count++;
+            }
+        } else {
+            $deleted ? $this->deleted_record_count++ : $this->live_record_count++;
+        }
+
+        $this->state[ $id ] = array(
+            'deleted' => $deleted,
+            'file'    => $file,
+            'offset'  => $offset,
+            'aliases' => array(),
+        );
+        if ($this->cache_enabled) {
+            $this->cache->delete($this->state_cache_key($id));
+        }
+    }
+
     /**
      * @param array<string, array{deleted: bool, file: string, offset: int, aliases: list<array{file: string, offset: int}>}> $state
      */
@@ -1779,7 +1801,7 @@ final class SegmentedLogStore implements FileStoreInterface
             JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
         );
 
-        return strlen($json) . "\t" . hash('crc32b', $json) . "\t" . $json . "\n";
+        return strlen($json) . "\t" . hash(self::LINE_HASH_ALGORITHM, $json) . "\t" . $json . "\n";
     }
 
     /**
@@ -1792,7 +1814,7 @@ final class SegmentedLogStore implements FileStoreInterface
             JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
         ) . '}';
 
-        return strlen($json) . "\t" . hash('crc32b', $json) . "\t" . $json . "\n";
+        return strlen($json) . "\t" . hash(self::LINE_HASH_ALGORITHM, $json) . "\t" . $json . "\n";
     }
 
     /**
@@ -1819,6 +1841,53 @@ final class SegmentedLogStore implements FileStoreInterface
     }
 
     /**
+     * @return array{id: string, op: string, copy: bool, envelope?: array{id: string, op: string, data?: mixed}}
+     */
+    private function compaction_entry_from_line(string $line): array
+    {
+        $json = $this->validated_line_json($line);
+        if (str_ends_with($line, "\n") && str_starts_with($json, self::CANONICAL_PUT_PREFIX)) {
+            $id_start = strlen(self::CANONICAL_PUT_PREFIX);
+            $id       = substr($json, $id_start, 36);
+            if (
+                36 === strlen($id) &&
+                str_starts_with(substr($json, $id_start + 36), '","data":') &&
+                str_ends_with($json, '}')
+            ) {
+                return array(
+                    'id'   => $id,
+                    'op'   => 'put',
+                    'copy' => true,
+                );
+            }
+        }
+
+        if (str_starts_with($json, self::CANONICAL_DELETE_PREFIX)) {
+            $id_start = strlen(self::CANONICAL_DELETE_PREFIX);
+            $id       = substr($json, $id_start, 36);
+            if (36 === strlen($id) && '"}' === substr($json, $id_start + 36)) {
+                return array(
+                    'id'   => $id,
+                    'op'   => 'delete',
+                    'copy' => false,
+                );
+            }
+        }
+
+        $envelope = $this->decode_json_envelope($json);
+
+        return array(
+            'id'       => $envelope['id'],
+            'op'       => $envelope['op'],
+            'copy'     => 'put' === $envelope['op'] &&
+                isset($envelope['data']) &&
+                is_array($envelope['data']) &&
+                str_ends_with($line, "\n"),
+            'envelope' => $envelope,
+        );
+    }
+
+    /**
      * @return array{id: string, op: string, data?: mixed}
      */
     private function decode_line(string $line): array
@@ -1829,7 +1898,7 @@ final class SegmentedLogStore implements FileStoreInterface
         }
 
         $json = $parts[2];
-        if ((int) $parts[0] !== strlen($json) || ! hash_equals($parts[1], hash('crc32b', $json))) {
+        if ((int) $parts[0] !== strlen($json) || $parts[1] !== hash(self::LINE_HASH_ALGORITHM, $json)) {
             throw new StorageException('Corrupt segmented log line.');
         }
 
@@ -1874,7 +1943,7 @@ final class SegmentedLogStore implements FileStoreInterface
 
         $json = substr($line, $second + 1);
         $checksum = substr($line, $first + 1, $second - $first - 1);
-        if ((int) substr($line, 0, $first) !== strlen($json) || ! hash_equals($checksum, hash('crc32b', $json))) {
+        if ((int) substr($line, 0, $first) !== strlen($json) || $checksum !== hash(self::LINE_HASH_ALGORITHM, $json)) {
             throw new StorageException('Corrupt segmented log line.');
         }
 

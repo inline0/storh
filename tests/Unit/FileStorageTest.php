@@ -1255,7 +1255,7 @@ JSONC
     {
         $json = json_encode($envelope, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
 
-        return strlen($json) . "\t" . hash('crc32b', $json) . "\t" . $json . "\n";
+        return strlen($json) . "\t" . hash('xxh32', $json) . "\t" . $json . "\n";
     }
 
     /**

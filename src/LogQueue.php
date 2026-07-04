@@ -8,6 +8,8 @@ final class LogQueue
 {
     private const JSON_FLAGS = JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR;
 
+    private const LINE_HASH_ALGORITHM = 'xxh32';
+
     /** @var callable(): string */
     private mixed $id_generator;
 
@@ -829,7 +831,7 @@ final class LogQueue
 
     private function frame_json(string $json): string
     {
-        return strlen($json) . "\t" . hash('crc32b', $json) . "\t" . $json . "\n";
+        return strlen($json) . "\t" . hash(self::LINE_HASH_ALGORITHM, $json) . "\t" . $json . "\n";
     }
 
     /**
@@ -849,7 +851,7 @@ final class LogQueue
         $length = (int) $parts[0];
         $crc = $parts[1];
         $json = $parts[2];
-        if ($length !== strlen($json) || $crc !== hash('crc32b', $json)) {
+        if ($length !== strlen($json) || $crc !== hash(self::LINE_HASH_ALGORITHM, $json)) {
             throw new StorageException('Corrupt log queue line.');
         }
 
