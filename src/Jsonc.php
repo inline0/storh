@@ -37,16 +37,13 @@ final class Jsonc
             throw new StorageException('JSONC document must decode to an object.');
         }
 
-        $object = array();
-        foreach ($data as $key => $value) {
+        foreach ($data as $key => $_value) {
             if (! is_string($key)) {
                 throw new StorageException('JSONC document must decode to an object.');
             }
-
-            $object[ $key ] = $value;
         }
 
-        return $object;
+        return $data;
     }
 
     /**
