@@ -604,6 +604,17 @@ final class DocPerFileStore implements FileStoreInterface
         return $count;
     }
 
+    public function cached_record_count(?int $limit = null): ?int
+    {
+        if (null === $this->record_path_cache || null === $this->record_data_cache) {
+            return null;
+        }
+
+        $count = count($this->record_data_cache);
+
+        return null === $limit ? $count : min($count, $limit);
+    }
+
     /**
      * @param array<string, mixed> $data
      * @param array{field: string, value: mixed} $filter

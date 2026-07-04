@@ -17,6 +17,8 @@ final class QueryBuilder
 
     private ?string $cursor = null;
 
+    private bool $has_conditions = false;
+
     private bool $has_id_equality = false;
 
     public function __construct(private readonly FileStoreInterface $store)
@@ -35,6 +37,7 @@ final class QueryBuilder
         foreach ($next->groups as $index => $group) {
             $next->groups[ $index ][] = $condition;
         }
+        $next->has_conditions = true;
         if ('id' === $condition->field() && 'eq' === $condition->operator()) {
             $next->has_id_equality = true;
         }
@@ -58,6 +61,7 @@ final class QueryBuilder
                 $next->has_id_equality = true;
             }
         }
+        $next->has_conditions = $next->has_conditions || $branch->has_conditions;
 
         return $next;
     }
@@ -73,6 +77,7 @@ final class QueryBuilder
         foreach ($branch->groups as $group) {
             $next->groups[] = $group;
         }
+        $next->has_conditions = $next->has_conditions || $branch->has_conditions;
         $next->has_id_equality = $next->has_id_equality || $branch->has_id_equality;
 
         return $next;
@@ -192,6 +197,17 @@ final class QueryBuilder
             return count($id_records);
         }
 
+        if (
+            ! $this->has_conditions &&
+            null === $this->cursor &&
+            $this->store instanceof DocPerFileStore
+        ) {
+            $cached_count = $this->store->cached_record_count($this->limit);
+            if (null !== $cached_count) {
+                return $cached_count;
+            }
+        }
+
         if ($this->store instanceof DocPerFileStore) {
             return $this->store->count_records($this);
         }
@@ -238,6 +254,11 @@ final class QueryBuilder
     public function groups(): array
     {
         return $this->groups;
+    }
+
+    public function has_conditions(): bool
+    {
+        return $this->has_conditions;
     }
 
     public function cursor_id(): ?string
