@@ -314,6 +314,132 @@ final class CacheCorrectnessTest extends TestCase
         $this->assertSame('local', $reader->get($ids[0])?->data()['value'] ?? null);
     }
 
+    public function test_trust_ordered_and_unordered_export_fast_paths_flush_buffers(): void
+    {
+        $ids = $this->fixed_ids(70);
+        $payload = str_repeat('x', 18000);
+        $ordered = new DocPerFileStore(
+            $this->root,
+            'trust-ordered-export',
+            cache_validation: CacheValidation::TRUST
+        );
+
+        $records = array();
+        foreach ($ids as $index => $id) {
+            $records[] = array( 'id' => $id, 'data' => array( 'index' => $index, 'payload' => $payload ) );
+        }
+
+        $ordered->putMany($records);
+        $this->assertSame(70, $ordered->cached_record_count());
+        $this->assertSame(2, $ordered->cached_record_count(2));
+        $this->assertSame($ids[0], $ordered->cached_first_record()?->id());
+        $this->assertSame($ids, $this->record_ids($ordered->cached_records()));
+        $this->assertSame(array_slice($ids, 0, 2), $this->record_ids($ordered->cached_records(2)));
+        $this->assertSame(array_slice($ids, 0, 2), $this->record_ids(iterator_to_array($ordered->stream(RecordQuery::all()->limit(2)), false)));
+        $this->assertSame(array( $ids[10] ), $this->record_ids($ordered->query()->where('id')->eq($ids[10])->get()));
+        $this->assertSame($ids[10], $ordered->query()->where('id')->eq($ids[10])->first()?->id());
+        $this->assertSame(1, $ordered->query()->where('id')->eq($ids[10])->count());
+        $this->assertSame(1, $ordered->query()->where('index')->eq(10)->limit(1)->count());
+        $this->assertSame($ids[10], $ordered->query()->where('index')->eq(10)->first()?->id());
+        $this->assertSame(array( $ids[10] ), $this->record_ids($ordered->query()->where('index')->eq(10)->limit(1)->get()));
+
+        $ordered_export = $this->root . '/ordered-export.jsonl';
+        $this->assertSame(70, $ordered->exportJsonl($ordered_export));
+        $ordered_lines = file($ordered_export, FILE_IGNORE_NEW_LINES);
+        $this->assertIsArray($ordered_lines);
+        $this->assertCount(70, $ordered_lines);
+        $this->assertStringContainsString('"id":"' . $ids[0] . '"', $ordered_lines[0]);
+        $this->assertStringContainsString('"id":"' . $ids[69] . '"', $ordered_lines[69]);
+
+        $unordered = new DocPerFileStore(
+            $this->root,
+            'trust-unordered-export',
+            cache_validation: CacheValidation::TRUST
+        );
+        foreach (array_reverse($records) as $record) {
+            $unordered->put($record['data'], $record['id']);
+        }
+
+        $unordered_export = $this->root . '/unordered-export.jsonl';
+        $this->assertSame(70, $unordered->exportJsonl($unordered_export));
+        $unordered_lines = file($unordered_export, FILE_IGNORE_NEW_LINES);
+        $this->assertIsArray($unordered_lines);
+        $this->assertCount(70, $unordered_lines);
+        $this->assertStringContainsString('"id":"' . $ids[0] . '"', $unordered_lines[0]);
+        $this->assertStringContainsString('"id":"' . $ids[69] . '"', $unordered_lines[69]);
+    }
+
+    public function test_indexed_put_stream_updates_existing_indexes_and_shared_cache(): void
+    {
+        $ids = $this->fixed_ids(3);
+        $store = new DocPerFileStore(
+            $this->root,
+            'indexed-put-stream',
+            cache: Cache::memory(10),
+            cache_validation: CacheValidation::HASH
+        );
+        $store->indexes()->field('kind')->field('rank')->range()->sync();
+        $store->put(array( 'kind' => 'old', 'rank' => 1, 'value' => 'before' ), $ids[0]);
+
+        $this->assertSame(2, $store->putStream(array(
+            array( 'id' => $ids[0], 'data' => array( 'kind' => 'new', 'rank' => 10, 'value' => 'updated' ) ),
+            array( 'id' => $ids[1], 'data' => array( 'kind' => 'new', 'rank' => 20, 'value' => 'created' ) ),
+        )));
+
+        $this->assertSame(0, $store->query()->where('kind')->eq('old')->count());
+        $this->assertSame(2, $store->query()->where('kind')->eq('new')->count());
+        $this->assertSame(array( $ids[0], $ids[1] ), $store->indexes()->candidate_ids($store->query()->where('rank')->gte(10)));
+        $this->assertSame('updated', $store->get($ids[0])?->data()['value'] ?? null);
+        $this->assertTrue($store->verify()['ok']);
+    }
+
+    public function test_shared_cache_normalizes_malformed_cached_payloads(): void
+    {
+        $id = $this->fixed_ids(1)[0];
+        $cache = Cache::memory(10);
+        $store = new DocPerFileStore(
+            $this->root,
+            'cached-payload-normalization',
+            cache: $cache,
+            cache_validation: CacheValidation::TRUST
+        );
+        $scope = $this->private_property($store, 'cache_scope');
+
+        $cache->set('doc:cached-payload-normalization:' . $id, array( true, $scope, 0, -1, '', '{"broken"' ));
+        $this->assertSame(array(), $store->get($id)?->data());
+
+        $cache->set('doc:cached-payload-normalization:' . $id, array( true, $scope, 0, -1, '', 'not-an-array' ));
+        $this->assertSame(array(), $store->get($id)?->data());
+
+        $cache->set('doc:cached-payload-normalization:' . $id, array( true, $scope, 0, -1, '', array( 'drop', 'name' => 'kept' ) ));
+        $this->assertSame(array( 'name' => 'kept' ), $store->get($id)?->data());
+    }
+
+    public function test_empty_paths_nested_locks_and_shared_cache_scope_fallbacks(): void
+    {
+        $id = $this->fixed_ids(1)[0];
+        $empty = new DocPerFileStore($this->root, 'empty-paths');
+
+        $this->assertSame(array(), $empty->record_paths());
+        $this->assertSame('nested', $empty->with_write_lock(
+            fn(): string => $empty->with_write_lock(fn(): string => 'nested')
+        ));
+
+        $cache = Cache::memory(10);
+        $cached = new DocPerFileStore(
+            $this->root,
+            'scope-fallbacks',
+            cache: $cache,
+            cache_validation: CacheValidation::TRUST
+        );
+
+        $cache->set('doc:scope-fallbacks:' . $id, array( true, 'wrong-scope', 0, -1, '', array( 'value' => 'stale' ) ));
+        $this->assertNull($cached->get($id));
+
+        $cache->set('doc:scope-fallbacks:' . $id, array( true ));
+        $this->assertNull($cached->get($id));
+    }
+
     /**
      * @param list<string> $values
      * @return callable(): string
@@ -378,5 +504,12 @@ final class CacheCorrectnessTest extends TestCase
         clearstatcache(true, $path);
         $this->assertSame($mtime, (int) filemtime($path));
         $this->assertSame($size, (int) filesize($path));
+    }
+
+    private function private_property(object $object, string $property): mixed
+    {
+        $reflection = new \ReflectionProperty($object, $property);
+
+        return $reflection->getValue($object);
     }
 }
