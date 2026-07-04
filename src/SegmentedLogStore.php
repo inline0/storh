@@ -8,6 +8,8 @@ final class SegmentedLogStore implements FileStoreInterface
 {
     private const CACHE_HASH_ALGORITHM = 'xxh128';
 
+    private const EQUALITY_COUNT_MAX_VALUES_PER_FIELD = 64;
+
     /** @var callable(): string */
     private mixed $id_generator;
 
@@ -25,6 +27,14 @@ final class SegmentedLogStore implements FileStoreInterface
     private int $live_record_count = 0;
 
     private int $deleted_record_count = 0;
+
+    /** @var array<string, array<string, int>> */
+    private array $equality_counts = array();
+
+    /** @var array<string, true> */
+    private array $disabled_equality_count_fields = array();
+
+    private bool $equality_counts_valid = true;
 
     /** @var array<string, array{min: string|null, max: string|null, records: int}> */
     private array $segment_stats = array();
@@ -282,7 +292,7 @@ final class SegmentedLogStore implements FileStoreInterface
     {
         $this->with_lock(
             function (): void {
-                $this->recover_unlocked();
+                $this->recover_unlocked(false);
                 $this->roll_active_segment();
 
                 $source_segments = $this->sealed_segments();
@@ -341,6 +351,11 @@ final class SegmentedLogStore implements FileStoreInterface
         }
 
         $single_condition = $this->query_single_condition($groups);
+        $indexed_equal_count = $this->count_equal_live_records($single_condition, $cursor, $limit);
+        if (null !== $indexed_equal_count) {
+            return $indexed_equal_count;
+        }
+
         $match_marker = null === $single_condition ? null : $this->line_match_marker($single_condition);
         $state = $this->state_index();
         $segment_query = RecordQuery::all();
@@ -536,9 +551,12 @@ final class SegmentedLogStore implements FileStoreInterface
         );
     }
 
-    private function recover_unlocked(): void
+    private function recover_unlocked(bool $build_equality_counts = true): void
     {
-        $this->replace_state_index($this->build_state_index(true));
+        if (! $build_equality_counts) {
+            $this->invalidate_equality_counts();
+        }
+        $this->replace_state_index($this->build_state_index(true, $build_equality_counts));
         $this->repair_manifest_stats_from_segments();
     }
 
@@ -563,6 +581,10 @@ final class SegmentedLogStore implements FileStoreInterface
 
         $id = $envelope['id'];
         $this->remember_segment_record($file, $id, $offset);
+        $replaces_existing = null !== $this->state && isset($this->state[ $id ]);
+        if ('delete' === $envelope['op'] || $replaces_existing) {
+            $this->invalidate_equality_counts();
+        }
 
         $this->write_state_entry(
             $id,
@@ -573,6 +595,9 @@ final class SegmentedLogStore implements FileStoreInterface
                 'aliases' => array(),
             )
         );
+        if ('put' === $envelope['op'] && ! $replaces_existing) {
+            $this->remember_record_equality_counts($envelope['data'] ?? array());
+        }
 
         if ($end_offset >= $this->max_segment_bytes) {
             $this->roll_active_segment();
@@ -600,12 +625,18 @@ final class SegmentedLogStore implements FileStoreInterface
         $position = false === $position ? 0 : $position;
         $buffer = '';
         $pending = array();
+        $counts_invalidated = false;
 
         try {
             foreach ($records as $record) {
                 $id     = $record->id();
-                $line   = $this->encode_put_line($id, $record->data());
+                $data   = $record->data();
+                $line   = $this->encode_put_line($id, $data);
                 $length = strlen($line);
+                if (! $counts_invalidated) {
+                    $this->invalidate_equality_counts();
+                    $counts_invalidated = true;
+                }
 
                 $pending[] = array( $id, $file, $position );
                 $buffer .= $line;
@@ -669,6 +700,7 @@ final class SegmentedLogStore implements FileStoreInterface
         $position = false === $position ? 0 : $position;
         $buffer = '';
         $pending = array();
+        $counts_invalidated = false;
 
         try {
             foreach ($records as $record) {
@@ -681,6 +713,10 @@ final class SegmentedLogStore implements FileStoreInterface
                 /** @var array<string, mixed> $data */
                 $line   = $this->encode_put_line($id, $data);
                 $length = strlen($line);
+                if (! $counts_invalidated) {
+                    $this->invalidate_equality_counts();
+                    $counts_invalidated = true;
+                }
 
                 $count++;
                 $pending[] = array( $id, $file, $position );
@@ -739,6 +775,11 @@ final class SegmentedLogStore implements FileStoreInterface
         foreach ($pending as $entry) {
             $id = $entry[0];
             $this->remember_segment_record($entry[1], $id, $entry[2]);
+            $replaces_existing = null !== $this->state && isset($this->state[ $id ]);
+            if ($replaces_existing) {
+                $this->invalidate_equality_counts();
+            }
+
             $this->write_state_entry(
                 $id,
                 array(
@@ -1246,13 +1287,16 @@ final class SegmentedLogStore implements FileStoreInterface
     /**
      * @return array<string, array{deleted: bool, file: string, offset: int, aliases: list<array{file: string, offset: int}>}>
      */
-    private function build_state_index(bool $truncate_torn = false): array
+    private function build_state_index(bool $truncate_torn = false, bool $build_equality_counts = true): array
     {
         $this->flush_active_handle();
 
         $state = array();
         $stats = array();
         $sparse_offsets = array();
+        $equality_counts = array();
+        $disabled_equality_count_fields = array();
+        $equality_counts_valid = true;
 
         foreach ($this->all_segments() as $segment) {
             $file = isset($segment['file']) && is_string($segment['file']) ? $segment['file'] : '';
@@ -1303,6 +1347,22 @@ final class SegmentedLogStore implements FileStoreInterface
                         $offsets[] = array( $id, $offset );
                     }
                     $records++;
+                    if ($build_equality_counts && 'put' === $envelope['op']) {
+                        if (isset($state[ $id ])) {
+                            $equality_counts_valid = false;
+                            $equality_counts = array();
+                            $disabled_equality_count_fields = array();
+                        } elseif ($equality_counts_valid) {
+                            $data = isset($envelope['data']) && is_array($envelope['data']) ? $envelope['data'] : array();
+                            /** @var array<string, mixed> $data */
+                            $this->remember_record_equality_counts_in($equality_counts, $disabled_equality_count_fields, $data);
+                        }
+                    } elseif ('delete' === $envelope['op']) {
+                        $equality_counts_valid = false;
+                        $equality_counts = array();
+                        $disabled_equality_count_fields = array();
+                    }
+
                     $state[ $id ] = array(
                         'deleted' => 'delete' === $envelope['op'],
                         'file'    => $file,
@@ -1325,6 +1385,11 @@ final class SegmentedLogStore implements FileStoreInterface
         ksort($state);
         $this->segment_stats          = $stats;
         $this->segment_sparse_offsets = $sparse_offsets;
+        if ($build_equality_counts) {
+            $this->equality_counts        = $equality_counts;
+            $this->disabled_equality_count_fields = $disabled_equality_count_fields;
+            $this->equality_counts_valid = $equality_counts_valid;
+        }
 
         return $state;
     }
@@ -1533,6 +1598,108 @@ final class SegmentedLogStore implements FileStoreInterface
             $value,
             JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
         );
+    }
+
+    private function count_equal_live_records(?QueryCondition $condition, ?string $cursor, ?int $limit): ?int
+    {
+        if (null === $condition || null !== $cursor || 'eq' !== $condition->operator()) {
+            return null;
+        }
+
+        $this->state_index();
+
+        if ('id' === $condition->field()) {
+            $id = $condition->value();
+            if (! is_string($id)) {
+                return 0;
+            }
+
+            $entry = $this->state[ $id ] ?? null;
+            $count = null !== $entry && ! $entry['deleted'] ? 1 : 0;
+
+            return null === $limit ? $count : min($count, $limit);
+        }
+
+        $value = $condition->value();
+        if (! $this->countable_equality_value($value)) {
+            return null;
+        }
+
+        if (! $this->equality_counts_valid || isset($this->disabled_equality_count_fields[ $condition->field() ])) {
+            return null;
+        }
+
+        $count = $this->equality_counts[ $condition->field() ][ $this->equality_value_key($value) ] ?? 0;
+
+        return null === $limit ? $count : min($count, $limit);
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    private function remember_record_equality_counts(array $data): void
+    {
+        if (! $this->equality_counts_valid) {
+            return;
+        }
+
+        $this->remember_record_equality_counts_in($this->equality_counts, $this->disabled_equality_count_fields, $data);
+    }
+
+    /**
+     * @param array<string, array<string, int>> $counts
+     * @param array<string, true> $disabled_fields
+     * @param array<string, mixed> $data
+     */
+    private function remember_record_equality_counts_in(array &$counts, array &$disabled_fields, array $data): void
+    {
+        foreach ($data as $field => $value) {
+            if (isset($disabled_fields[ $field ]) || ! $this->countable_equality_value($value)) {
+                continue;
+            }
+
+            $key = $this->equality_value_key($value);
+            if (! isset($counts[ $field ][ $key ]) && count($counts[ $field ] ?? array()) >= self::EQUALITY_COUNT_MAX_VALUES_PER_FIELD) {
+                $disabled_fields[ $field ] = true;
+                unset($counts[ $field ]);
+                continue;
+            }
+
+            $counts[ $field ][ $key ] = ( $counts[ $field ][ $key ] ?? 0 ) + 1;
+        }
+    }
+
+    private function invalidate_equality_counts(): void
+    {
+        $this->equality_counts = array();
+        $this->disabled_equality_count_fields = array();
+        $this->equality_counts_valid = false;
+    }
+
+    private function countable_equality_value(mixed $value): bool
+    {
+        return null === $value || is_scalar($value);
+    }
+
+    private function equality_value_key(mixed $value): string
+    {
+        if (is_string($value)) {
+            return 's:' . $value;
+        }
+
+        if (is_int($value)) {
+            return 'i:' . $value;
+        }
+
+        if (is_bool($value)) {
+            return 'b:' . ( $value ? '1' : '0' );
+        }
+
+        if (is_float($value)) {
+            return 'f:' . sprintf('%.17G', $value);
+        }
+
+        return 'n:';
     }
 
     /**
@@ -1890,6 +2057,9 @@ final class SegmentedLogStore implements FileStoreInterface
             if (isset($this->state[ $id ])) {
                 $previous = $this->state[ $id ];
                 $previous['deleted'] ? $this->deleted_record_count-- : $this->live_record_count--;
+                if (! $previous['deleted']) {
+                    $this->invalidate_equality_counts();
+                }
             }
 
             unset($this->state[ $id ]);

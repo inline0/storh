@@ -479,6 +479,9 @@ final class AdvancedStorageTest extends TestCase
         $this->assertSame(2, $store->query()->count());
         $this->assertSame(1, $store->query()->where('type')->eq('new')->count());
         $this->assertSame(1, $store->query()->where('type')->eq('new')->cursor($ids[0])->count());
+        $store->put(array( 'type' => 'old', 'value' => 22, 'blob' => str_repeat('x', 120) ), $ids[1]);
+        $this->assertSame(0, $store->query()->where('type')->eq('new')->count());
+        $this->assertSame(2, $store->query()->where('type')->eq('old')->count());
         $this->assertSame(2, $store->stats()['records']);
         $this->assertGreaterThanOrEqual(1, $store->stats()['deleted']);
 
@@ -495,6 +498,7 @@ final class AdvancedStorageTest extends TestCase
         );
         $this->assertSame(3, $stream->query()->where('type')->eq('streamed')->count());
         $reopened_stream = new SegmentedLogStore($this->root, 'stream-events', 512, 1);
+        $this->assertSame(3, $reopened_stream->query()->where('type')->eq('streamed')->count());
         $this->assertSame(5, $reopened_stream->get($ids[4])?->data()['value'] ?? null);
 
         $deleted = $store->retain()->olderThanMs(UuidV7::timestamp_ms($ids[0]))->compact();
