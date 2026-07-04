@@ -206,9 +206,11 @@ final class QueryBuilder
 
     public function count(): int
     {
-        $id_records = $this->direct_id_records();
-        if (null !== $id_records) {
-            return count($id_records);
+        if ($this->has_id_equality) {
+            $id_records = $this->direct_id_records();
+            if (null !== $id_records) {
+                return count($id_records);
+            }
         }
 
         if (
@@ -371,9 +373,11 @@ final class QueryBuilder
      */
     private function candidate_records(): array
     {
-        $id_records = $this->direct_id_records();
-        if (null !== $id_records) {
-            return $id_records;
+        if ($this->has_id_equality) {
+            $id_records = $this->direct_id_records();
+            if (null !== $id_records) {
+                return $id_records;
+            }
         }
 
         if ($this->store instanceof DocPerFileStore) {
@@ -423,10 +427,6 @@ final class QueryBuilder
      */
     private function direct_id_records(): ?array
     {
-        if (! $this->has_id_equality) {
-            return null;
-        }
-
         if (1 !== count($this->groups)) {
             return null;
         }
