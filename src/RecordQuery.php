@@ -32,6 +32,20 @@ final class RecordQuery
         return new self();
     }
 
+    /**
+     * @internal
+     * @param array<string, scalar|null> $field_equals
+     */
+    public static function from_query_builder(?string $after_id, ?int $limit, array $field_equals): self
+    {
+        $query               = new self();
+        $query->after_id     = $after_id;
+        $query->limit        = $limit;
+        $query->field_equals = $field_equals;
+
+        return $query;
+    }
+
     public function after(string $id): self
     {
         UuidV7::assert_valid($id);

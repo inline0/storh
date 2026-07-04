@@ -528,17 +528,11 @@ final class QueryBuilder
             return null;
         }
 
-        $query = RecordQuery::all();
-        if (null !== $this->cursor) {
-            $query = $query->after($this->cursor);
-        }
-
         $limit = $limit_override ?? $this->limit;
-        if (null !== $limit) {
-            $query = $query->limit($limit);
-        }
 
         $seen_fields = array();
+        /** @var array<string, scalar|null> $field_equals */
+        $field_equals = array();
         foreach ($this->groups[0] as $condition) {
             if ('eq' !== $condition->operator() || 'id' === $condition->field()) {
                 return null;
@@ -559,10 +553,10 @@ final class QueryBuilder
             }
 
             $seen_fields[ $field ] = $value;
-            $query = $query->where_equal($field, $value);
+            $field_equals[ $field ] = $value;
         }
 
-        return $query;
+        return RecordQuery::from_query_builder($this->cursor, $limit, $field_equals);
     }
 
     private function order_value(StorageRecord $record): mixed
