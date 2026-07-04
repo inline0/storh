@@ -28,6 +28,7 @@ try {
         'dataset' => $dataset,
         'engine'  => $engine,
         'php'     => PHP_VERSION,
+        'runtime' => bench_runtime(),
         'time'    => gmdate('c'),
         'cacheValidation' => $cache_validation,
         'results' => array(),
@@ -532,11 +533,40 @@ function release_bench_memory(): void
 }
 
 /**
+ * @return array<string, bool|int|string|null>
+ */
+function bench_runtime(): array
+{
+    $status = function_exists('opcache_get_status') ? opcache_get_status(false) : false;
+    $jit = is_array($status) && isset($status['jit']) && is_array($status['jit']) ? $status['jit'] : array();
+
+    return array(
+        'php'                  => PHP_VERSION,
+        'sapi'                 => PHP_SAPI,
+        'xdebugMode'           => getenv('XDEBUG_MODE') ?: null,
+        'opcacheEnableCli'     => ini_get('opcache.enable_cli'),
+        'opcacheEnabled'       => is_array($status) ? (bool) ( $status['opcache_enabled'] ?? false ) : false,
+        'opcacheJit'           => ini_get('opcache.jit'),
+        'opcacheJitBufferSize' => ini_get('opcache.jit_buffer_size'),
+        'jitEnabled'           => (bool) ( $jit['enabled'] ?? false ),
+        'jitOn'                => (bool) ( $jit['on'] ?? false ),
+    );
+}
+
+/**
  * @param array<string, mixed> $results
  */
 function print_report(array $results, string $output): void
 {
     echo 'storh bench dataset=' . $results['dataset'] . ' output=' . $output . PHP_EOL;
+    $runtime = $results['runtime'] ?? array();
+    if (is_array($runtime)) {
+        echo 'runtime php=' . ( $runtime['php'] ?? $results['php'] )
+            . ' opcache=' . ( ! empty($runtime['opcacheEnabled']) ? 'on' : 'off' )
+            . ' jit=' . ( ! empty($runtime['jitOn']) ? 'on' : 'off' )
+            . PHP_EOL;
+    }
+
     foreach ($results['results'] as $engine => $items) {
         echo '[' . $engine . ']' . PHP_EOL;
         foreach ($items as $name => $seconds) {

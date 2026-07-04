@@ -98,8 +98,20 @@ final class DocStoreIndexManager
         $eq_entries = 0;
         $entries = 0;
         $definitions = $this->rebuild_definitions($this->definitions());
+        $compound_roots = $this->rebuild_compound_roots($definitions);
+        $compound_key_cache = array();
         foreach ($this->store->stream() as $record) {
-            $this->collect_rebuild_index_entries($buckets, $range_buckets, $range_entries, $eq_entries, $definitions, $record->id(), $record->data());
+            $this->collect_rebuild_index_entries(
+                $buckets,
+                $range_buckets,
+                $range_entries,
+                $eq_entries,
+                $compound_roots,
+                $compound_key_cache,
+                $definitions,
+                $record->id(),
+                $record->data()
+            );
             $entries++;
 
             if ($eq_entries >= self::EQ_REBUILD_FLUSH_IDS) {
@@ -1289,13 +1301,14 @@ final class DocStoreIndexManager
 
     /**
      * @param array<string, array{field: string, unique: bool, range: bool}> $definitions
-     * @return array<string, array{field: string, unique: bool, range: bool, eqRoot: string}>
+     * @return array<string, array{field: string, unique: bool, range: bool, fieldKey: string, eqRoot: string}>
      */
     private function rebuild_definitions(array $definitions): array
     {
         $prepared = array();
         foreach ($definitions as $field => $definition) {
-            $definition['eqRoot'] = $this->entries_root() . '/eq/' . $this->field_key($definition['field']);
+            $definition['fieldKey'] = $this->field_key($definition['field']);
+            $definition['eqRoot'] = $this->entries_root() . '/eq/' . $definition['fieldKey'];
             $prepared[ $field ] = $definition;
         }
 
@@ -1303,9 +1316,38 @@ final class DocStoreIndexManager
     }
 
     /**
+     * @param array<string, array{field: string, unique: bool, range: bool, fieldKey: string, eqRoot: string}> $definitions
+     * @return array<string, array<string, string>>
+     */
+    private function rebuild_compound_roots(array $definitions): array
+    {
+        $roots = array();
+        $fields = array_keys(array_filter(
+            $definitions,
+            static fn(array $definition): bool => ! $definition['range'] && ! $definition['unique']
+        ));
+        $field_count = count($fields);
+        for ($left_index = 0; $left_index < $field_count - 1; $left_index++) {
+            $left = $fields[ $left_index ];
+            for ($right_index = $left_index + 1; $right_index < $field_count; $right_index++) {
+                $right = $fields[ $right_index ];
+                $roots[ $left ][ $right ] = $this->entries_root()
+                    . '/compound/'
+                    . $definitions[ $left ]['fieldKey']
+                    . '-'
+                    . $definitions[ $right ]['fieldKey'];
+            }
+        }
+
+        return $roots;
+    }
+
+    /**
      * @param array<string, array{path: string, field: string, key: string, value: mixed, ids: array<string, true>}> $buckets
      * @param array<string, list<string>> $range_buckets
-     * @param array<string, array{field: string, unique: bool, range: bool, eqRoot: string}> $definitions
+     * @param array<string, array<string, string>> $compound_roots
+     * @param array<string, string> $compound_key_cache
+     * @param array<string, array{field: string, unique: bool, range: bool, fieldKey: string, eqRoot: string}> $definitions
      * @param array<string, mixed> $data
      */
     private function collect_rebuild_index_entries(
@@ -1313,11 +1355,14 @@ final class DocStoreIndexManager
         array &$range_buckets,
         int &$range_entries,
         int &$eq_entries,
+        array $compound_roots,
+        array &$compound_key_cache,
         array $definitions,
         string $id,
         array $data
     ): void {
-        $compound_values = array();
+        $compound_fields = array();
+        $compound_value_keys = array();
         foreach ($definitions as $definition) {
             $field = $definition['field'];
             if (! array_key_exists($field, $data) || ! $this->indexable($data[ $field ])) {
@@ -1340,12 +1385,63 @@ final class DocStoreIndexManager
                 $id
             );
             if (! $definition['unique']) {
-                $compound_values[ $field ] = $value;
+                $compound_fields[] = $field;
+                $compound_value_keys[] = $value_key;
             }
             $eq_entries++;
         }
 
-        $eq_entries += $this->collect_compound_index_entries($buckets, $compound_values, $id);
+        $eq_entries += $this->collect_rebuild_compound_index_entries(
+            $buckets,
+            $compound_fields,
+            $compound_value_keys,
+            $compound_roots,
+            $compound_key_cache,
+            $id
+        );
+    }
+
+    /**
+     * @param array<string, array{path: string, field: string, key: string, value: mixed, ids: array<string, true>}> $buckets
+     * @param list<string> $fields
+     * @param list<string> $value_keys
+     * @param array<string, array<string, string>> $compound_roots
+     * @param array<string, string> $compound_key_cache
+     */
+    private function collect_rebuild_compound_index_entries(
+        array &$buckets,
+        array $fields,
+        array $value_keys,
+        array $compound_roots,
+        array &$compound_key_cache,
+        string $id
+    ): int {
+        $field_count = count($fields);
+        if ($field_count < 2) {
+            return 0;
+        }
+
+        $entries = 0;
+        for ($left_index = 0; $left_index < $field_count - 1; $left_index++) {
+            $left = $fields[ $left_index ];
+            for ($right_index = $left_index + 1; $right_index < $field_count; $right_index++) {
+                $right = $fields[ $right_index ];
+                $compound_key_source = $value_keys[ $left_index ] . "\0" . $value_keys[ $right_index ];
+                $key = $compound_key_cache[ $compound_key_source ] ??= 'c-' . hash('xxh128', $compound_key_source);
+
+                $this->collect_index_entry(
+                    $buckets,
+                    $compound_roots[ $left ][ $right ] . '/' . $key . '.jsonc',
+                    $left . "\t" . $right,
+                    $key,
+                    null,
+                    $id
+                );
+                $entries++;
+            }
+        }
+
+        return $entries;
     }
 
     /**
