@@ -6,6 +6,7 @@ use Storh\Cache;
 use Storh\CacheValidation;
 use Storh\DocPerFileStore;
 use Storh\Queue;
+use Storh\QueryCondition;
 use Storh\RecordQuery;
 use Storh\SegmentedLogStore;
 use Storh\UuidV7;
@@ -59,6 +60,11 @@ try {
 
     if ('all' === $engine || 'uuid' === $engine) {
         $results['results']['uuid'] = bench_uuid($dataset);
+        release_bench_memory();
+    }
+
+    if ('all' === $engine || 'filter' === $engine) {
+        $results['results']['filter'] = bench_filter($dataset);
         release_bench_memory();
     }
 
@@ -394,6 +400,63 @@ function bench_uuid(int $dataset): array
     });
 
     return compact('monotonic', 'spread', 'validate', 'timestamp');
+}
+
+/**
+ * @return array<string, float>
+ */
+function bench_filter(int $dataset): array
+{
+    $start_ms = 1_700_000_000_000;
+    $ids = array();
+    $rows = array();
+
+    UuidV7::reset_for_tests();
+    for ($i = 0; $i < $dataset; $i++) {
+        $ids[] = UuidV7::generate($start_ms + $i);
+        $rows[] = row($i);
+    }
+
+    $record_equal_query = RecordQuery::all()->where_equal('kind', 'page');
+    $record_equal = timed(static function () use ($ids, $rows, $record_equal_query): void {
+        $count = 0;
+        foreach ($rows as $index => $row) {
+            if ($record_equal_query->matches_data($ids[ $index ], $row)) {
+                $count++;
+            }
+        }
+        if ($count < 1) {
+            throw new RuntimeException('Record equality filter matched no rows.');
+        }
+    });
+
+    $record_range_query = RecordQuery::all()->time_range_ms($start_ms + 10, $start_ms + $dataset - 10);
+    $record_range = timed(static function () use ($ids, $rows, $record_range_query): void {
+        $count = 0;
+        foreach ($rows as $index => $row) {
+            if ($record_range_query->matches_data($ids[ $index ], $row)) {
+                $count++;
+            }
+        }
+        if ($count < 1) {
+            throw new RuntimeException('Record range filter matched no rows.');
+        }
+    });
+
+    $condition = new QueryCondition('status', 'eq', 'published');
+    $condition_equal = timed(static function () use ($ids, $rows, $condition): void {
+        $count = 0;
+        foreach ($rows as $index => $row) {
+            if ($condition->matches_data($ids[ $index ], $row)) {
+                $count++;
+            }
+        }
+        if ($count < 1) {
+            throw new RuntimeException('Condition equality filter matched no rows.');
+        }
+    });
+
+    return compact('record_equal', 'record_range', 'condition_equal');
 }
 
 /**

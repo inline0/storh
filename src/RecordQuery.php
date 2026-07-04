@@ -12,6 +12,10 @@ final class RecordQuery
 
     private ?int $until_ms = null;
 
+    private ?string $lower_id = null;
+
+    private ?string $upper_id = null;
+
     private ?int $limit = null;
 
     /** @var array<string, scalar|null> */
@@ -42,6 +46,8 @@ final class RecordQuery
         $next           = clone $this;
         $next->from_ms  = $from_ms;
         $next->until_ms = $until_ms;
+        $next->lower_id = null === $from_ms ? null : UuidV7::min_for_timestamp_ms($from_ms);
+        $next->upper_id = null === $until_ms ? null : UuidV7::max_for_timestamp_ms($until_ms);
 
         return $next;
     }
@@ -97,12 +103,12 @@ final class RecordQuery
 
     public function lower_id(): ?string
     {
-        return null === $this->from_ms ? null : UuidV7::min_for_timestamp_ms($this->from_ms);
+        return $this->lower_id;
     }
 
     public function upper_id(): ?string
     {
-        return null === $this->until_ms ? null : UuidV7::max_for_timestamp_ms($this->until_ms);
+        return $this->upper_id;
     }
 
     public function limit_value(): ?int
@@ -128,22 +134,22 @@ final class RecordQuery
      */
     public function matches_data(string $id, array $data): bool
     {
-        if (null !== $this->after_id && strcmp($id, $this->after_id) <= 0) {
+        if (null !== $this->after_id && $id <= $this->after_id) {
             return false;
         }
 
-        $lower = $this->lower_id();
-        if (null !== $lower && strcmp($id, $lower) < 0) {
+        if (null !== $this->lower_id && $id < $this->lower_id) {
             return false;
         }
 
-        $upper = $this->upper_id();
-        if (null !== $upper && strcmp($id, $upper) > 0) {
+        if (null !== $this->upper_id && $id > $this->upper_id) {
             return false;
         }
 
         foreach ($this->field_equals as $field => $value) {
-            if (! array_key_exists($field, $data) || $data[ $field ] !== $value) {
+            $actual = $data[ $field ] ?? null;
+            $exists = null !== $actual || array_key_exists($field, $data);
+            if (! $exists || $actual !== $value) {
                 return false;
             }
         }

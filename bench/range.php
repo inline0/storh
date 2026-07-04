@@ -9,13 +9,13 @@ require dirname(__DIR__) . '/vendor/autoload.php';
 $options = getopt('', array( 'datasets::', 'engines::', 'output-dir::', 'cache-validations::', 'memory-limit::' ));
 
 $datasets = parse_int_list((string) ( $options['datasets'] ?? '1000,10000,50000,100000' ));
-$engines  = parse_string_list((string) ( $options['engines'] ?? 'doc,log,queue,recovery,cache' ));
+$engines  = parse_string_list((string) ( $options['engines'] ?? 'doc,log,queue,recovery,cache,filter' ));
 $cache_validations = parse_string_list((string) ( $options['cache-validations'] ?? 'hash,stat,trust' ));
 $output_dir = (string) ( $options['output-dir'] ?? dirname(__DIR__) . '/build/bench-ranges' );
 $memory_limit = isset($options['memory-limit']) ? (string) $options['memory-limit'] : null;
 
 if (in_array('all', $engines, true)) {
-    $engines = array( 'doc', 'log', 'queue', 'recovery', 'cache' );
+    $engines = array( 'doc', 'log', 'queue', 'recovery', 'cache', 'filter' );
 }
 
 foreach ($cache_validations as $mode) {
