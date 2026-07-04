@@ -407,7 +407,8 @@ final class DocStoreIndexManager
      */
     private function candidate_limit(QueryBuilder $query, array $groups): ?int
     {
-        if ($query->has_ordering() || null !== $query->cursor_id() || null === $query->limit_value()) {
+        $limit = $query->limit_value();
+        if (null !== $query->cursor_id() || null === $limit) {
             return null;
         }
 
@@ -420,7 +421,25 @@ final class DocStoreIndexManager
             return null;
         }
 
-        return $query->limit_value();
+        $condition = $group[0];
+        if (! $query->has_ordering()) {
+            return $this->range_condition_supported($condition) ? null : $limit;
+        }
+
+        if (
+            'asc' !== $query->order_direction() ||
+            $query->order_field() !== $condition->field() ||
+            ! $this->range_condition_supported($condition)
+        ) {
+            return null;
+        }
+
+        $definition = $this->definitions()[ $condition->field() ] ?? null;
+        if (null === $definition || ! $definition['range'] || is_file($this->range_delta_field_root($condition->field()))) {
+            return null;
+        }
+
+        return $limit;
     }
 
     /**
@@ -510,7 +529,7 @@ final class DocStoreIndexManager
         }
 
         if (in_array($condition->operator(), array( 'gt', 'gte', 'lt', 'lte', 'between', 'prefix' ), true)) {
-            return $this->ids_for_range_condition($condition);
+            return $this->ids_for_range_condition($condition, $limit);
         }
 
         return null;
@@ -718,16 +737,25 @@ final class DocStoreIndexManager
     /**
      * @return list<string>
      */
-    private function ids_for_range_condition(QueryCondition $condition): array
+    private function ids_for_range_condition(QueryCondition $condition, ?int $limit = null): array
     {
         $ids = array();
-        $this->collect_range_condition_ids($this->range_field_root($condition->field()), $condition, $ids, true);
-        $this->collect_range_condition_ids($this->range_delta_field_root($condition->field()), $condition, $ids, false);
+        $delta_path = $this->range_delta_field_root($condition->field());
+        if (! is_file($delta_path)) {
+            $this->collect_range_condition_ids($this->range_field_root($condition->field()), $condition, $ids, true, $limit);
+        } else {
+            $this->collect_range_condition_ids($this->range_field_root($condition->field()), $condition, $ids, true);
+            $this->collect_range_condition_ids($delta_path, $condition, $ids, false);
+        }
 
         $result = array_keys($ids);
-        sort($result);
+        if (null === $limit) {
+            sort($result);
 
-        return $result;
+            return $result;
+        }
+
+        return array_slice($result, 0, $limit);
     }
 
     private function count_for_range_condition(QueryCondition $condition, ?int $limit = null): int
@@ -782,6 +810,11 @@ final class DocStoreIndexManager
         }
 
         return null;
+    }
+
+    private function range_condition_supported(QueryCondition $condition): bool
+    {
+        return in_array($condition->operator(), array( 'gt', 'gte', 'lt', 'lte', 'between', 'prefix' ), true);
     }
 
     /**
@@ -899,8 +932,13 @@ final class DocStoreIndexManager
     /**
      * @param array<string, true> $ids
      */
-    private function collect_range_condition_ids(string $path, QueryCondition $condition, array &$ids, bool $sorted): void
-    {
+    private function collect_range_condition_ids(
+        string $path,
+        QueryCondition $condition,
+        array &$ids,
+        bool $sorted,
+        ?int $limit = null
+    ): void {
         if (! is_file($path)) {
             return;
         }
@@ -946,6 +984,9 @@ final class DocStoreIndexManager
                 }
 
                 $this->apply_range_entry_ids($value_object, $ids);
+                if (null !== $limit && $sorted && count($ids) >= $limit) {
+                    return;
+                }
             }
         } finally {
             fclose($handle);

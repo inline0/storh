@@ -209,6 +209,16 @@ final class QueryBuilder
         return null !== $this->order_field;
     }
 
+    public function order_field(): ?string
+    {
+        return $this->order_field;
+    }
+
+    public function order_direction(): string
+    {
+        return $this->order_direction;
+    }
+
     /**
      * @return array{field: string, value: mixed}|null
      */

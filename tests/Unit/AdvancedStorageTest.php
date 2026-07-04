@@ -90,6 +90,12 @@ final class AdvancedStorageTest extends TestCase
             ->limit(2)
             ->get();
         $this->assertSame(array( 'news', 'home' ), array_map(static fn($record): string => $record->data()['slug'], $range));
+        $range_page = $store->query()
+            ->where('publishedAt')->gte(10)
+            ->orderBy('publishedAt')
+            ->limit(2)
+            ->get();
+        $this->assertSame(array( 'home', 'about' ), array_map(static fn($record): string => $record->data()['slug'], $range_page));
 
         $or = $store->query()
             ->where('slug')->prefix('ho')
