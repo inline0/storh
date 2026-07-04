@@ -2436,6 +2436,64 @@ final class SegmentedLogStore implements FileStoreInterface
                 $this->delete_directory($directory);
             }
         }
+
+        $referenced = $this->referenced_segment_artifacts();
+        if (null === $referenced) {
+            return;
+        }
+
+        foreach (glob($this->segments_root() . '/compact-*.ndjson') ?: array() as $path) {
+            if (is_file($path) && ! isset($referenced[ basename($path) ])) {
+                @unlink($path);
+            }
+        }
+
+        foreach (glob($this->segments_root() . '/compact-*.idx.jsonc') ?: array() as $path) {
+            if (is_file($path) && ! isset($referenced[ basename($path) ])) {
+                @unlink($path);
+            }
+        }
+    }
+
+    /**
+     * @return array<string, true>|null
+     */
+    private function referenced_segment_artifacts(): ?array
+    {
+        if (! is_file($this->manifest_path())) {
+            return array();
+        }
+
+        try {
+            $manifest = AtomicFilesystem::read_jsonc_object($this->manifest_path());
+        } catch (\Throwable) {
+            return null;
+        }
+
+        $referenced = array();
+        $segments = isset($manifest['sealed']) && is_array($manifest['sealed']) ? $manifest['sealed'] : array();
+        if (isset($manifest['active']) && is_array($manifest['active'])) {
+            $segments[] = $manifest['active'];
+        }
+
+        foreach ($segments as $segment) {
+            if (! is_array($segment)) {
+                continue;
+            }
+
+            $file = $segment['file'] ?? null;
+            if (is_string($file) && '' !== $file) {
+                $referenced[ $file ] = true;
+                $referenced[ $this->index_file_name_for_segment($file) ] = true;
+            }
+
+            $index = $segment['index'] ?? null;
+            if (is_string($index) && '' !== $index) {
+                $referenced[ $index ] = true;
+            }
+        }
+
+        return $referenced;
     }
 
     private function partitioned_collection(string $collection, ?string $partition, ?int $timestamp_ms): string

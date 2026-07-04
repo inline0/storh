@@ -120,6 +120,12 @@ the current derived state index with a fresh segment replay, and
 so stale or externally modified state is reported. Log and queue writes are
 serialized with filesystem locks.
 
+`SegmentedLog` compaction writes new `compact-*` segment files before swapping
+the manifest. If a process exits before that swap, reopen discards unreferenced
+compaction output and keeps replaying the old manifest segments. Completed
+compactions leave old sealed segments in place so readers that already opened
+them stay valid.
+
 `DocStore` mutations are serialized with a collection-level write lock, so
 record files and secondary indexes update as one consistency boundary across
 processes. Concurrent writes to distinct record ids are safe under the same

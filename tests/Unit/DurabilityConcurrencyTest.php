@@ -250,6 +250,40 @@ final class DurabilityConcurrencyTest extends TestCase
         $this->assertTrue($store->verify()['ok']);
     }
 
+    public function test_segmented_log_reopen_discards_compaction_output_left_before_manifest_swap(): void
+    {
+        $ids = $this->fixed_ids(12, 1_700_530_000_000);
+        $store = new SegmentedLogStore($this->root, 'log-compact-crash', 512, 1);
+        for ($index = 0; $index < 8; $index++) {
+            $store->put(
+                array(
+                    'index' => $index,
+                    'blob'  => str_repeat('x', 160),
+                ),
+                $ids[ $index ]
+            );
+        }
+
+        $manifest = AtomicFilesystem::read_jsonc_object($this->root . '/log-compact-crash/manifest.jsonc');
+        $source_segments = $manifest['sealed'] ?? array();
+        $this->assertIsArray($source_segments);
+        $this->assertNotSame(array(), $source_segments);
+
+        $compacted_segments = $this->invoke_private($store, 'write_compacted_segments', array( $source_segments ));
+        $this->assertIsArray($compacted_segments);
+        $this->assertNotSame(array(), $compacted_segments);
+        $this->assertNotSame(array(), glob($this->root . '/log-compact-crash/segments/compact-*.ndjson') ?: array());
+        $this->assertNotSame(array(), glob($this->root . '/log-compact-crash/segments/compact-*.idx.jsonc') ?: array());
+        unset($store);
+
+        $reopened = new SegmentedLogStore($this->root, 'log-compact-crash', 512, 1);
+
+        $this->assertSame(array(), glob($this->root . '/log-compact-crash/segments/compact-*.ndjson') ?: array());
+        $this->assertSame(array(), glob($this->root . '/log-compact-crash/segments/compact-*.idx.jsonc') ?: array());
+        $this->assertSame(array_slice($ids, 0, 8), $this->record_ids(iterator_to_array($reopened->stream(), false)));
+        $this->assertTrue($reopened->verify()['ok']);
+    }
+
     public function test_doc_store_accepts_concurrent_distinct_writes_without_lost_records(): void
     {
         if (! function_exists('pcntl_fork') || ! function_exists('pcntl_waitpid')) {
@@ -634,5 +668,15 @@ final class DurabilityConcurrencyTest extends TestCase
     {
         $reflection = new \ReflectionProperty($object, $property);
         $reflection->setValue($object, $value);
+    }
+
+    /**
+     * @param list<mixed> $arguments
+     */
+    private function invoke_private(object $object, string $method, array $arguments = array()): mixed
+    {
+        $reflection = new \ReflectionMethod($object, $method);
+
+        return $reflection->invokeArgs($object, $arguments);
     }
 }

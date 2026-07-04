@@ -38,5 +38,7 @@ log replay. Repair rebuilds that state from `queue.log` and truncates torn
 trailing events.
 
 Compaction writes new `compact-*` segment files and then updates the manifest.
-Old sealed segments are intentionally left in place so readers already streaming
+If a process exits before that manifest swap, reopen removes unreferenced
+compaction output and continues from the old manifest. Completed compactions
+intentionally leave old sealed segments in place so readers already streaming
 from them stay valid.
