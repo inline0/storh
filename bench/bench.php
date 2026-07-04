@@ -114,6 +114,10 @@ function bench_doc(string $root, int $dataset): array
         $store->query()->where('id')->eq($id_lookup_target)->where('status')->eq($id_lookup_status)->first();
     });
 
+    $unindexed_first = timed(static function () use ($store): void {
+        $store->query()->where('status')->eq('published')->first();
+    });
+
     $stream = timed(static function () use ($store): void {
         iterator_to_array($store->stream());
     });
@@ -132,6 +136,10 @@ function bench_doc(string $root, int $dataset): array
         $store->query()->where('kind')->eq('page')->limit(100)->get();
     });
 
+    $indexed_first = timed(static function () use ($store): void {
+        $store->query()->where('kind')->eq('page')->first();
+    });
+
     $indexed_range = timed(static function () use ($store): void {
         $store->query()->where('publishedAt')->between(1_700_000_000_010, 1_700_000_000_200)->get();
     });
@@ -140,8 +148,16 @@ function bench_doc(string $root, int $dataset): array
         $store->query()->where('publishedAt')->gte(1_700_000_000_000)->orderBy('publishedAt')->limit(100)->get();
     });
 
+    $indexed_range_ordered_first = timed(static function () use ($store): void {
+        $store->query()->where('publishedAt')->gte(1_700_000_000_000)->orderBy('publishedAt')->first();
+    });
+
     $indexed_range_ordered_desc = timed(static function () use ($store): void {
         $store->query()->where('publishedAt')->gte(1_700_000_000_000)->orderBy('publishedAt', 'desc')->limit(100)->get();
+    });
+
+    $indexed_range_ordered_desc_first = timed(static function () use ($store): void {
+        $store->query()->where('publishedAt')->gte(1_700_000_000_000)->orderBy('publishedAt', 'desc')->first();
     });
 
     $indexed_compound_miss = timed(static function () use ($store): void {
@@ -208,13 +224,17 @@ function bench_doc(string $root, int $dataset): array
         'id_first',
         'id_count',
         'id_filtered_first',
+        'unindexed_first',
         'stream',
         'delete',
         'index_build',
         'indexed',
+        'indexed_first',
         'indexed_range',
         'indexed_range_ordered',
+        'indexed_range_ordered_first',
         'indexed_range_ordered_desc',
+        'indexed_range_ordered_desc_first',
         'indexed_compound_miss',
         'indexed_compound_miss_count',
         'indexed_compound_count',
@@ -267,6 +287,14 @@ function bench_log(string $root, int $dataset): array
 
     $query_id_filtered_first = timed(static function () use ($store, $query_cursor_id, $query_cursor_status): void {
         $store->query()->where('id')->eq($query_cursor_id)->where('status')->eq($query_cursor_status)->first();
+    });
+
+    $query_first = timed(static function () use ($store): void {
+        $store->query()->where('status')->eq('published')->first();
+    });
+
+    $query_cursor_first = timed(static function () use ($store, $query_cursor_id): void {
+        $store->query()->where('status')->eq('published')->cursor($query_cursor_id)->first();
     });
 
     $range = timed(static function () use ($store): void {
@@ -331,6 +359,8 @@ function bench_log(string $root, int $dataset): array
         'query_id_first',
         'query_id_count',
         'query_id_filtered_first',
+        'query_first',
+        'query_cursor_first',
         'range',
         'query_all_count',
         'query_count',
