@@ -862,6 +862,9 @@ final class SegmentedLogStore implements FileStoreInterface
         $output_records  = 0;
         $output_min      = null;
         $output_max      = null;
+        $output_buffer   = '';
+        $output_position = 0;
+        $pending_state_entries = array();
 
         try {
             foreach ($source_segments as $segment) {
@@ -910,10 +913,12 @@ final class SegmentedLogStore implements FileStoreInterface
                             $output_path   = $opened['path'];
                             $output_handle = $opened['handle'];
                             $output_number = $opened['nextNumber'];
+                            $output_buffer   = '';
+                            $output_position = 0;
+                            $pending_state_entries = array();
                         }
 
-                        $output_offset = ftell($output_handle);
-                        $output_offset = false === $output_offset ? 0 : $output_offset;
+                        $output_offset = $output_position;
 
                         if ($compaction_entry['copy']) {
                             $output_line = $line;
@@ -924,8 +929,8 @@ final class SegmentedLogStore implements FileStoreInterface
 
                             $output_line = $this->compaction_line($line, $compaction_entry['envelope']);
                         }
-                        AtomicFilesystem::write_all($output_handle, $output_line, $output_path);
-                        $output_position = $output_offset + strlen($output_line);
+                        $output_buffer .= $output_line;
+                        $output_position += strlen($output_line);
 
                         if (0 === $output_records % $this->sparse_index_interval) {
                             $output_offsets[] = array( $id, $output_offset );
@@ -935,7 +940,7 @@ final class SegmentedLogStore implements FileStoreInterface
                         $output_min = null === $output_min || strcmp($id, $output_min) < 0 ? $id : $output_min;
                         $output_max = null === $output_max || strcmp($id, $output_max) > 0 ? $id : $output_max;
 
-                        $this->write_state_entry(
+                        $pending_state_entries[] = array(
                             $id,
                             array(
                                 'deleted' => false,
@@ -946,6 +951,7 @@ final class SegmentedLogStore implements FileStoreInterface
                         );
 
                         if ($output_position >= $this->max_segment_bytes) {
+                            $this->flush_compaction_buffer($output_handle, $output_buffer, $output_path, $pending_state_entries);
                             $output_segments[] = $this->finish_compaction_segment(
                                 $output_handle,
                                 $output_file,
@@ -962,6 +968,9 @@ final class SegmentedLogStore implements FileStoreInterface
                             $output_records = 0;
                             $output_min     = null;
                             $output_max     = null;
+                            $output_buffer   = '';
+                            $output_position = 0;
+                            $pending_state_entries = array();
                         }
                     }
                 } finally {
@@ -970,6 +979,7 @@ final class SegmentedLogStore implements FileStoreInterface
             }
         } finally {
             if (null !== $output_handle) {
+                $this->flush_compaction_buffer($output_handle, $output_buffer, $output_path, $pending_state_entries);
                 $output_segments[] = $this->finish_compaction_segment(
                     $output_handle,
                     $output_file,
@@ -983,6 +993,25 @@ final class SegmentedLogStore implements FileStoreInterface
         }
 
         return $output_segments;
+    }
+
+    /**
+     * @param resource $handle
+     * @param list<array{0: string, 1: array{deleted: bool, file: string, offset: int, aliases: list<array{file: string, offset: int}>}}> $pending_state_entries
+     */
+    private function flush_compaction_buffer(mixed $handle, string &$buffer, string $path, array &$pending_state_entries): void
+    {
+        if ('' === $buffer) {
+            return;
+        }
+
+        AtomicFilesystem::write_all($handle, $buffer, $path);
+        foreach ($pending_state_entries as $entry) {
+            $this->write_state_entry($entry[0], $entry[1]);
+        }
+
+        $buffer = '';
+        $pending_state_entries = array();
     }
 
     /**
