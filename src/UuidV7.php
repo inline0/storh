@@ -33,7 +33,14 @@ final class UuidV7
                 self::$last_timestamp_prefix = substr(self::$last_timestamp_hex, 0, 8) . '-' . substr(self::$last_timestamp_hex, 8, 4) . '-';
             }
             $timestamp_prefix = self::$last_timestamp_prefix;
-            self::$last_entropy = self::increment_entropy(self::$last_entropy);
+            $entropy = self::$last_entropy;
+            $last_byte = ord($entropy[9]);
+            if ($last_byte < 255) {
+                $entropy[9] = chr($last_byte + 1);
+                self::$last_entropy = $entropy;
+            } else {
+                self::$last_entropy = self::increment_entropy($entropy);
+            }
         } else {
             self::$last_timestamp_ms     = $timestamp_ms;
             self::$last_timestamp_hex    = self::timestamp_hex($timestamp_ms);
