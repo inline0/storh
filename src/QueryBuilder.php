@@ -467,8 +467,29 @@ final class QueryBuilder
             return null;
         }
 
+        $group = $this->groups[0];
+        if (1 === count($group)) {
+            $condition = $group[0];
+            if ('id' !== $condition->field() || 'eq' !== $condition->operator()) {
+                return null;
+            }
+
+            $id = $condition->value();
+            if (! is_string($id) || ! UuidV7::is_valid($id)) {
+                return array();
+            }
+
+            if (null !== $this->cursor && strcmp($id, $this->cursor) <= 0) {
+                return array();
+            }
+
+            $record = $this->store->get($id);
+
+            return null === $record ? array() : array($record);
+        }
+
         $id = null;
-        foreach ($this->groups[0] as $condition) {
+        foreach ($group as $condition) {
             if ('id' !== $condition->field() || 'eq' !== $condition->operator()) {
                 continue;
             }
