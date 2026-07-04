@@ -427,6 +427,47 @@ final class AdvancedStorageTest extends TestCase
         $this->assertSame(300, $store->query()->where('enabled')->gte(true)->count());
     }
 
+    public function test_descending_range_sparse_seek_respects_upper_window(): void
+    {
+        $ids = $this->fixed_ids(600);
+        $store = new DocPerFileStore($this->root, 'descending-window-index', $this->id_generator($ids));
+        foreach ($ids as $index => $_) {
+            $store->put(array( 'position' => $index ));
+        }
+
+        $store->indexes()->field('position')->range()->sync();
+
+        $lessThan = $store->query()
+            ->where('position')->lt(256)
+            ->orderBy('position', 'desc')
+            ->limit(3)
+            ->get();
+        $this->assertSame(
+            array( 255, 254, 253 ),
+            array_map(static fn($record): int => $record->data()['position'], $lessThan)
+        );
+
+        $lessThanOrEqual = $store->query()
+            ->where('position')->lte(256)
+            ->orderBy('position', 'desc')
+            ->limit(3)
+            ->get();
+        $this->assertSame(
+            array( 256, 255, 254 ),
+            array_map(static fn($record): int => $record->data()['position'], $lessThanOrEqual)
+        );
+
+        $between = $store->query()
+            ->where('position')->between(100, 140)
+            ->orderBy('position', 'desc')
+            ->limit(5)
+            ->get();
+        $this->assertSame(
+            array( 140, 139, 138, 137, 136 ),
+            array_map(static fn($record): int => $record->data()['position'], $between)
+        );
+    }
+
     public function test_doc_store_can_add_indexes_after_no_index_writes(): void
     {
         $ids = $this->fixed_ids(3);

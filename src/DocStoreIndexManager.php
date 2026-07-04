@@ -970,6 +970,27 @@ final class DocStoreIndexManager
     }
 
     /**
+     * @param array{0: string|null, 1: bool, 2: string|null, 3: bool} $window
+     */
+    private function range_reverse_seek_offset(string $field, array $window, int $file_size): int
+    {
+        $upper = $window[2];
+        if (null === $upper) {
+            return $file_size;
+        }
+
+        $upper_inclusive = $window[3];
+        foreach ($this->range_sparse_checkpoints($field) as $item) {
+            $comparison = strcmp($item['key'], $upper);
+            if ($comparison > 0 || (0 === $comparison && ! $upper_inclusive)) {
+                return $item['offset'];
+            }
+        }
+
+        return $file_size;
+    }
+
+    /**
      * @return list<array{key: string, offset: int}>
      */
     private function range_sparse_checkpoints(string $field): array
@@ -1110,6 +1131,9 @@ final class DocStoreIndexManager
             $position = ftell($handle);
             if (false === $position) {
                 return;
+            }
+            if (null !== $key_window) {
+                $position = $this->range_reverse_seek_offset($condition->field(), $key_window, $position);
             }
 
             while ($position > 0) {
