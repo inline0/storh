@@ -208,6 +208,7 @@ final class SegmentedLogStore implements FileStoreInterface
         $query ??= RecordQuery::all();
         $count  = 0;
         $filters_records = $query->filters_records();
+        $limit = $query->limit_value();
 
         foreach ($this->query_segments($query) as $segment) {
             $file = isset($segment['file']) && is_string($segment['file']) ? $segment['file'] : '';
@@ -263,7 +264,7 @@ final class SegmentedLogStore implements FileStoreInterface
                     yield null === $data ? $this->record_from_envelope($envelope) : new StorageRecord($id, $data);
                     $count++;
 
-                    if (null !== $query->limit_value() && $count >= $query->limit_value()) {
+                    if (null !== $limit && $count >= $limit) {
                         return;
                     }
                 }

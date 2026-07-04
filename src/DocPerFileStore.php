@@ -286,6 +286,7 @@ final class DocPerFileStore implements FileStoreInterface
         $query ??= RecordQuery::all();
         $count = 0;
         $filters_records = $query->filters_records();
+        $limit = $query->limit_value();
 
         if (null !== $this->record_path_cache && null !== $this->record_data_cache) {
             foreach ($this->cached_record_ids() as $id) {
@@ -301,7 +302,7 @@ final class DocPerFileStore implements FileStoreInterface
                 yield new StorageRecord($id, $data);
                 $count++;
 
-                if (null !== $query->limit_value() && $count >= $query->limit_value()) {
+                if (null !== $limit && $count >= $limit) {
                     return;
                 }
             }
@@ -329,7 +330,7 @@ final class DocPerFileStore implements FileStoreInterface
             yield $record;
             $count++;
 
-            if (null !== $query->limit_value() && $count >= $query->limit_value()) {
+            if (null !== $limit && $count >= $limit) {
                 return;
             }
         }
