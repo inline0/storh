@@ -416,6 +416,112 @@ final class AdvancedStorageTest extends TestCase
         $this->assertStringStartsWith('z-', (string) $reflection->invoke($store->indexes(), array( 'not' => 'scalar' )));
     }
 
+    public function test_index_verification_reports_malformed_artifacts_and_repair_recovers(): void
+    {
+        $ids = $this->fixed_ids(4);
+        $store = new DocPerFileStore($this->root, 'corrupt-index-artifacts', $this->id_generator($ids));
+        $store->putMany(array(
+            array( 'kind' => 'page', 'bucket' => 1, 'score' => 10 ),
+            array( 'kind' => 'page', 'bucket' => 2, 'score' => 20 ),
+            array( 'kind' => 'post', 'bucket' => 1, 'score' => 30 ),
+        ));
+        $store->indexes()->field('kind')->field('bucket')->field('score')->range()->sync();
+        $this->assertTrue($store->verify()['ok']);
+
+        $indexRoot = $store->collection_root() . '/.storh/indexes/entries';
+        $rangeRoot = $indexRoot . '/range';
+        $sparsePath = $rangeRoot . '/' . bin2hex('score') . '.idx.jsonc';
+        AtomicFilesystem::write_atomic(
+            $sparsePath,
+            Jsonc::encode_object(array(
+                'checkpoints' => array(
+                    'skip-me',
+                    array( 'key' => 123, 'offset' => 'bad' ),
+                    array( 'key' => 'i:00000000000000000010', 'offset' => 0 ),
+                ),
+            ))
+        );
+        $this->assertSame($ids[0], $store->query()->where('score')->gte(10)->orderBy('score')->limit(1)->first()?->id());
+
+        $kindRoot = $indexRoot . '/eq/' . bin2hex('kind');
+        $kindFiles = glob($kindRoot . '/*.jsonc') ?: array();
+        $this->assertNotSame(array(), $kindFiles);
+        file_put_contents($kindFiles[0], '{ broken');
+        AtomicFilesystem::write_atomic(
+            $kindRoot . '/malformed.jsonc',
+            Jsonc::encode_object(array( 'ids' => array( $ids[0] ) ))
+        );
+        AtomicFilesystem::write_atomic(
+            $kindRoot . '/wrong-key.jsonc',
+            Jsonc::encode_object(array(
+                'field' => 'kind',
+                'key'   => 'wrong-key',
+                'value' => 'page',
+                'ids'   => array( $ids[0] ),
+                'count' => 99,
+            ))
+        );
+
+        $compoundFiles = glob($indexRoot . '/compound/*/*.jsonc') ?: array();
+        $this->assertNotSame(array(), $compoundFiles);
+        AtomicFilesystem::write_atomic(
+            $compoundFiles[0],
+            Jsonc::encode_object(array(
+                'field' => 'wrong-compound',
+                'key'   => 'compound-key',
+                'ids'   => array( $ids[0] ),
+            ))
+        );
+
+        $rangePath = $rangeRoot . '/' . bin2hex('score') . '.jsonl';
+        $deltaPath = $rangeRoot . '/' . bin2hex('score') . '.delta.jsonl';
+        file_put_contents($rangePath, "not-json\n", FILE_APPEND);
+        file_put_contents(
+            $deltaPath,
+            json_encode(array(
+                'key'    => 'wrong-range-key',
+                'value'  => 10,
+                'ids'    => array( $ids[3] ),
+                'remove' => array( $ids[3] ),
+            ), JSON_THROW_ON_ERROR) . "\n",
+            FILE_APPEND
+        );
+
+        $manifest = $store->collection_root() . '/.storh/indexes/manifest.jsonc';
+        AtomicFilesystem::write_atomic(
+            $manifest,
+            Jsonc::encode_object(array(
+                'fields' => array(
+                    array( 'field' => 'kind' ),
+                    array( 'field' => 123, 'range' => true ),
+                    'ignored',
+                    array( 'field' => 'score', 'range' => true ),
+                ),
+            ))
+        );
+        $reloaded = new DocPerFileStore($this->root, 'corrupt-index-artifacts');
+        $this->assertSame(array( 'kind', 'score' ), array_keys($reloaded->indexes()->definitions()));
+
+        $errors = $store->indexes()->verify_against_store();
+        $joined = implode("\n", $errors);
+        $this->assertStringContainsString('Unreadable index file', $joined);
+        $this->assertStringContainsString('Malformed index file', $joined);
+        $this->assertStringContainsString('Index key mismatch', $joined);
+        $this->assertStringContainsString('Index count mismatch', $joined);
+        $this->assertStringContainsString('Index field mismatch', $joined);
+        $this->assertStringContainsString('Malformed range index line', $joined);
+        $this->assertStringContainsString('Range index key mismatch', $joined);
+        $this->assertFalse($store->verify()['ok']);
+
+        $this->assertSame($ids[0], $store->query()->where('score')->gte(10)->orderBy('score')->limit(1)->first()?->id());
+
+        $repair = $store->repair();
+        $this->assertTrue($repair['ok']);
+        $this->assertTrue($store->verify()['ok']);
+        $this->assertSame(2, $store->query()->where('kind')->eq('page')->count());
+        $this->assertSame(array( $ids[0], $ids[1] ), $store->indexes()->candidate_ids($store->query()->where('score')->between(10, 20)));
+    }
+
     public function test_limited_equality_index_reads_across_chunks(): void
     {
         $ids = $this->fixed_ids(280);
