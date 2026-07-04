@@ -141,6 +141,11 @@ final class QueryBuilder
 
     public function count(): int
     {
+        $id_records = $this->direct_id_records();
+        if (null !== $id_records) {
+            return count($id_records);
+        }
+
         if ($this->store instanceof DocPerFileStore) {
             return $this->store->count_records($this);
         }
@@ -311,18 +316,30 @@ final class QueryBuilder
      */
     private function direct_id_records(): ?array
     {
-        if (1 !== count($this->groups) || 1 !== count($this->groups[0])) {
+        if (1 !== count($this->groups)) {
             return null;
         }
 
-        $condition = $this->groups[0][0];
-        if ('id' !== $condition->field() || 'eq' !== $condition->operator()) {
-            return null;
+        $id = null;
+        foreach ($this->groups[0] as $condition) {
+            if ('id' !== $condition->field() || 'eq' !== $condition->operator()) {
+                continue;
+            }
+
+            $candidate_id = $condition->value();
+            if (! is_string($candidate_id) || ! UuidV7::is_valid($candidate_id)) {
+                return array();
+            }
+
+            if (null !== $id && $id !== $candidate_id) {
+                return array();
+            }
+
+            $id = $candidate_id;
         }
 
-        $id = $condition->value();
-        if (! is_string($id) || ! UuidV7::is_valid($id)) {
-            return array();
+        if (null === $id) {
+            return null;
         }
 
         if (null !== $this->cursor && strcmp($id, $this->cursor) <= 0) {

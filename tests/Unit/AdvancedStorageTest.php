@@ -71,7 +71,10 @@ final class AdvancedStorageTest extends TestCase
         $this->assertSame('index_scan', $store->query()->where('status')->eq('published')->explain()['plan']);
         $this->assertSame('home', $store->query()->where('slug')->eq('home')->first()?->data()['slug'] ?? null);
         $this->assertSame('home', $store->query()->where('id')->eq($ids[0])->first()?->data()['slug'] ?? null);
+        $this->assertSame(1, $store->query()->where('id')->eq($ids[0])->count());
+        $this->assertSame('home', $store->query()->where('id')->eq($ids[0])->where('status')->eq('published')->first()?->data()['slug'] ?? null);
         $this->assertNull($store->query()->where('id')->eq('not-a-uuid')->first());
+        $this->assertSame(0, $store->query()->where('id')->eq('not-a-uuid')->count());
         $this->assertSame(2, $store->query()->where('status')->in(array( 'draft', 'archived' ))->count());
         $this->assertSame(1, $store->query()->where('status')->eq('published')->where('featured')->eq(false)->count());
         $statusIndexes = glob(
@@ -547,6 +550,7 @@ final class AdvancedStorageTest extends TestCase
         $this->assertCount(1, $limited);
         $this->assertSame(2, $limited[0]->data()['value']);
         $this->assertSame(2, $store->query()->where('id')->eq($ids[1])->first()?->data()['value'] ?? null);
+        $this->assertSame(1, $store->query()->where('id')->eq($ids[1])->where('type')->eq('new')->count());
         $cursor_page = $store->query()->where('type')->eq('new')->cursor($ids[1])->limit(1)->get();
         $this->assertCount(1, $cursor_page);
         $this->assertSame($ids[2], $cursor_page[0]->id());
