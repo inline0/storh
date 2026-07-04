@@ -643,6 +643,184 @@ JSONC
         $this->assertSame(array( 'pending' => 2, 'processing' => 0, 'done' => 0 ), $repaired->counts());
     }
 
+    public function test_log_queue_syncs_external_appends_and_file_truncation(): void
+    {
+        $ids   = $this->fixed_ids(2);
+        $queue = new LogQueue($this->root, 'external-log-queue');
+        $path  = $this->root . '/external-log-queue/queue.log';
+
+        $generated = $queue->enqueue(array( 'task' => 'generated' ));
+        $this->assertTrue(UuidV7::is_valid($generated));
+        file_put_contents(
+            $path,
+            $this->encoded_log_line(array(
+                'op'      => 'enqueue',
+                'id'      => $ids[0],
+                'payload' => array( 'task' => 'external' ),
+                'ts'      => time(),
+            )),
+            FILE_APPEND
+        );
+
+        $this->assertSame(array( 'pending' => 2, 'processing' => 0, 'done' => 0 ), $queue->counts());
+        $first = $queue->claim();
+        $this->assertSame($generated, $first?->id());
+        $this->assertSame('generated', $first?->data()['task'] ?? null);
+        $second = $queue->claim();
+        $this->assertSame($ids[0], $second?->id());
+        $this->assertSame('external', $second?->data()['task'] ?? null);
+
+        $handle = fopen($path, 'c+b');
+        $this->assertIsResource($handle);
+        ftruncate($handle, 0);
+        fclose($handle);
+
+        $this->assertSame(array( 'pending' => 0, 'processing' => 0, 'done' => 0 ), $queue->counts());
+    }
+
+    public function test_log_queue_replay_normalizes_payloads_and_pending_complete_events(): void
+    {
+        $ids  = $this->fixed_ids(3);
+        $root = $this->root . '/queue-replay-payloads';
+        mkdir($root, 0777, true);
+        file_put_contents(
+            $root . '/queue.log',
+            $this->encoded_log_line(array( 'op' => 'enqueue', 'id' => $ids[0], 'payload' => array( 'task' => 'done' ), 'ts' => 1 ))
+            . $this->encoded_log_line(array( 'op' => 'complete', 'id' => $ids[0], 'done' => true, 'ts' => 2 ))
+            . $this->encoded_log_line(array( 'op' => 'complete', 'id' => $ids[0], 'done' => false, 'ts' => 3 ))
+            . $this->encoded_log_line(array( 'op' => 'enqueue', 'id' => $ids[1], 'payload' => 'not-an-object', 'ts' => 4 ))
+            . $this->encoded_log_line(array( 'op' => 'enqueue', 'id' => $ids[2], 'payload' => array( 'drop', 'name' => 'kept' ), 'ts' => 5 ))
+        );
+
+        $queue = new LogQueue($this->root, 'queue-replay-payloads');
+
+        $this->assertSame(array( 'pending' => 2, 'processing' => 0, 'done' => 0 ), $queue->counts());
+        $first = $queue->claim();
+        $this->assertSame($ids[1], $first?->id());
+        $this->assertSame(array(), $first?->data());
+        $second = $queue->claim();
+        $this->assertSame($ids[2], $second?->id());
+        $this->assertSame(array( 'name' => 'kept' ), $second?->data());
+        $this->assertNull($queue->claim());
+        $this->assertTrue($queue->verify()['ok']);
+    }
+
+    public function test_log_queue_verify_and_reopen_handle_invalid_framed_tail(): void
+    {
+        $ids   = $this->fixed_ids(1);
+        $queue = new LogQueue($this->root, 'invalid-framed-log-queue');
+        $path  = $this->root . '/invalid-framed-log-queue/queue.log';
+        $queue->enqueue(array( 'task' => 'valid' ), $ids[0]);
+        file_put_contents(
+            $path,
+            $this->encoded_log_line(array( 'op' => 'unsupported', 'id' => $ids[0], 'ts' => time() )),
+            FILE_APPEND
+        );
+
+        $verify = $queue->verify();
+        $this->assertFalse($verify['ok']);
+        $this->assertStringContainsString('Unsupported log queue event', implode("\n", $verify['errors']));
+
+        unset($queue);
+        $repaired = new LogQueue($this->root, 'invalid-framed-log-queue');
+        $this->assertSame(array( 'pending' => 1, 'processing' => 0, 'done' => 0 ), $repaired->counts());
+        $this->assertTrue($repaired->verify()['ok']);
+    }
+
+    public function test_log_queue_invalid_event_edges_and_compaction_helpers(): void
+    {
+        $ids   = $this->fixed_ids(4);
+        $queue = new LogQueue($this->root, 'queue-edge-coverage');
+        $path  = $this->root . '/queue-edge-coverage/queue.log';
+        $queue->enqueue(array( 'task' => 'pending' ), $ids[0]);
+        $queue->complete($ids[0]);
+        $this->assertSame(array( 'pending' => 1, 'processing' => 0, 'done' => 0 ), $queue->counts());
+        $this->assertSame(0, $queue->completeMany(array()));
+        $claimed = $queue->claim();
+        $this->assertSame($ids[0], $claimed?->id());
+        $this->assertSame(0, $queue->requeue_timed_out(3600));
+        file_put_contents(
+            $path,
+            $this->encoded_log_line(array( 'op' => 'claim', 'id' => 'not-a-uuid', 'ts' => time() )),
+            FILE_APPEND
+        );
+        $verify = $queue->verify();
+        $this->assertFalse($verify['ok']);
+        $this->assertStringContainsString('Invalid log queue event', implode("\n", $verify['errors']));
+
+        $decode_line = new \ReflectionMethod(LogQueue::class, 'decode_line');
+        foreach (
+            array(
+                "2\tdeadbeef\t{}\n" => 'Corrupt log queue line',
+                $this->framed_json('[1]') => 'event must be an object',
+                $this->framed_json('{"0":"zero","name":"value"}') => 'event must be an object',
+            ) as $line => $message
+        ) {
+            try {
+                $decode_line->invoke($queue, $line);
+                $this->fail('Expected invalid framed queue line to fail.');
+            } catch (StorageException $exception) {
+                $this->assertStringContainsString($message, $exception->getMessage());
+            }
+        }
+
+        $compact = new LogQueue($this->root, 'queue-map-compaction');
+        $this->invoke_private($compact, 'apply_claim_event', array( $ids[1], time() ));
+        $this->set_private_property($compact, 'pending_order', array( $ids[0], $ids[1] ));
+        $this->set_private_property($compact, 'pending_offset', 1);
+        $this->invoke_private($compact, 'compact_pending_order');
+        $this->assertSame(array( $ids[0], $ids[1] ), $this->private_property($compact, 'pending_order'));
+
+        $this->set_private_property($compact, 'pending_order', array_merge(array_fill(0, 4096, $ids[0]), array( $ids[1] )));
+        $this->set_private_property($compact, 'pending_offset', 4096);
+        $this->invoke_private($compact, 'compact_pending_order');
+        $this->assertSame(array( $ids[1] ), $this->private_property($compact, 'pending_order'));
+        $this->assertSame(0, $this->private_property($compact, 'pending_offset'));
+
+        $this->set_private_property($compact, 'pending', array( $ids[1] => true ));
+        $this->set_private_property($compact, 'pending_deletes', 4096);
+        $this->invoke_private($compact, 'compact_pending_map');
+        $this->assertSame(array( $ids[1] => true ), $this->private_property($compact, 'pending'));
+        $this->assertSame(0, $this->private_property($compact, 'pending_deletes'));
+
+        $this->set_private_property($compact, 'processing', array( $ids[2] => time() ));
+        $this->set_private_property($compact, 'processing_deletes', 4096);
+        $this->invoke_private($compact, 'compact_processing_map');
+        $this->assertArrayHasKey($ids[2], $this->private_property($compact, 'processing'));
+        $this->assertSame(0, $this->private_property($compact, 'processing_deletes'));
+
+        $this->set_private_property($compact, 'done', array( $ids[3] => time() ));
+        $this->set_private_property($compact, 'done_deletes', 4096);
+        $this->invoke_private($compact, 'compact_done_map');
+        $this->assertArrayHasKey($ids[3], $this->private_property($compact, 'done'));
+        $this->assertSame(0, $this->private_property($compact, 'done_deletes'));
+    }
+
+    public function test_log_queue_compacts_stale_pending_order_during_claims(): void
+    {
+        $ids = $this->fixed_ids(2);
+
+        $claim = new LogQueue($this->root, 'queue-stale-claim');
+        $this->set_private_property($claim, 'pending_order', array_merge(array_fill(0, 4096, $ids[0]), array( $ids[1] )));
+        $this->set_private_property($claim, 'pending', array( $ids[1] => true ));
+        $this->set_private_property($claim, 'payloads', array( $ids[1] => array( 'task' => 'last' ) ));
+        $claimed = $claim->claim();
+        $this->assertSame($ids[1], $claimed?->id());
+        $this->assertSame('last', $claimed?->data()['task'] ?? null);
+        $this->assertSame(array(), $this->private_property($claim, 'pending_order'));
+        $this->assertSame(0, $this->private_property($claim, 'pending_offset'));
+
+        $empty_claim = new LogQueue($this->root, 'queue-stale-empty-claim');
+        $this->set_private_property($empty_claim, 'pending_order', array_fill(0, 4096, $ids[0]));
+        $this->assertNull($empty_claim->claim());
+        $this->assertSame(array(), $this->private_property($empty_claim, 'pending_order'));
+
+        $empty_claim_many = new LogQueue($this->root, 'queue-stale-empty-claim-many');
+        $this->set_private_property($empty_claim_many, 'pending_order', array_fill(0, 4096, $ids[0]));
+        $this->assertSame(array(), $empty_claim_many->claimMany(1));
+        $this->assertSame(array(), $this->private_property($empty_claim_many, 'pending_order'));
+    }
+
     public function test_log_queue_bulk_enqueue_claim_and_complete(): void
     {
         $ids   = $this->fixed_ids();
@@ -679,6 +857,59 @@ JSONC
         } catch (StorageException $exception) {
             $this->assertStringContainsString('limit', $exception->getMessage());
         }
+    }
+
+    public function test_log_queue_large_bulk_operations_flush_event_buffers(): void
+    {
+        $count = 13000;
+        $ids   = $this->fixed_ids($count);
+        $queue = new LogQueue($this->root, 'large-bulk-log-queue');
+
+        $jobs = static function () use ($ids): \Generator {
+            foreach ($ids as $index => $id) {
+                yield array( 'id' => $id, 'payload' => array( 'index' => $index ) );
+            }
+        };
+
+        $queued = $queue->enqueueMany($jobs());
+        $this->assertCount($count, $queued);
+        $this->assertSame($ids[0], $queued[0]);
+        $this->assertSame($ids[$count - 1], $queued[$count - 1]);
+
+        $claimed = $queue->claimMany($count);
+        $this->assertCount($count, $claimed);
+        $this->assertSame($ids[0], $claimed[0]->id());
+        $this->assertSame($ids[$count - 1], $claimed[$count - 1]->id());
+
+        $this->assertSame($count, $queue->completeMany($ids));
+        $this->assertSame(array( 'pending' => 0, 'processing' => 0, 'done' => $count ), $queue->counts());
+        $this->assertSame($count, $queue->purgeDone());
+        $this->assertSame(array( 'pending' => 0, 'processing' => 0, 'done' => 0 ), $queue->counts());
+
+        $handle = fopen('php://memory', 'wb');
+        $this->assertIsResource($handle);
+        $lines = '';
+        $pending_ids = array();
+        $pending_payloads = array();
+        $flush_enqueue = new \ReflectionMethod(LogQueue::class, 'flush_enqueue_event_buffer');
+        $this->assertFalse($flush_enqueue->invokeArgs($queue, array(
+            $handle,
+            &$lines,
+            'php://memory',
+            &$pending_ids,
+            &$pending_payloads,
+            time(),
+        )));
+
+        $pending = array();
+        $flush_complete = new \ReflectionMethod(LogQueue::class, 'flush_complete_event_buffer');
+        $this->assertFalse($flush_complete->invokeArgs($queue, array(
+            $handle,
+            &$lines,
+            'php://memory',
+            &$pending,
+        )));
+        fclose($handle);
     }
 
     public function test_segmented_log_accepts_concurrent_appends_without_lost_or_interleaved_records(): void
@@ -1226,6 +1457,11 @@ JSONC
         return strlen($json) . "\t" . hash('xxh32', $json) . "\t" . $json . "\n";
     }
 
+    private function framed_json(string $json): string
+    {
+        return strlen($json) . "\t" . hash('xxh32', $json) . "\t" . $json . "\n";
+    }
+
     /**
      * @param list<mixed> $arguments
      */
@@ -1234,5 +1470,18 @@ JSONC
         $reflection = new \ReflectionMethod($object, $method);
 
         return $reflection->invokeArgs($object, $arguments);
+    }
+
+    private function set_private_property(object $object, string $property, mixed $value): void
+    {
+        $reflection = new \ReflectionProperty($object, $property);
+        $reflection->setValue($object, $value);
+    }
+
+    private function private_property(object $object, string $property): mixed
+    {
+        $reflection = new \ReflectionProperty($object, $property);
+
+        return $reflection->getValue($object);
     }
 }

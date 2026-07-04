@@ -467,12 +467,11 @@ final class LogQueue
         while (false !== ( $line = fgets($handle) )) {
             $offset = ftell($handle);
             try {
-                $event = $this->decode_line($line);
+                $this->apply_event($this->decode_line($line));
             } catch (\Throwable) {
                 break;
             }
 
-            $this->apply_event($event);
             $this->log_offset = false === $offset ? $this->log_offset : $offset;
         }
 
@@ -500,7 +499,7 @@ final class LogQueue
             $line_start = $this->log_offset;
             $offset = ftell($handle);
             try {
-                $event = $this->decode_line($line);
+                $this->apply_event($this->decode_line($line));
             } catch (\Throwable) {
                 if ($truncate_torn) {
                     $truncate_at = max(0, $line_start);
@@ -510,7 +509,6 @@ final class LogQueue
                 break;
             }
 
-            $this->apply_event($event);
             $this->log_offset = false === $offset ? $this->log_offset : $offset;
         }
 
