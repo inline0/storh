@@ -984,14 +984,20 @@ final class DocPerFileStore implements FileStoreInterface
             return array();
         }
 
-        $data = array();
-        foreach ($value as $key => $field) {
-            if (is_string($key)) {
-                $data[ $key ] = $field;
+        foreach ($value as $key => $_field) {
+            if (! is_string($key)) {
+                $data = array();
+                foreach ($value as $copy_key => $field) {
+                    if (is_string($copy_key)) {
+                        $data[ $copy_key ] = $field;
+                    }
+                }
+
+                return $data;
             }
         }
 
-        return $data;
+        return $value;
     }
 
     /**
