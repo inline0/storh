@@ -23,6 +23,12 @@ final class SegmentedLogStore implements FileStoreInterface
 
     private readonly string $collection_path;
 
+    private readonly string $collection_root_path;
+
+    private readonly string $segments_root_path;
+
+    private readonly string $manifest_file_path;
+
     private CacheInterface $cache;
 
     private bool $cache_enabled;
@@ -95,6 +101,9 @@ final class SegmentedLogStore implements FileStoreInterface
         $this->cache                 = $cache ?? Cache::null();
         $this->cache_enabled         = ! $this->cache instanceof NullCache;
         $this->collection_path       = $this->partitioned_collection($collection, $partition, $partition_timestamp_ms);
+        $this->collection_root_path  = rtrim($this->root, '/\\') . '/' . $this->collection_path;
+        $this->segments_root_path    = $this->collection_root_path . '/segments';
+        $this->manifest_file_path    = $this->collection_root_path . '/manifest.jsonc';
         $this->initialize();
     }
 
@@ -2074,8 +2083,8 @@ final class SegmentedLogStore implements FileStoreInterface
 
     private function with_lock(callable $callback): mixed
     {
-        AtomicFilesystem::ensure_directory($this->collection_root());
         if (! is_resource($this->lock_handle)) {
+            AtomicFilesystem::ensure_directory($this->collection_root());
             $handle = @fopen($this->collection_root() . '/collection.lock', 'c');
             if (false !== $handle) {
                 $this->lock_handle = $handle;
@@ -2101,7 +2110,7 @@ final class SegmentedLogStore implements FileStoreInterface
 
     private function collection_root(): string
     {
-        return rtrim($this->root, '/\\') . '/' . $this->collection_path;
+        return $this->collection_root_path;
     }
 
     private function assert_record_id(string $id, bool $generated): void
@@ -2115,7 +2124,7 @@ final class SegmentedLogStore implements FileStoreInterface
 
     private function segments_root(): string
     {
-        return $this->collection_root() . '/segments';
+        return $this->segments_root_path;
     }
 
     private function segment_path(string $file): string
@@ -2193,7 +2202,7 @@ final class SegmentedLogStore implements FileStoreInterface
 
     private function manifest_path(): string
     {
-        return $this->collection_root() . '/manifest.jsonc';
+        return $this->manifest_file_path;
     }
 
     private function delete_state_entry(string $id): void
