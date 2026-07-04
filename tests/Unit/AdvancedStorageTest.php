@@ -254,6 +254,17 @@ final class AdvancedStorageTest extends TestCase
         $this->assertCount(1, $numericKeyRecords);
         $this->assertSame(array( 'ok' => true ), $numericKeyRecords[0]->data());
 
+        $extraEnvelopeJsonl = $this->root . '/extra-envelope.jsonl';
+        file_put_contents(
+            $extraEnvelopeJsonl,
+            json_encode(array( 'id' => $ids[5], 'data' => array( 'ok' => true ), 'extra' => 'drop' ), JSON_THROW_ON_ERROR) . "\n"
+        );
+        $extraEnvelopeStore = new DocPerFileStore($this->root, 'extra-envelope-jsonl');
+        $this->assertSame(1, $extraEnvelopeStore->importJsonl($extraEnvelopeJsonl));
+        $extraEnvelopeRecords = iterator_to_array($extraEnvelopeStore->stream());
+        $this->assertCount(1, $extraEnvelopeRecords);
+        $this->assertSame(array( 'ok' => true ), $extraEnvelopeRecords[0]->data());
+
         $exportDirectory = $this->root . '/export-directory';
         mkdir($exportDirectory);
         try {

@@ -654,7 +654,7 @@ final class DocPerFileStore implements FileStoreInterface
         }
 
         try {
-            return $this->putStream($this->jsonl_records($handle));
+            return $this->import_jsonl_records($handle);
         } finally {
             fclose($handle);
         }
@@ -1115,6 +1115,11 @@ final class DocPerFileStore implements FileStoreInterface
             JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
         ) . "}\n";
 
+        $this->write_record_file_contents($directory, $path, $id, $contents);
+    }
+
+    private function write_record_file_contents(string $directory, string $path, string $id, string $contents): void
+    {
         $this->ensure_known_directory($directory);
         $temp = $directory . '/.' . $this->temp_prefix . '.' . ++$this->temp_counter . '.tmp';
         $written = @file_put_contents($temp, $contents);
@@ -1261,10 +1266,14 @@ final class DocPerFileStore implements FileStoreInterface
 
     /**
      * @param resource $handle
-     * @return \Generator<int, array<string, mixed>>
      */
-    private function jsonl_records(mixed $handle): \Generator
+    private function import_jsonl_records(mixed $handle): int
     {
+        $count = 0;
+        $indexes = $this->active_indexes();
+        $has_indexes = null !== $indexes;
+        $this->forget_written_record_cache();
+
         while (false !== ( $line = fgets($handle) )) {
             $line = trim($line);
             if ('' === $line) {
@@ -1276,6 +1285,40 @@ final class DocPerFileStore implements FileStoreInterface
                 throw new StorageException('JSONL import rows must be objects.');
             }
 
+            if (
+                2 === count($decoded) &&
+                isset($decoded['id'], $decoded['data']) &&
+                is_string($decoded['id']) &&
+                is_array($decoded['data'])
+            ) {
+                $id = $decoded['id'];
+                $data = $decoded['data'];
+                $this->assert_record_id($id, false);
+
+                /** @var array<string, mixed> $data */
+                $this->schema?->validate($data);
+
+                $old = ! $has_indexes ? null : $this->get($id);
+                if ($has_indexes) {
+                    $indexes->validate_unique($id, $data, $old?->data());
+                }
+
+                $directory = $this->record_directory_for_id($id);
+                $record_path = $directory . '/' . $id . '.jsonc';
+                $this->write_record_file_contents($directory, $record_path, $id, $line . "\n");
+
+                if ($has_indexes) {
+                    $indexes->update_record($id, $data, $old?->data());
+                }
+
+                if ($this->cache_enabled) {
+                    $this->cache_record(new StorageRecord($id, $data), $record_path);
+                }
+
+                $count++;
+                continue;
+            }
+
             $record = array();
             foreach ($decoded as $key => $value) {
                 if (is_string($key)) {
@@ -1283,7 +1326,35 @@ final class DocPerFileStore implements FileStoreInterface
                 }
             }
 
-            yield $record;
+            $id   = isset($record['id']) && is_string($record['id']) ? $record['id'] : null;
+            $data = isset($record['data']) && is_array($record['data']) ? $record['data'] : $record;
+            $generated = null === $id;
+            $id ??= ( $this->id_generator )();
+            $this->assert_record_id($id, $generated);
+
+            /** @var array<string, mixed> $data */
+            $this->schema?->validate($data);
+
+            $old = $generated || ! $has_indexes ? null : $this->get($id);
+            if ($has_indexes) {
+                $indexes->validate_unique($id, $data, $old?->data());
+            }
+
+            $directory = $this->record_directory_for_id($id);
+            $record_path = $directory . '/' . $id . '.jsonc';
+            $this->write_record_file($directory, $record_path, $id, $data);
+
+            if ($has_indexes) {
+                $indexes->update_record($id, $data, $old?->data());
+            }
+
+            if ($this->cache_enabled) {
+                $this->cache_record(new StorageRecord($id, $data), $record_path);
+            }
+
+            $count++;
         }
+
+        return $count;
     }
 }
