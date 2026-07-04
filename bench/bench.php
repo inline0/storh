@@ -140,6 +140,10 @@ function bench_doc(string $root, int $dataset): array
         $store->query()->where('publishedAt')->gte(1_700_000_000_000)->orderBy('publishedAt')->limit(100)->get();
     });
 
+    $indexed_range_ordered_desc = timed(static function () use ($store): void {
+        $store->query()->where('publishedAt')->gte(1_700_000_000_000)->orderBy('publishedAt', 'desc')->limit(100)->get();
+    });
+
     $indexed_compound_miss = timed(static function () use ($store): void {
         $store->query()->where('kind')->eq('post')->where('bucket')->eq(4)->get();
     });
@@ -210,6 +214,7 @@ function bench_doc(string $root, int $dataset): array
         'indexed',
         'indexed_range',
         'indexed_range_ordered',
+        'indexed_range_ordered_desc',
         'indexed_compound_miss',
         'indexed_compound_miss_count',
         'indexed_compound_count',
