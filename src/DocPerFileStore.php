@@ -74,7 +74,7 @@ final class DocPerFileStore implements FileStoreInterface
         $this->collection_path = rtrim($this->root, '/\\') . '/' . $this->collection;
         $this->cache_scope     = hash(self::CACHE_HASH_ALGORITHM, $this->collection_path);
         $this->data_path       = $this->collection_path . '/data';
-        $this->temp_prefix     = (string) getmypid();
+        $this->temp_prefix     = getmypid() . '.' . bin2hex(random_bytes(4));
         AtomicFilesystem::cleanup_temp_files($this->collection_root());
         if (! is_dir($this->data_root())) {
             $this->record_path_cache = array();
@@ -970,7 +970,7 @@ final class DocPerFileStore implements FileStoreInterface
         ) . "}\n";
 
         $this->ensure_known_directory($directory);
-        $temp = $directory . '/.' . $id . '.jsonc.' . $this->temp_prefix . '.' . ++$this->temp_counter . '.tmp';
+        $temp = $directory . '/.' . $this->temp_prefix . '.' . ++$this->temp_counter . '.tmp';
         $handle = @fopen($temp, 'wb');
         if (false === $handle) {
             throw new StorageException('Could not open temporary storage file for writing: ' . $temp);
