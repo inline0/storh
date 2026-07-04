@@ -1141,16 +1141,13 @@ final class DocPerFileStore implements FileStoreInterface
                 throw new StorageException('JSONC document must decode to an object.');
             }
 
-            $object = array();
-            foreach ($decoded as $key => $value) {
+            foreach ($decoded as $key => $_value) {
                 if (! is_string($key)) {
                     throw new StorageException('JSONC document must decode to an object.');
                 }
-
-                $object[ $key ] = $value;
             }
 
-            return $object;
+            return $decoded;
         } catch (\JsonException) {
             return AtomicFilesystem::read_jsonc_object($path);
         }
