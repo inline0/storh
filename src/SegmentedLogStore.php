@@ -2300,7 +2300,7 @@ final class SegmentedLogStore implements FileStoreInterface
             return $collection;
         }
 
-        $timestamp_ms ??= (int) floor(microtime(true) * 1000);
+        $timestamp_ms ??= (int) ( microtime(true) * 1000 );
         $seconds = intdiv($timestamp_ms, 1000);
 
         return match ($partition) {
