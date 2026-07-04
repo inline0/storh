@@ -206,6 +206,10 @@ function bench_log(string $root, int $dataset): array
         iterator_to_array($store->stream(RecordQuery::all()->time_range_ms(1_700_000_000_010, 1_700_000_000_200)));
     });
 
+    $query_all_count = timed(static function () use ($store): void {
+        $store->query()->count();
+    });
+
     $query_count = timed(static function () use ($store): void {
         $store->query()->where('status')->eq('published')->count();
     });
@@ -245,6 +249,7 @@ function bench_log(string $root, int $dataset): array
         'append',
         'cursor',
         'range',
+        'query_all_count',
         'query_count',
         'query_limit_count',
         'compact',

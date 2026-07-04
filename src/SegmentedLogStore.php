@@ -251,12 +251,16 @@ final class SegmentedLogStore implements FileStoreInterface
                         continue;
                     }
 
-                    $record = $this->record_from_envelope($envelope);
-                    if ($filters_records && ! $query->matches($record)) {
-                        continue;
+                    $data = null;
+                    if ($filters_records) {
+                        UuidV7::assert_valid($id);
+                        $data = $this->data_from_envelope($envelope);
+                        if (! $query->matches_data($id, $data)) {
+                            continue;
+                        }
                     }
 
-                    yield $record;
+                    yield null === $data ? $this->record_from_envelope($envelope) : new StorageRecord($id, $data);
                     $count++;
 
                     if (null !== $query->limit_value() && $count >= $query->limit_value()) {
@@ -323,9 +327,15 @@ final class SegmentedLogStore implements FileStoreInterface
     {
         $this->flush_active_handle();
 
-        $count = 0;
-        $limit = $query->limit_value();
+        $count  = 0;
+        $limit  = $query->limit_value();
         $cursor = $query->cursor_id();
+        $groups = $query->groups();
+        if ($this->query_has_no_conditions($groups)) {
+            return $this->count_live_state_records($cursor, $limit);
+        }
+
+        $single_condition = $this->query_single_condition($groups);
         $state = $this->state_index();
         $segment_query = RecordQuery::all();
         if (null !== $cursor) {
@@ -359,12 +369,24 @@ final class SegmentedLogStore implements FileStoreInterface
                     $envelope = $this->decode_line($line);
                     $id       = $envelope['id'];
                     $entry    = $state[ $id ] ?? null;
-                    if (null === $entry || $entry['deleted'] || ! $this->state_entry_matches($entry, $file, $line_offset)) {
+                    if (null === $entry || $entry['deleted']) {
+                        continue;
+                    }
+                    if (
+                        ( $file !== $entry['file'] || $line_offset !== $entry['offset'] ) &&
+                        ! $this->state_entry_matches($entry, $file, $line_offset)
+                    ) {
                         continue;
                     }
 
                     UuidV7::assert_valid($id);
-                    if (! $query->matches_data($id, $this->data_from_envelope($envelope))) {
+                    $data = isset($envelope['data']) && is_array($envelope['data']) ? $envelope['data'] : array();
+                    /** @var array<string, mixed> $data */
+                    if (
+                        null !== $single_condition
+                            ? ! $single_condition->matches_data($id, $data)
+                            : ! $query->matches_data($id, $data)
+                    ) {
                         continue;
                     }
 
@@ -1433,6 +1455,43 @@ final class SegmentedLogStore implements FileStoreInterface
         }
 
         return $data;
+    }
+
+    /**
+     * @param list<list<QueryCondition>> $groups
+     */
+    private function query_has_no_conditions(array $groups): bool
+    {
+        return 1 === count($groups) && array() === $groups[0];
+    }
+
+    /**
+     * @param list<list<QueryCondition>> $groups
+     */
+    private function query_single_condition(array $groups): ?QueryCondition
+    {
+        return 1 === count($groups) && 1 === count($groups[0]) ? $groups[0][0] : null;
+    }
+
+    private function count_live_state_records(?string $cursor, ?int $limit): int
+    {
+        $count = 0;
+        foreach ($this->state_index() as $id => $entry) {
+            if ($entry['deleted']) {
+                continue;
+            }
+
+            if (null !== $cursor && $id <= $cursor) {
+                continue;
+            }
+
+            $count++;
+            if (null !== $limit && $count >= $limit) {
+                return $count;
+            }
+        }
+
+        return $count;
     }
 
     /**
