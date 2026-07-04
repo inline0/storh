@@ -25,8 +25,8 @@ composer bench:compare build/bench-main.json build/bench-current.json
 Covered targets:
 
 - DocStore put, streaming put, JSONL export/import, get, delete, stream, and index build
-- equality-indexed, compound-indexed, range-indexed, indexed count, and non-indexed DocStore queries
-- SegmentedLog append, streaming append, cursor reads, time-range reads, counts, stats, compaction
+- equality-indexed, compound-indexed, range-indexed, indexed count, ID lookup, and non-indexed DocStore queries
+- SegmentedLog append, streaming append, cursor reads, time-range reads, QueryBuilder cursor and ID lookups, counts, stats, compaction
 - Queue enqueue, bulk enqueue, claim, bulk claim, complete, bulk complete, requeue
 - RecordQuery and QueryCondition predicate filtering over in-memory rows
 - UUIDv7 monotonic generation, timestamp-spread generation, validation, and timestamp extraction

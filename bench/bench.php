@@ -98,6 +98,22 @@ function bench_doc(string $root, int $dataset): array
         }
     });
 
+    $id_lookup_index = (int) floor(count($ids) / 2);
+    $id_lookup_target = $ids[ $id_lookup_index ];
+    $id_lookup_status = 0 === $id_lookup_index % 3 ? 'draft' : 'published';
+
+    $id_first = timed(static function () use ($store, $id_lookup_target): void {
+        $store->query()->where('id')->eq($id_lookup_target)->first();
+    });
+
+    $id_count = timed(static function () use ($store, $id_lookup_target): void {
+        $store->query()->where('id')->eq($id_lookup_target)->count();
+    });
+
+    $id_filtered_first = timed(static function () use ($store, $id_lookup_target, $id_lookup_status): void {
+        $store->query()->where('id')->eq($id_lookup_target)->where('status')->eq($id_lookup_status)->first();
+    });
+
     $stream = timed(static function () use ($store): void {
         iterator_to_array($store->stream());
     });
@@ -177,6 +193,9 @@ function bench_doc(string $root, int $dataset): array
     return compact(
         'put',
         'get',
+        'id_first',
+        'id_count',
+        'id_filtered_first',
         'stream',
         'delete',
         'index_build',
@@ -213,6 +232,26 @@ function bench_log(string $root, int $dataset): array
 
     $cursor = timed(static function () use ($store, $ids): void {
         iterator_to_array($store->stream(RecordQuery::all()->after($ids[(int) floor(count($ids) / 2)])->limit(100)));
+    });
+
+    $query_cursor_index = (int) floor(count($ids) / 2);
+    $query_cursor_id = $ids[ $query_cursor_index ];
+    $query_cursor_status = 0 === $query_cursor_index % 3 ? 'draft' : 'published';
+
+    $query_cursor = timed(static function () use ($store, $query_cursor_id): void {
+        $store->query()->cursor($query_cursor_id)->limit(100)->get();
+    });
+
+    $query_id_first = timed(static function () use ($store, $query_cursor_id): void {
+        $store->query()->where('id')->eq($query_cursor_id)->first();
+    });
+
+    $query_id_count = timed(static function () use ($store, $query_cursor_id): void {
+        $store->query()->where('id')->eq($query_cursor_id)->count();
+    });
+
+    $query_id_filtered_first = timed(static function () use ($store, $query_cursor_id, $query_cursor_status): void {
+        $store->query()->where('id')->eq($query_cursor_id)->where('status')->eq($query_cursor_status)->first();
     });
 
     $range = timed(static function () use ($store): void {
@@ -265,6 +304,10 @@ function bench_log(string $root, int $dataset): array
     return compact(
         'append',
         'cursor',
+        'query_cursor',
+        'query_id_first',
+        'query_id_count',
+        'query_id_filtered_first',
         'range',
         'query_all_count',
         'query_count',
