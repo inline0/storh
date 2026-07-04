@@ -172,6 +172,16 @@ final class QueryBuilder
         $next = clone $this;
         $next->limit = 1;
 
+        if (
+            $this->store instanceof DocPerFileStore &&
+            (
+                null === $this->order_field ||
+                $this->store->query_records_are_ordered($next)
+            )
+        ) {
+            return $this->store->first_record($next);
+        }
+
         return $next->get()[0] ?? null;
     }
 

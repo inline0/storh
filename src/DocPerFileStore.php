@@ -477,6 +477,67 @@ final class DocPerFileStore implements FileStoreInterface
         return $records;
     }
 
+    public function first_record(QueryBuilder $query): ?StorageRecord
+    {
+        $ids = $this->active_indexes()?->candidate_ids($query);
+        $simple_equal = $query->simple_equal_filter();
+
+        if (null !== $ids) {
+            foreach ($ids as $id) {
+                $record = $this->get($id);
+                if (null !== $record && $query->matches($record)) {
+                    return $record;
+                }
+            }
+
+            return null;
+        }
+
+        if (null !== $this->record_path_cache && null !== $this->record_data_cache) {
+            if ($this->record_cache_ordered) {
+                foreach ($this->record_data_cache as $id => $data) {
+                    if (
+                        null !== $simple_equal
+                            ? ! $this->record_matches_equal_filter($id, $data, $simple_equal)
+                            : ! $query->matches_data($id, $data)
+                    ) {
+                        continue;
+                    }
+
+                    return new StorageRecord($id, $data);
+                }
+
+                return null;
+            }
+
+            foreach ($this->cached_record_ids() as $id) {
+                $data = $this->record_data_cache[ $id ] ?? null;
+                if (
+                    null === $data ||
+                    (
+                        null !== $simple_equal
+                            ? ! $this->record_matches_equal_filter($id, $data, $simple_equal)
+                            : ! $query->matches_data($id, $data)
+                    )
+                ) {
+                    continue;
+                }
+
+                return new StorageRecord($id, $data);
+            }
+
+            return null;
+        }
+
+        foreach ($this->stream() as $record) {
+            if ($query->matches($record)) {
+                return $record;
+            }
+        }
+
+        return null;
+    }
+
     public function query_records_are_ordered(QueryBuilder $query): bool
     {
         return $this->active_indexes()?->candidate_order_satisfies($query) ?? false;
