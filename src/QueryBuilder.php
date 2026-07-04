@@ -150,7 +150,10 @@ final class QueryBuilder
             return $id_records[0] ?? null;
         }
 
-        return $this->limit(1)->get()[0] ?? null;
+        $next = clone $this;
+        $next->limit = 1;
+
+        return $next->get()[0] ?? null;
     }
 
     public function count(): int
