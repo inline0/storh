@@ -388,10 +388,9 @@ final class SegmentedLogStore implements FileStoreInterface
 
         $match_marker = null === $single_condition ? null : $this->line_match_marker($single_condition);
         $state = $this->state_index();
-        $segment_query = RecordQuery::all();
-        if (null !== $cursor) {
-            $segment_query = $segment_query->after($cursor);
-        }
+        $segment_query = null === $cursor
+            ? RecordQuery::all()
+            : RecordQuery::from_query_builder($cursor, null, array());
 
         foreach ($this->query_segments($segment_query) as $segment) {
             $file = isset($segment['file']) && is_string($segment['file']) ? $segment['file'] : '';
