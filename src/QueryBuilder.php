@@ -150,9 +150,23 @@ final class QueryBuilder
 
     public function first(): ?StorageRecord
     {
-        $id_records = $this->direct_id_records();
-        if (null !== $id_records) {
-            return $id_records[0] ?? null;
+        if ($this->has_id_equality) {
+            $id_records = $this->direct_id_records();
+            if (null !== $id_records) {
+                return $id_records[0] ?? null;
+            }
+        }
+
+        if (
+            ! $this->has_conditions &&
+            null === $this->cursor &&
+            null === $this->order_field &&
+            $this->store instanceof DocPerFileStore
+        ) {
+            $cached_records = $this->store->cached_records(1);
+            if (null !== $cached_records) {
+                return $cached_records[0] ?? null;
+            }
         }
 
         if (null === $this->order_field && ! $this->store instanceof DocPerFileStore) {
