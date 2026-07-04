@@ -246,6 +246,14 @@ final class AdvancedStorageTest extends TestCase
         file_put_contents($jsonl, "\n" . json_encode(array( 'ok' => true ), JSON_THROW_ON_ERROR) . "\n");
         $this->assertSame(1, $store->importJsonl($jsonl));
 
+        $numericKeyJsonl = $this->root . '/numeric-key.jsonl';
+        file_put_contents($numericKeyJsonl, "{\"0\":\"drop\",\"ok\":true}\n");
+        $numericKeyStore = new DocPerFileStore($this->root, 'numeric-key-jsonl');
+        $this->assertSame(1, $numericKeyStore->importJsonl($numericKeyJsonl));
+        $numericKeyRecords = iterator_to_array($numericKeyStore->stream());
+        $this->assertCount(1, $numericKeyRecords);
+        $this->assertSame(array( 'ok' => true ), $numericKeyRecords[0]->data());
+
         $exportDirectory = $this->root . '/export-directory';
         mkdir($exportDirectory);
         try {

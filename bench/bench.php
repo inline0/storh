@@ -164,6 +164,16 @@ function bench_doc(string $root, int $dataset): array
         $bulk_store->putStream(rows($dataset));
     });
 
+    $jsonl_path = $root . '/docs-bulk.jsonl';
+    $jsonl_export = timed(static function () use ($bulk_store, $jsonl_path): void {
+        $bulk_store->exportJsonl($jsonl_path);
+    });
+
+    $jsonl_import_store = new DocPerFileStore($root, 'docs-jsonl-import');
+    $jsonl_import = timed(static function () use ($jsonl_import_store, $jsonl_path): void {
+        $jsonl_import_store->importJsonl($jsonl_path);
+    });
+
     return compact(
         'put',
         'get',
@@ -181,7 +191,9 @@ function bench_doc(string $root, int $dataset): array
         'unindexed_count',
         'unindexed_limit_count',
         'full',
-        'bulk_put'
+        'bulk_put',
+        'jsonl_export',
+        'jsonl_import'
     );
 }
 
