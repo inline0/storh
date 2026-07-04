@@ -9,7 +9,7 @@ final class MemoryCache implements CacheInterface
     /** @var array<string, mixed> */
     private array $values = array();
 
-    /** @var array<string, int|null> */
+    /** @var array<string, int> */
     private array $expires = array();
 
     /** @var array<string, int> */
@@ -46,8 +46,7 @@ final class MemoryCache implements CacheInterface
             return null;
         }
 
-        $expires = $this->expires[ $key ] ?? null;
-        if (null !== $expires && $expires < time()) {
+        if (isset($this->expires[ $key ]) && $this->expires[ $key ] < time()) {
             $this->delete($key);
             return null;
         }
@@ -59,8 +58,12 @@ final class MemoryCache implements CacheInterface
 
     public function set(string $key, mixed $value, ?int $ttl_seconds = null): void
     {
-        $this->values[ $key ]  = $value;
-        $this->expires[ $key ] = null === $ttl_seconds ? null : time() + max(1, $ttl_seconds);
+        $this->values[ $key ] = $value;
+        if (null === $ttl_seconds) {
+            unset($this->expires[ $key ]);
+        } else {
+            $this->expires[ $key ] = time() + max(1, $ttl_seconds);
+        }
         unset($this->ticks[ $key ]);
         $this->touch($key);
         $this->evict($key);
