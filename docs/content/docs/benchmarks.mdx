@@ -15,6 +15,7 @@ composer bench -- --dataset=100000 --engine=queue
 composer bench -- --dataset=100000 --engine=cache --cache-validation=trust
 composer bench -- --dataset=100000 --engine=filter
 composer bench -- --dataset=1000000 --engine=uuid
+composer bench:repeat -- --dataset=100000 --engine=doc --repeat=5
 composer bench:range -- --datasets=1000,10000,50000,100000
 composer bench:range -- --datasets=100000 --engines=cache --memory-limit=512M
 composer bench:compare build/bench-main.json build/bench-current.json

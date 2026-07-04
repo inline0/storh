@@ -60,6 +60,7 @@
         "bench": "php bench/bench.php",
         "bench:compare": "php bench/compare.php",
         "bench:range": "php bench/range.php",
+        "bench:repeat": "php bench/repeat.php",
         "analyse": "phpstan analyse --configuration=phpstan.neon.dist --memory-limit=512M",
         "cs": "phpcs --warning-severity=0",
         "cs:fix": "phpcbf",
