@@ -279,6 +279,11 @@ final class QueryBuilder
             return $this->store->query_records($this);
         }
 
+        $record_query = $this->record_query();
+        if (null !== $record_query) {
+            return iterator_to_array($this->store->stream($record_query), false);
+        }
+
         $records = array();
         $limit = $this->limit;
         $can_stop_early = null !== $limit && null === $this->order_field;
@@ -294,6 +299,48 @@ final class QueryBuilder
         }
 
         return $records;
+    }
+
+    private function record_query(): ?RecordQuery
+    {
+        if (null !== $this->order_field || 1 !== count($this->groups)) {
+            return null;
+        }
+
+        $query = RecordQuery::all();
+        if (null !== $this->cursor) {
+            $query = $query->after($this->cursor);
+        }
+
+        if (null !== $this->limit) {
+            $query = $query->limit($this->limit);
+        }
+
+        $seen_fields = array();
+        foreach ($this->groups[0] as $condition) {
+            if ('eq' !== $condition->operator() || 'id' === $condition->field()) {
+                return null;
+            }
+
+            $value = $condition->value();
+            if (null !== $value && ! is_scalar($value)) {
+                return null;
+            }
+
+            $field = $condition->field();
+            if (array_key_exists($field, $seen_fields)) {
+                if ($seen_fields[ $field ] !== $value) {
+                    return null;
+                }
+
+                continue;
+            }
+
+            $seen_fields[ $field ] = $value;
+            $query = $query->where_equal($field, $value);
+        }
+
+        return $query;
     }
 
     private function order_value(StorageRecord $record): mixed
