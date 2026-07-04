@@ -1043,22 +1043,36 @@ final class DocPerFileStore implements FileStoreInterface
         $buffer = '';
         try {
             if (null !== $this->record_path_cache && null !== $this->record_data_cache) {
-                $ids = $this->record_cache_ordered ? array_keys($this->record_data_cache) : $this->cached_record_ids();
-                foreach ($ids as $id) {
-                    $data = $this->record_data_cache[ $id ] ?? null;
-                    if (null === $data) {
-                        continue;
+                if ($this->record_cache_ordered) {
+                    foreach ($this->record_data_cache as $id => $data) {
+                        $buffer .= '{"id":"' . $id . '","data":' . json_encode(
+                            $data,
+                            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
+                        ) . "}\n";
+                        $count++;
+
+                        if (strlen($buffer) >= self::JSONL_EXPORT_BUFFER_BYTES) {
+                            AtomicFilesystem::write_all($handle, $buffer, $path);
+                            $buffer = '';
+                        }
                     }
+                } else {
+                    foreach ($this->cached_record_ids() as $id) {
+                        $data = $this->record_data_cache[ $id ] ?? null;
+                        if (null === $data) {
+                            continue;
+                        }
 
-                    $buffer .= '{"id":"' . $id . '","data":' . json_encode(
-                        $data,
-                        JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
-                    ) . "}\n";
-                    $count++;
+                        $buffer .= '{"id":"' . $id . '","data":' . json_encode(
+                            $data,
+                            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
+                        ) . "}\n";
+                        $count++;
 
-                    if (strlen($buffer) >= self::JSONL_EXPORT_BUFFER_BYTES) {
-                        AtomicFilesystem::write_all($handle, $buffer, $path);
-                        $buffer = '';
+                        if (strlen($buffer) >= self::JSONL_EXPORT_BUFFER_BYTES) {
+                            AtomicFilesystem::write_all($handle, $buffer, $path);
+                            $buffer = '';
+                        }
                     }
                 }
             } else {
