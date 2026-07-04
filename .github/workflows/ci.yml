@@ -59,3 +59,15 @@ jobs:
           coverage: xdebug
       - run: composer install --no-interaction --prefer-dist
       - run: composer test:coverage:gate
+
+  benchmark:
+    name: Benchmark Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          tools: composer
+      - run: composer install --no-interaction --prefer-dist
+      - run: composer bench:ci

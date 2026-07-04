@@ -1,0 +1,100 @@
+{
+    "dataset": 1000,
+    "engine": "all",
+    "php": "8.5.6",
+    "runtime": {
+        "php": "8.5.6",
+        "sapi": "cli",
+        "xdebugMode": null,
+        "opcacheEnableCli": "0",
+        "opcacheEnabled": false,
+        "opcacheJit": "disable",
+        "opcacheJitBufferSize": "64M",
+        "jitEnabled": false,
+        "jitOn": false
+    },
+    "time": "2026-07-04T21:40:49+00:00",
+    "cacheValidation": "stat",
+    "results": {
+        "doc": {
+            "put": 0.267140625,
+            "get": 0.006499834,
+            "id_first": 0.001140125,
+            "id_count": 1.3166e-5,
+            "id_filtered_first": 2.0291e-5,
+            "unindexed_first": 0.011980834,
+            "stream": 0.012802375,
+            "delete": 0.007985167,
+            "index_build": 0.02896725,
+            "indexed": 0.000974125,
+            "indexed_first": 5.0792e-5,
+            "indexed_range": 0.001461292,
+            "indexed_range_ordered": 0.001192,
+            "indexed_range_ordered_first": 7.2084e-5,
+            "indexed_range_ordered_desc": 0.001205667,
+            "indexed_range_ordered_desc_first": 6.1625e-5,
+            "indexed_compound_miss": 2.55e-5,
+            "indexed_compound_miss_count": 1.7416e-5,
+            "indexed_compound_count": 6.1291e-5,
+            "indexed_count": 4.3375e-5,
+            "indexed_numeric_count": 4.0084e-5,
+            "indexed_range_count": 0.00032125,
+            "indexed_range_limit_count": 0.000285292,
+            "unindexed_count": 0.011648917,
+            "unindexed_limit_count": 0.011659208,
+            "full": 0.011473625,
+            "bulk_put": 0.274795583,
+            "jsonl_export": 0.013813666,
+            "jsonl_import": 0.265246833
+        },
+        "log": {
+            "append": 0.059405459,
+            "cursor": 0.000860625,
+            "query_cursor": 0.000701125,
+            "query_id_first": 3.95e-5,
+            "query_id_count": 2.9833e-5,
+            "query_id_filtered_first": 3.3917e-5,
+            "query_first": 7.2417e-5,
+            "query_cursor_first": 0.000153875,
+            "range": 3.9666e-5,
+            "query_all_count": 4.625e-6,
+            "query_count": 8.042e-6,
+            "query_limit_count": 7.0e-6,
+            "stats": 5.6833e-5,
+            "compact": 0.015992709,
+            "bulk_append": 0.016298541,
+            "bulk_query_count": 1.8167e-5,
+            "bulk_cursor": 0.000772041,
+            "bulk_range": 0.001466375,
+            "bulk_compact": 0.016272917,
+            "bulk_compacted_range": 0.001695666
+        },
+        "queue": {
+            "enqueue": 0.043869458,
+            "claim": 0.03984775,
+            "complete": 0.039267834,
+            "requeue": 1.8417e-5,
+            "bulk_enqueue": 0.005260542,
+            "bulk_claim": 0.002283542,
+            "bulk_complete": 0.001966
+        },
+        "recovery": {
+            "recover": 0.0056065
+        },
+        "cache": {
+            "cold": 0.038800875,
+            "warm": 0.006341417
+        },
+        "uuid": {
+            "monotonic": 0.001350792,
+            "spread": 0.001949708,
+            "validate": 0.000295125,
+            "timestamp": 0.001033542
+        },
+        "filter": {
+            "record_equal": 0.000277083,
+            "record_range": 0.000250958,
+            "condition_equal": 0.000219
+        }
+    }
+}

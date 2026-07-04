@@ -198,6 +198,7 @@ composer bench:repeat -- --dataset=1000000 --engine=filter --repeat=5 --memory-l
 composer bench:range -- --datasets=1000,10000,50000,100000
 composer bench:compare build/bench-main.json build/bench-current.json
 composer bench:gate -- build/bench-main.json build/bench-current.json --threshold=10 --metric=doc.put --metric=log.stream
+composer bench:ci
 ```
 
 ## API Stability

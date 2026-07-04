@@ -64,6 +64,7 @@
         ],
         "bench": "php bench/bench.php",
         "bench:jit": "XDEBUG_MODE=off php -d opcache.enable_cli=1 -d opcache.jit=tracing -d opcache.jit_buffer_size=128M bench/bench.php",
+        "bench:ci": "php bench/ci.php",
         "bench:compare": "php bench/compare.php",
         "bench:gate": "php bench/gate.php",
         "bench:range": "php bench/range.php",

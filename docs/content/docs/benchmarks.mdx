@@ -22,6 +22,7 @@ composer bench:range -- --datasets=1000,10000,50000,100000
 composer bench:range -- --datasets=100000 --engines=cache --memory-limit=512M
 composer bench:compare build/bench-main.json build/bench-current.json
 composer bench:gate -- build/bench-main.json build/bench-current.json --threshold=10 --metric=doc.put --metric=log.stream
+composer bench:ci
 ```
 
 Covered targets:
@@ -47,6 +48,11 @@ Range runs write one JSON file per dataset and engine under
 `bench:gate` compares two benchmark JSON files and exits non-zero when any
 tracked metric is slower than the configured threshold. If no `--metric` values
 are passed, it gates every metric present in the baseline file.
+
+`bench:ci` is the GitHub Actions smoke regression gate. It runs a 1k all-engine
+benchmark, compares selected write/read/cache/UUID metrics with the tracked
+`bench/baselines/ci-1k-all.json` baseline, and uses a wide default threshold to
+avoid normal runner noise while still failing large performance regressions.
 
 `bench:jit` runs the same harness with CLI opcache and tracing JIT enabled,
 and disables Xdebug for the benchmark process so PHP can actually turn JIT on.
