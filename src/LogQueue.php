@@ -616,7 +616,8 @@ final class LogQueue
         $path = $this->log_path();
         $handle = $this->log_handle();
         $lines = '';
-        $pending = array();
+        $pending_ids = array();
+        $pending_payloads = array();
         $wrote = false;
 
         fseek($handle, 0, SEEK_END);
@@ -630,17 +631,18 @@ final class LogQueue
             /** @var array<string, mixed> $payload */
             $ids[] = $id;
             $lines .= $this->encode_enqueue_line($id, $payload, $now);
-            $pending[] = array( $id, $payload, $now );
+            $pending_ids[] = $id;
+            $pending_payloads[] = $payload;
 
             if (strlen($lines) < 1_048_576) {
                 continue;
             }
 
-            $this->flush_enqueue_event_buffer($handle, $lines, $path, $pending);
+            $this->flush_enqueue_event_buffer($handle, $lines, $path, $pending_ids, $pending_payloads, $now);
             $wrote = true;
         }
 
-        if ($this->flush_enqueue_event_buffer($handle, $lines, $path, $pending)) {
+        if ($this->flush_enqueue_event_buffer($handle, $lines, $path, $pending_ids, $pending_payloads, $now)) {
             $wrote = true;
         }
 
@@ -725,21 +727,29 @@ final class LogQueue
 
     /**
      * @param resource $handle
-     * @param list<array{0: string, 1: array<string, mixed>, 2: int}> $pending
+     * @param list<string> $pending_ids
+     * @param list<array<string, mixed>> $pending_payloads
      */
-    private function flush_enqueue_event_buffer(mixed $handle, string &$lines, string $path, array &$pending): bool
-    {
+    private function flush_enqueue_event_buffer(
+        mixed $handle,
+        string &$lines,
+        string $path,
+        array &$pending_ids,
+        array &$pending_payloads,
+        int $now
+    ): bool {
         if ('' === $lines) {
             return false;
         }
 
         AtomicFilesystem::write_all($handle, $lines, $path);
-        foreach ($pending as $event) {
-            $this->apply_enqueue_event($event[0], $event[1], $event[2]);
+        foreach ($pending_ids as $index => $id) {
+            $this->apply_enqueue_event($id, $pending_payloads[ $index ], $now);
         }
 
         $lines = '';
-        $pending = array();
+        $pending_ids = array();
+        $pending_payloads = array();
 
         return true;
     }
