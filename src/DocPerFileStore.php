@@ -246,7 +246,7 @@ final class DocPerFileStore implements FileStoreInterface
             $this->remember_trusted_read_record($id, $record->data());
         }
         if ($this->cache_enabled) {
-            $this->cache_record($record);
+            $this->cache_record($record, $path);
         }
 
         return $record;
@@ -897,6 +897,22 @@ final class DocPerFileStore implements FileStoreInterface
         }
 
         $path ??= $this->record_path_for_id($record->id());
+        if (CacheValidation::TRUST === $this->cache_validation) {
+            unset($this->validated_record_cache[ $record->id() ]);
+            $this->cache->set(
+                $this->cache_key($record->id()),
+                array(
+                    true,
+                    $this->cache_scope,
+                    0,
+                    -1,
+                    '',
+                    $record->data(),
+                )
+            );
+            return;
+        }
+
         clearstatcache(true, $path);
         $exists = is_file($path);
         $mtime  = $exists ? (int) filemtime($path) : 0;
