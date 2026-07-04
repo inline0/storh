@@ -6,6 +6,8 @@ namespace Storh;
 
 final class LogQueue
 {
+    private const JSON_FLAGS = JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR;
+
     /** @var callable(): string */
     private mixed $id_generator;
 
@@ -86,14 +88,7 @@ final class LogQueue
 
         $this->with_lock(function () use ($id, $payload): void {
             $this->sync_from_log();
-            $this->append_event(
-                array(
-                    'op'      => 'enqueue',
-                    'id'      => $id,
-                    'payload' => $payload,
-                    'ts'      => time(),
-                )
-            );
+            $this->append_enqueue_event($id, $payload, time());
         });
 
         return $id;
@@ -110,7 +105,7 @@ final class LogQueue
 
         $this->with_lock(function () use ($jobs, &$ids, $now): void {
             $this->sync_from_log();
-            $this->append_events($this->enqueue_events($jobs, $ids, $now));
+            $this->append_enqueue_events($jobs, $ids, $now);
         });
 
         return $ids;
@@ -128,13 +123,7 @@ final class LogQueue
                     continue;
                 }
 
-                $this->append_event(
-                    array(
-                        'op' => 'claim',
-                        'id' => $id,
-                        'ts' => time(),
-                    )
-                );
+                $this->append_claim_event($id, time());
 
                 $record = new StorageRecord($id, $this->payload_for_id($id));
                 $this->compact_pending_order();
@@ -173,7 +162,7 @@ final class LogQueue
             }
 
             $this->compact_pending_order();
-            $this->append_events($this->claim_events($records, $now));
+            $this->append_claim_events($records, $now);
 
             return $records;
         });
@@ -189,14 +178,7 @@ final class LogQueue
                 return;
             }
 
-            $this->append_event(
-                array(
-                    'op'   => 'complete',
-                    'id'   => $id,
-                    'done' => $keep_done,
-                    'ts'   => time(),
-                )
-            );
+            $this->append_complete_event($id, $keep_done, time());
         });
     }
 
@@ -220,7 +202,7 @@ final class LogQueue
             $completed = 0;
             $now = time();
 
-            $this->append_events($this->complete_events($validated, $keep_done, $completed, $now));
+            $this->append_complete_events($validated, $keep_done, $completed, $now);
 
             return $completed;
         });
@@ -513,15 +495,45 @@ final class LogQueue
     }
 
     /**
-     * @param array<string, mixed> $event
+     * @param array<string, mixed> $payload
      */
-    private function append_event(array $event): void
+    private function append_enqueue_event(string $id, array $payload, int $now): void
     {
-        $path = $this->log_path();
-        $handle = $this->log_handle();
+        $handle = $this->append_event_line($this->encode_enqueue_line($id, $payload, $now));
+        $this->apply_enqueue_event($id, $payload, $now);
+        $this->finish_appended_event($handle);
+    }
 
-        AtomicFilesystem::write_all($handle, $this->encode_line($event), $path);
-        $this->apply_event($event);
+    private function append_claim_event(string $id, int $now): void
+    {
+        $handle = $this->append_event_line($this->encode_id_line('claim', $id, $now));
+        $this->apply_claim_event($id, $now);
+        $this->finish_appended_event($handle);
+    }
+
+    private function append_complete_event(string $id, bool $keep_done, int $now): void
+    {
+        $handle = $this->append_event_line($this->encode_complete_line($id, $keep_done, $now));
+        $this->apply_complete_event($id, $keep_done, $now);
+        $this->finish_appended_event($handle);
+    }
+
+    /**
+     * @return resource
+     */
+    private function append_event_line(string $line): mixed
+    {
+        $handle = $this->log_handle();
+        AtomicFilesystem::write_all($handle, $line, $this->log_path());
+
+        return $handle;
+    }
+
+    /**
+     * @param resource $handle
+     */
+    private function finish_appended_event(mixed $handle): void
+    {
         fflush($handle);
 
         $offset = ftell($handle);
@@ -579,10 +591,16 @@ final class LogQueue
     /**
      * @param iterable<array<string, mixed>> $jobs
      * @param list<string> $ids
-     * @return \Generator<int, array<string, mixed>>
      */
-    private function enqueue_events(iterable $jobs, array &$ids, int $now): \Generator
+    private function append_enqueue_events(iterable $jobs, array &$ids, int $now): void
     {
+        $path = $this->log_path();
+        $handle = $this->log_handle();
+        $lines = '';
+        $pending = array();
+        $wrote = false;
+
+        fseek($handle, 0, SEEK_END);
         foreach ($jobs as $job) {
             $id = isset($job['id']) && is_string($job['id']) ? $job['id'] : null;
             $payload = isset($job['payload']) && is_array($job['payload']) ? $job['payload'] : $job;
@@ -592,38 +610,73 @@ final class LogQueue
 
             /** @var array<string, mixed> $payload */
             $ids[] = $id;
-            yield array(
-                'op'      => 'enqueue',
-                'id'      => $id,
-                'payload' => $payload,
-                'ts'      => $now,
-            );
+            $lines .= $this->encode_enqueue_line($id, $payload, $now);
+            $pending[] = array( $id, $payload, $now );
+
+            if (strlen($lines) < 1_048_576) {
+                continue;
+            }
+
+            $this->flush_enqueue_event_buffer($handle, $lines, $path, $pending);
+            $wrote = true;
+        }
+
+        if ($this->flush_enqueue_event_buffer($handle, $lines, $path, $pending)) {
+            $wrote = true;
+        }
+
+        if ($wrote) {
+            $this->finish_appended_event($handle);
         }
     }
 
     /**
      * @param list<StorageRecord> $records
-     * @return \Generator<int, array<string, mixed>>
      */
-    private function claim_events(array $records, int $now): \Generator
+    private function append_claim_events(array $records, int $now): void
     {
+        $path = $this->log_path();
+        $handle = $this->log_handle();
+        $lines = '';
+        $pending = array();
+        $wrote = false;
+
+        fseek($handle, 0, SEEK_END);
         foreach ($records as $record) {
-            yield array(
-                'op' => 'claim',
-                'id' => $record->id(),
-                'ts' => $now,
-            );
+            $id = $record->id();
+            $lines .= $this->encode_id_line('claim', $id, $now);
+            $pending[] = array( $id, $now );
+
+            if (strlen($lines) < 1_048_576) {
+                continue;
+            }
+
+            $this->flush_claim_event_buffer($handle, $lines, $path, $pending);
+            $wrote = true;
+        }
+
+        if ($this->flush_claim_event_buffer($handle, $lines, $path, $pending)) {
+            $wrote = true;
+        }
+
+        if ($wrote) {
+            $this->finish_appended_event($handle);
         }
     }
 
     /**
      * @param list<string> $ids
-     * @return \Generator<int, array<string, mixed>>
      */
-    private function complete_events(array $ids, bool $keep_done, int &$completed, int $now): \Generator
+    private function append_complete_events(array $ids, bool $keep_done, int &$completed, int $now): void
     {
         $seen = array();
+        $path = $this->log_path();
+        $handle = $this->log_handle();
+        $lines = '';
+        $pending = array();
+        $wrote = false;
 
+        fseek($handle, 0, SEEK_END);
         foreach ($ids as $id) {
             if (isset($seen[ $id ]) || ! isset($this->processing[ $id ])) {
                 continue;
@@ -631,13 +684,87 @@ final class LogQueue
 
             $seen[ $id ] = true;
             $completed++;
-            yield array(
-                'op'   => 'complete',
-                'id'   => $id,
-                'done' => $keep_done,
-                'ts'   => $now,
-            );
+            $lines .= $this->encode_complete_line($id, $keep_done, $now);
+            $pending[] = array( $id, $keep_done, $now );
+
+            if (strlen($lines) < 1_048_576) {
+                continue;
+            }
+
+            $this->flush_complete_event_buffer($handle, $lines, $path, $pending);
+            $wrote = true;
         }
+
+        if ($this->flush_complete_event_buffer($handle, $lines, $path, $pending)) {
+            $wrote = true;
+        }
+
+        if ($wrote) {
+            $this->finish_appended_event($handle);
+        }
+    }
+
+    /**
+     * @param resource $handle
+     * @param list<array{0: string, 1: array<string, mixed>, 2: int}> $pending
+     */
+    private function flush_enqueue_event_buffer(mixed $handle, string &$lines, string $path, array &$pending): bool
+    {
+        if ('' === $lines) {
+            return false;
+        }
+
+        AtomicFilesystem::write_all($handle, $lines, $path);
+        foreach ($pending as $event) {
+            $this->apply_enqueue_event($event[0], $event[1], $event[2]);
+        }
+
+        $lines = '';
+        $pending = array();
+
+        return true;
+    }
+
+    /**
+     * @param resource $handle
+     * @param list<array{0: string, 1: int}> $pending
+     */
+    private function flush_claim_event_buffer(mixed $handle, string &$lines, string $path, array &$pending): bool
+    {
+        if ('' === $lines) {
+            return false;
+        }
+
+        AtomicFilesystem::write_all($handle, $lines, $path);
+        foreach ($pending as $event) {
+            $this->apply_claim_event($event[0], $event[1]);
+        }
+
+        $lines = '';
+        $pending = array();
+
+        return true;
+    }
+
+    /**
+     * @param resource $handle
+     * @param list<array{0: string, 1: bool, 2: int}> $pending
+     */
+    private function flush_complete_event_buffer(mixed $handle, string &$lines, string $path, array &$pending): bool
+    {
+        if ('' === $lines) {
+            return false;
+        }
+
+        AtomicFilesystem::write_all($handle, $lines, $path);
+        foreach ($pending as $event) {
+            $this->apply_complete_event($event[0], $event[1], $event[2]);
+        }
+
+        $lines = '';
+        $pending = array();
+
+        return true;
     }
 
     /**
@@ -660,11 +787,37 @@ final class LogQueue
      */
     private function encode_line(array $event): string
     {
-        $json = json_encode(
-            $event,
-            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
-        );
+        $json = json_encode($event, self::JSON_FLAGS);
 
+        return $this->frame_json($json);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function encode_enqueue_line(string $id, array $payload, int $now): string
+    {
+        $json = '{"op":"enqueue","id":"' . $id . '","payload":' . json_encode($payload, self::JSON_FLAGS) . ',"ts":' . $now . '}';
+
+        return $this->frame_json($json);
+    }
+
+    private function encode_id_line(string $op, string $id, int $now): string
+    {
+        $json = '{"op":"' . $op . '","id":"' . $id . '","ts":' . $now . '}';
+
+        return $this->frame_json($json);
+    }
+
+    private function encode_complete_line(string $id, bool $keep_done, int $now): string
+    {
+        $json = '{"op":"complete","id":"' . $id . '","done":' . ( $keep_done ? 'true' : 'false' ) . ',"ts":' . $now . '}';
+
+        return $this->frame_json($json);
+    }
+
+    private function frame_json(string $json): string
+    {
         return strlen($json) . "\t" . hash('crc32b', $json) . "\t" . $json . "\n";
     }
 
@@ -720,44 +873,17 @@ final class LogQueue
         $ts = isset($event['ts']) && is_int($event['ts']) ? $event['ts'] : time();
 
         if ('enqueue' === $op) {
-            $this->payloads[ $id ] = $this->payload_from_value($event['payload'] ?? array());
-            $this->pending[ $id ] = true;
-            unset($this->processing[ $id ], $this->done[ $id ]);
-            $this->pending_order[] = $id;
+            $this->apply_enqueue_event($id, $event['payload'] ?? array(), $ts);
             return;
         }
 
         if ('claim' === $op) {
-            if (isset($this->pending[ $id ])) {
-                unset($this->pending[ $id ]);
-                $this->pending_deletes++;
-                $this->processing[ $id ] = $ts;
-                $this->compact_pending_map();
-            }
+            $this->apply_claim_event($id, $ts);
             return;
         }
 
         if ('complete' === $op) {
-            if (isset($this->pending[ $id ])) {
-                unset($this->pending[ $id ]);
-                $this->pending_deletes++;
-            }
-            if (isset($this->processing[ $id ])) {
-                unset($this->processing[ $id ]);
-                $this->processing_deletes++;
-            }
-            unset($this->payloads[ $id ]);
-            if (true === ( $event['done'] ?? false )) {
-                $this->done[ $id ] = $ts;
-            } else {
-                if (isset($this->done[ $id ])) {
-                    unset($this->done[ $id ]);
-                    $this->done_deletes++;
-                }
-            }
-            $this->compact_pending_map();
-            $this->compact_processing_map();
-            $this->compact_done_map();
+            $this->apply_complete_event($id, true === ( $event['done'] ?? false ), $ts);
             return;
         }
 
@@ -783,6 +909,51 @@ final class LogQueue
         }
 
         throw new StorageException('Unsupported log queue event: ' . $op);
+    }
+
+    private function apply_enqueue_event(string $id, mixed $payload, int $ts): void
+    {
+        $this->payloads[ $id ] = $this->payload_from_value($payload);
+        $this->pending[ $id ] = true;
+        unset($this->processing[ $id ], $this->done[ $id ]);
+        $this->pending_order[] = $id;
+    }
+
+    private function apply_claim_event(string $id, int $ts): void
+    {
+        if (! isset($this->pending[ $id ])) {
+            return;
+        }
+
+        unset($this->pending[ $id ]);
+        $this->pending_deletes++;
+        $this->processing[ $id ] = $ts;
+        $this->compact_pending_map();
+    }
+
+    private function apply_complete_event(string $id, bool $keep_done, int $ts): void
+    {
+        if (isset($this->pending[ $id ])) {
+            unset($this->pending[ $id ]);
+            $this->pending_deletes++;
+        }
+
+        if (isset($this->processing[ $id ])) {
+            unset($this->processing[ $id ]);
+            $this->processing_deletes++;
+        }
+
+        unset($this->payloads[ $id ]);
+        if ($keep_done) {
+            $this->done[ $id ] = $ts;
+        } elseif (isset($this->done[ $id ])) {
+            unset($this->done[ $id ]);
+            $this->done_deletes++;
+        }
+
+        $this->compact_pending_map();
+        $this->compact_processing_map();
+        $this->compact_done_map();
     }
 
     /**
