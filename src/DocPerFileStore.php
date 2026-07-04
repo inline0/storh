@@ -1187,10 +1187,10 @@ final class DocPerFileStore implements FileStoreInterface
                 $this->record_cache_last_id = null;
             } else {
                 if (! isset($this->record_path_cache[ $id ])) {
-                    if (null !== $this->record_cache_last_id && strcmp($id, $this->record_cache_last_id) < 0) {
+                    $comparison = null === $this->record_cache_last_id ? 1 : strcmp($id, $this->record_cache_last_id);
+                    if ($comparison < 0) {
                         $this->record_cache_ordered = false;
-                    }
-                    if (null === $this->record_cache_last_id || strcmp($id, $this->record_cache_last_id) > 0) {
+                    } elseif ($comparison > 0) {
                         $this->record_cache_last_id = $id;
                     }
                 }
