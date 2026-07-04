@@ -626,9 +626,19 @@ final class DocPerFileStore implements FileStoreInterface
 
         $records = array();
         if ($this->record_cache_ordered) {
+            if (null === $limit) {
+                foreach ($this->record_data_cache as $id => $data) {
+                    $records[] = new StorageRecord($id, $data);
+                }
+
+                return $records;
+            }
+
+            $count = 0;
             foreach ($this->record_data_cache as $id => $data) {
                 $records[] = new StorageRecord($id, $data);
-                if (null !== $limit && count($records) >= $limit) {
+                $count++;
+                if ($count >= $limit) {
                     return $records;
                 }
             }
@@ -636,6 +646,20 @@ final class DocPerFileStore implements FileStoreInterface
             return $records;
         }
 
+        if (null === $limit) {
+            foreach ($this->cached_record_ids() as $id) {
+                $data = $this->record_data_cache[ $id ] ?? null;
+                if (null === $data) {
+                    continue;
+                }
+
+                $records[] = new StorageRecord($id, $data);
+            }
+
+            return $records;
+        }
+
+        $count = 0;
         foreach ($this->cached_record_ids() as $id) {
             $data = $this->record_data_cache[ $id ] ?? null;
             if (null === $data) {
@@ -643,7 +667,8 @@ final class DocPerFileStore implements FileStoreInterface
             }
 
             $records[] = new StorageRecord($id, $data);
-            if (null !== $limit && count($records) >= $limit) {
+            $count++;
+            if ($count >= $limit) {
                 return $records;
             }
         }
