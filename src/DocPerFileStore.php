@@ -10,6 +10,8 @@ final class DocPerFileStore implements FileStoreInterface
 
     private const WRITE_CACHE_LIMIT = 100000;
 
+    private const JSONL_EXPORT_BUFFER_BYTES = 1048576;
+
     /** @var callable(): string */
     private mixed $id_generator;
 
@@ -667,17 +669,24 @@ final class DocPerFileStore implements FileStoreInterface
         }
 
         $count = 0;
+        $buffer = '';
         try {
             foreach ($this->stream() as $record) {
-                AtomicFilesystem::write_all(
-                    $handle,
-                    json_encode(
-                        array( 'id' => $record->id(), 'data' => $record->data() ),
-                        JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
-                    ) . "\n",
-                    $path
+                $buffer .= json_encode(
+                    array( 'id' => $record->id(), 'data' => $record->data() ),
+                    JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
                 );
+                $buffer .= "\n";
                 $count++;
+
+                if (strlen($buffer) >= self::JSONL_EXPORT_BUFFER_BYTES) {
+                    AtomicFilesystem::write_all($handle, $buffer, $path);
+                    $buffer = '';
+                }
+            }
+
+            if ('' !== $buffer) {
+                AtomicFilesystem::write_all($handle, $buffer, $path);
             }
         } finally {
             fclose($handle);
