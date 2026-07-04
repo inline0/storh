@@ -363,6 +363,17 @@ final class QueryBuilder
         }
 
         if ($this->store instanceof DocPerFileStore) {
+            if (
+                ! $this->has_conditions &&
+                null === $this->cursor &&
+                null === $this->order_field
+            ) {
+                $cached_records = $this->store->cached_records($this->limit);
+                if (null !== $cached_records) {
+                    return $cached_records;
+                }
+            }
+
             return $this->store->query_records($this);
         }
 

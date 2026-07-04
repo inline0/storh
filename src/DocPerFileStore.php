@@ -616,6 +616,42 @@ final class DocPerFileStore implements FileStoreInterface
     }
 
     /**
+     * @return list<StorageRecord>|null
+     */
+    public function cached_records(?int $limit = null): ?array
+    {
+        if (null === $this->record_path_cache || null === $this->record_data_cache) {
+            return null;
+        }
+
+        $records = array();
+        if ($this->record_cache_ordered) {
+            foreach ($this->record_data_cache as $id => $data) {
+                $records[] = new StorageRecord($id, $data);
+                if (null !== $limit && count($records) >= $limit) {
+                    return $records;
+                }
+            }
+
+            return $records;
+        }
+
+        foreach ($this->cached_record_ids() as $id) {
+            $data = $this->record_data_cache[ $id ] ?? null;
+            if (null === $data) {
+                continue;
+            }
+
+            $records[] = new StorageRecord($id, $data);
+            if (null !== $limit && count($records) >= $limit) {
+                return $records;
+            }
+        }
+
+        return $records;
+    }
+
+    /**
      * @param array<string, mixed> $data
      * @param array{field: string, value: mixed} $filter
      */

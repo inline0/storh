@@ -178,6 +178,7 @@ final class AdvancedStorageTest extends TestCase
         $this->assertSame(2, $streamed->stats()['records']);
         $this->assertSame(2, $streamed->query()->count());
         $this->assertSame(1, $streamed->query()->limit(1)->count());
+        $this->assertCount(1, $streamed->query()->limit(1)->get());
         $this->assertSame(2, $streamed->query()->where('kind')->eq('page')->count());
         $this->assertSame(
             array( 'stream-a', 'stream-b' ),
