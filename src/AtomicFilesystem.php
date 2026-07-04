@@ -6,6 +6,8 @@ namespace Storh;
 
 final class AtomicFilesystem
 {
+    private const TEMP_FILE_GRACE_SECONDS = 60;
+
     public static function ensure_directory(string $directory): void
     {
         if (is_dir($directory)) {
@@ -91,10 +93,52 @@ final class AtomicFilesystem
             return;
         }
 
-        foreach (glob(rtrim($directory, '/\\') . '/.*.tmp') ?: array() as $file) {
-            if (is_file($file)) {
-                @unlink($file);
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($directory, \FilesystemIterator::SKIP_DOTS)
+        );
+
+        foreach ($iterator as $file) {
+            if (! $file instanceof \SplFileInfo || ! $file->isFile()) {
+                continue;
             }
+
+            $name = $file->getBasename();
+            if (! str_starts_with($name, '.') || ! str_ends_with($name, '.tmp')) {
+                continue;
+            }
+
+            if (self::temp_file_owner_is_alive($name)) {
+                continue;
+            }
+
+            if (! self::has_process_owner($name) && time() - $file->getMTime() < self::TEMP_FILE_GRACE_SECONDS) {
+                continue;
+            }
+
+            @unlink($file->getPathname());
         }
+    }
+
+    private static function has_process_owner(string $name): bool
+    {
+        return 1 === preg_match('/^\.(\d+)\.[0-9a-f]+\.\d+\.tmp$/', $name);
+    }
+
+    private static function temp_file_owner_is_alive(string $name): bool
+    {
+        if (1 !== preg_match('/^\.(\d+)\.[0-9a-f]+\.\d+\.tmp$/', $name, $matches)) {
+            return false;
+        }
+
+        $pid = (int) $matches[1];
+        if ($pid < 1) {
+            return false;
+        }
+
+        if (function_exists('posix_kill')) {
+            return posix_kill($pid, 0);
+        }
+
+        return is_dir('/proc/' . $pid);
     }
 }

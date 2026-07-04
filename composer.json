@@ -56,10 +56,16 @@
     "scripts": {
         "test": "phpunit",
         "test:unit": "phpunit --testsuite=unit",
-        "test:coverage": "phpunit --coverage-text --colors=never",
+        "test:coverage": "XDEBUG_MODE=coverage phpunit --coverage-text --colors=never",
+        "test:coverage:clover": "mkdir -p build && XDEBUG_MODE=coverage phpunit --coverage-clover build/clover.xml --colors=never",
+        "test:coverage:gate": [
+            "@test:coverage:clover",
+            "php tools/coverage-gate.php build/clover.xml --min-lines=85 --min-methods=70"
+        ],
         "bench": "php bench/bench.php",
         "bench:jit": "XDEBUG_MODE=off php -d opcache.enable_cli=1 -d opcache.jit=tracing -d opcache.jit_buffer_size=128M bench/bench.php",
         "bench:compare": "php bench/compare.php",
+        "bench:gate": "php bench/gate.php",
         "bench:range": "php bench/range.php",
         "bench:repeat": "php bench/repeat.php",
         "analyse": "phpstan analyse --configuration=phpstan.neon.dist --memory-limit=512M",

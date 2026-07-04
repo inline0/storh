@@ -134,11 +134,13 @@ JSONC
     {
         $path = $this->root . '/atomic/doc.jsonc';
         AtomicFilesystem::write_atomic($path, Jsonc::encode_object(array( 'ok' => true )));
-        file_put_contents(dirname($path) . '/.leftover.tmp', 'partial');
+        $leftover = dirname($path) . '/.leftover.tmp';
+        file_put_contents($leftover, 'partial');
+        touch($leftover, time() - 120);
 
         $this->assertSame(array( 'ok' => true ), AtomicFilesystem::read_jsonc_object($path));
         AtomicFilesystem::cleanup_temp_files(dirname($path));
-        $this->assertFileDoesNotExist(dirname($path) . '/.leftover.tmp');
+        $this->assertFileDoesNotExist($leftover);
         AtomicFilesystem::cleanup_temp_files($this->root . '/missing');
     }
 

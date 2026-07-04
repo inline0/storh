@@ -21,6 +21,7 @@ composer bench:repeat -- --dataset=1000000 --engine=filter --repeat=5 --memory-l
 composer bench:range -- --datasets=1000,10000,50000,100000
 composer bench:range -- --datasets=100000 --engines=cache --memory-limit=512M
 composer bench:compare build/bench-main.json build/bench-current.json
+composer bench:gate -- build/bench-main.json build/bench-current.json --threshold=10 --metric=doc.put --metric=log.stream
 ```
 
 Covered targets:
@@ -42,6 +43,10 @@ build/bench-current.json
 
 Range runs write one JSON file per dataset and engine under
 `build/bench-ranges/`.
+
+`bench:gate` compares two benchmark JSON files and exits non-zero when any
+tracked metric is slower than the configured threshold. If no `--metric` values
+are passed, it gates every metric present in the baseline file.
 
 `bench:jit` runs the same harness with CLI opcache and tracing JIT enabled,
 and disables Xdebug for the benchmark process so PHP can actually turn JIT on.

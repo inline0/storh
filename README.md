@@ -105,6 +105,28 @@ and done state in memory. Claims, completions, requeues, and purges append
 bounded events instead of creating one file per job. Bulk enqueue, claim, and
 complete methods reduce lock and flush cost for large queues.
 
+## Durability & Concurrency
+
+storh writes data files in place-specific temporary files and publishes them
+with an atomic rename inside the target directory. Reopen and `repair()` clean
+abandoned temp files whose owner process is gone, while leaving live writer temp
+files alone.
+
+`SegmentedLog` and `Queue` use length and checksum guarded log lines. On reopen
+or repair, torn tails are truncated to the last committed event and in-memory
+state is rebuilt from durable log contents. Log and queue writes are serialized
+with filesystem locks.
+
+`DocStore` concurrent writes to distinct record ids are safe under the same
+filesystem atomic-rename assumptions. Concurrent writes to the same id are
+last-rename-wins. For multi-process writes to indexed document collections,
+serialize writers at the application level until indexed DocStore writes gain a
+collection-level write lock.
+
+storh flushes file handles before rename or append completion. It does not
+currently fsync the parent directory, so power-loss durability is limited by the
+underlying filesystem and mount options.
+
 ## Querying and Indexes
 
 `DocStore` exposes a fluent query builder:
@@ -151,6 +173,7 @@ composer bench -- --dataset=100000 --engine=filter
 composer bench:repeat -- --dataset=1000000 --engine=filter --repeat=5 --memory-limit=512M
 composer bench:range -- --datasets=1000,10000,50000,100000
 composer bench:compare build/bench-main.json build/bench-current.json
+composer bench:gate -- build/bench-main.json build/bench-current.json --threshold=10 --metric=doc.put --metric=log.stream
 ```
 
 ## API Stability
