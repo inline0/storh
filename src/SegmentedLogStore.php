@@ -130,7 +130,7 @@ final class SegmentedLogStore implements FileStoreInterface
         if (array() !== $stored) {
             $this->with_lock(
                 function () use ($stored): void {
-                    $this->append_envelopes($this->record_envelopes($stored));
+                    $this->append_storage_records($stored);
                 }
             );
         }
@@ -147,7 +147,7 @@ final class SegmentedLogStore implements FileStoreInterface
 
         $this->with_lock(
             function () use ($records, &$count): void {
-                $this->append_envelopes($this->stream_envelopes($records, $count));
+                $this->append_stream_records($records, $count);
             }
         );
 
@@ -577,12 +577,11 @@ final class SegmentedLogStore implements FileStoreInterface
     }
 
     /**
-     * @param iterable<array{id: string, op: string, data?: array<string, mixed>}> $envelopes
+     * @param list<StorageRecord> $records
      */
-    private function append_envelopes(iterable $envelopes): void
+    private function append_storage_records(array $records): void
     {
         $this->close_active_handle();
-
         $manifest = $this->manifest();
         $active   = isset($manifest['active']) && is_array($manifest['active']) ? $manifest['active'] : array();
         $file     = isset($active['file']) && is_string($active['file']) ? $active['file'] : $this->segment_file_name(1);
@@ -593,55 +592,51 @@ final class SegmentedLogStore implements FileStoreInterface
             throw new StorageException('Could not open active segment.');
         }
 
-        try {
-            fseek($handle, 0, SEEK_END);
-            $position = ftell($handle);
-            $position = false === $position ? 0 : $position;
-            $buffer = '';
-            $pending = array();
+        fseek($handle, 0, SEEK_END);
+        $position = ftell($handle);
+        $position = false === $position ? 0 : $position;
+        $buffer = '';
+        $pending = array();
 
-            foreach ($envelopes as $envelope) {
-                $line = $this->encode_line($envelope);
-                $pending[] = array(
-                    'envelope' => $envelope,
-                    'file'     => $file,
-                    'offset'   => $position,
-                );
+        try {
+            foreach ($records as $record) {
+                $id     = $record->id();
+                $line   = $this->encode_put_line($id, $record->data());
+                $length = strlen($line);
+
+                $pending[] = array( $id, $file, $position );
                 $buffer .= $line;
-                $position += strlen($line);
+                $position += $length;
 
                 if (strlen($buffer) < 1_048_576 && $position < $this->max_segment_bytes) {
                     continue;
                 }
 
-                $this->flush_envelope_buffer($handle, $buffer, $path, $pending);
+                $this->flush_put_record_buffer($handle, $buffer, $path, $pending);
 
-                if ($position < $this->max_segment_bytes) {
-                    continue;
+                if ($position >= $this->max_segment_bytes) {
+                    fflush($handle);
+                    fclose($handle);
+
+                    $this->roll_active_segment();
+
+                    $manifest = $this->manifest();
+                    $active   = isset($manifest['active']) && is_array($manifest['active']) ? $manifest['active'] : array();
+                    $file     = isset($active['file']) && is_string($active['file']) ? $active['file'] : $this->segment_file_name(1);
+                    $path     = $this->segment_path($file);
+                    $handle   = @fopen($path, 'c+b');
+
+                    if (false === $handle) {
+                        throw new StorageException('Could not open active segment.');
+                    }
+
+                    fseek($handle, 0, SEEK_END);
+                    $position = ftell($handle);
+                    $position = false === $position ? 0 : $position;
                 }
-
-                fflush($handle);
-                fclose($handle);
-                $handle = null;
-
-                $this->roll_active_segment();
-
-                $manifest = $this->manifest();
-                $active   = isset($manifest['active']) && is_array($manifest['active']) ? $manifest['active'] : array();
-                $file     = isset($active['file']) && is_string($active['file']) ? $active['file'] : $this->segment_file_name(1);
-                $path     = $this->segment_path($file);
-                $handle   = @fopen($path, 'c+b');
-
-                if (false === $handle) {
-                    throw new StorageException('Could not open active segment.');
-                }
-
-                fseek($handle, 0, SEEK_END);
-                $position = ftell($handle);
-                $position = false === $position ? 0 : $position;
             }
 
-            $this->flush_envelope_buffer($handle, $buffer, $path, $pending);
+            $this->flush_put_record_buffer($handle, $buffer, $path, $pending);
         } finally {
             if (is_resource($handle)) {
                 fflush($handle);
@@ -651,48 +646,86 @@ final class SegmentedLogStore implements FileStoreInterface
     }
 
     /**
-     * @param list<StorageRecord> $records
-     * @return \Generator<int, array{id: string, op: string, data: array<string, mixed>}>
-     */
-    private function record_envelopes(array $records): \Generator
-    {
-        foreach ($records as $record) {
-            yield array(
-                'op'   => 'put',
-                'id'   => $record->id(),
-                'data' => $record->data(),
-            );
-        }
-    }
-
-    /**
      * @param iterable<array<string, mixed>> $records
-     * @return \Generator<int, array{id: string, op: string, data: array<string, mixed>}>
      */
-    private function stream_envelopes(iterable $records, int &$count): \Generator
+    private function append_stream_records(iterable $records, int &$count): void
     {
-        foreach ($records as $record) {
-            $id   = isset($record['id']) && is_string($record['id']) ? $record['id'] : null;
-            $data = isset($record['data']) && is_array($record['data']) ? $record['data'] : $record;
-            $generated = null === $id;
-            $id ??= ( $this->id_generator )();
-            $this->assert_record_id($id, $generated);
+        $this->close_active_handle();
+        $manifest = $this->manifest();
+        $active   = isset($manifest['active']) && is_array($manifest['active']) ? $manifest['active'] : array();
+        $file     = isset($active['file']) && is_string($active['file']) ? $active['file'] : $this->segment_file_name(1);
+        $path     = $this->segment_path($file);
+        $handle   = @fopen($path, 'c+b');
 
-            /** @var array<string, mixed> $data */
-            $count++;
-            yield array(
-                'op'   => 'put',
-                'id'   => $id,
-                'data' => $data,
-            );
+        if (false === $handle) {
+            throw new StorageException('Could not open active segment.');
+        }
+
+        fseek($handle, 0, SEEK_END);
+        $position = ftell($handle);
+        $position = false === $position ? 0 : $position;
+        $buffer = '';
+        $pending = array();
+
+        try {
+            foreach ($records as $record) {
+                $id   = isset($record['id']) && is_string($record['id']) ? $record['id'] : null;
+                $data = isset($record['data']) && is_array($record['data']) ? $record['data'] : $record;
+                $generated = null === $id;
+                $id ??= ( $this->id_generator )();
+                $this->assert_record_id($id, $generated);
+
+                /** @var array<string, mixed> $data */
+                $line   = $this->encode_put_line($id, $data);
+                $length = strlen($line);
+
+                $count++;
+                $pending[] = array( $id, $file, $position );
+                $buffer .= $line;
+                $position += $length;
+
+                if (strlen($buffer) < 1_048_576 && $position < $this->max_segment_bytes) {
+                    continue;
+                }
+
+                $this->flush_put_record_buffer($handle, $buffer, $path, $pending);
+
+                if ($position >= $this->max_segment_bytes) {
+                    fflush($handle);
+                    fclose($handle);
+
+                    $this->roll_active_segment();
+
+                    $manifest = $this->manifest();
+                    $active   = isset($manifest['active']) && is_array($manifest['active']) ? $manifest['active'] : array();
+                    $file     = isset($active['file']) && is_string($active['file']) ? $active['file'] : $this->segment_file_name(1);
+                    $path     = $this->segment_path($file);
+                    $handle   = @fopen($path, 'c+b');
+
+                    if (false === $handle) {
+                        throw new StorageException('Could not open active segment.');
+                    }
+
+                    fseek($handle, 0, SEEK_END);
+                    $position = ftell($handle);
+                    $position = false === $position ? 0 : $position;
+                }
+            }
+
+            $this->flush_put_record_buffer($handle, $buffer, $path, $pending);
+        } finally {
+            if (is_resource($handle)) {
+                fflush($handle);
+                fclose($handle);
+            }
         }
     }
 
     /**
      * @param resource $handle
-     * @param list<array{envelope: array{id: string, op: string, data?: array<string, mixed>}, file: string, offset: int}> $pending
+     * @param list<array{0: string, 1: string, 2: int}> $pending
      */
-    private function flush_envelope_buffer(mixed $handle, string &$buffer, string $path, array &$pending): void
+    private function flush_put_record_buffer(mixed $handle, string &$buffer, string $path, array &$pending): void
     {
         if ('' === $buffer) {
             return;
@@ -701,15 +734,14 @@ final class SegmentedLogStore implements FileStoreInterface
         AtomicFilesystem::write_all($handle, $buffer, $path);
 
         foreach ($pending as $entry) {
-            $envelope = $entry['envelope'];
-            $id = $envelope['id'];
-            $this->remember_segment_record($entry['file'], $id, $entry['offset']);
+            $id = $entry[0];
+            $this->remember_segment_record($entry[1], $id, $entry[2]);
             $this->write_state_entry(
                 $id,
                 array(
-                    'deleted' => 'delete' === $envelope['op'],
-                    'file'    => $entry['file'],
-                    'offset'  => $entry['offset'],
+                    'deleted' => false,
+                    'file'    => $entry[1],
+                    'offset'  => $entry[2],
                     'aliases' => array(),
                 )
             );
@@ -1507,6 +1539,19 @@ final class SegmentedLogStore implements FileStoreInterface
             $envelope,
             JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
         );
+
+        return strlen($json) . "\t" . hash('crc32b', $json) . "\t" . $json . "\n";
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    private function encode_put_line(string $id, array $data): string
+    {
+        $json = '{"op":"put","id":"' . $id . '","data":' . json_encode(
+            $data,
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
+        ) . '}';
 
         return strlen($json) . "\t" . hash('crc32b', $json) . "\t" . $json . "\n";
     }
