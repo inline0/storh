@@ -519,13 +519,14 @@ function rows_with_ids(int $dataset, int $startTimestampMs): Generator
 
 function cache_bench_id(int $index): string
 {
-    $timestamp = str_pad(dechex(1_700_100_000_000 + $index), 12, '0', STR_PAD_LEFT);
-    $tail      = str_pad(dechex(( ( $index + 1 ) * 1_103_515_245 ) & 0xffffffffffff), 12, '0', STR_PAD_LEFT);
+    $timestamp = 1_700_100_000_000 + $index;
 
-    return substr($timestamp, 0, 8)
-        . '-' . substr($timestamp, 8, 4)
-        . '-7000-8000-'
-        . $tail;
+    return sprintf(
+        '%08x-%04x-7000-8000-%012x',
+        intdiv($timestamp, 0x10000),
+        $timestamp & 0xffff,
+        ( ( $index + 1 ) * 1_103_515_245 ) & 0xffffffffffff
+    );
 }
 
 function timed(callable $callback): float
