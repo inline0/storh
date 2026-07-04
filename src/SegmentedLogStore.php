@@ -895,6 +895,7 @@ final class SegmentedLogStore implements FileStoreInterface
         $output_buffer   = '';
         $output_position = 0;
         $pending_state_entries = array();
+        $this->state_index();
 
         try {
             foreach ($source_segments as $segment) {
@@ -918,7 +919,7 @@ final class SegmentedLogStore implements FileStoreInterface
 
                         $compaction_entry = $this->compaction_entry_from_line($line);
                         $id    = $compaction_entry['id'];
-                        $entry = $this->state_entry($id);
+                        $entry = $this->state[ $id ] ?? null;
 
                         if ('delete' === $compaction_entry['op']) {
                             if (null !== $entry && $entry['deleted'] && $this->state_entry_matches($entry, $input_file, $input_offset)) {
