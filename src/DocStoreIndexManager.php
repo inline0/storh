@@ -12,6 +12,8 @@ final class DocStoreIndexManager
 
     private const RANGE_SPARSE_STRIDE = 256;
 
+    private const VALUE_COUNT_SCAN_CHUNK_BYTES = 8192;
+
     /** @var array<string, array{field: string, unique: bool, range: bool}> */
     private array $pending = array();
 
@@ -1685,41 +1687,90 @@ final class DocStoreIndexManager
 
     private function count_ids_from_value_file(string $path, string $expected_key, ?int $limit = null): int
     {
-        $contents = @file_get_contents($path);
-        if (false === $contents) {
+        $handle = @fopen($path, 'rb');
+        if (false === $handle) {
             throw new StorageException('Could not read equality index: ' . $path);
         }
 
+        $count = null;
         $key_marker = '"key":"' . $expected_key . '"';
-        $key_offset = strpos($contents, $key_marker);
-        if (false === $key_offset) {
+        $count_marker = ',"count":';
+        $ids_marker = ',"ids":[';
+        $buffer = '';
+        $key_offset = null;
+        $ids_seen = false;
+
+        try {
+            while (! feof($handle)) {
+                $chunk = fread($handle, self::VALUE_COUNT_SCAN_CHUNK_BYTES);
+                if (false === $chunk) {
+                    throw new StorageException('Could not read equality index: ' . $path);
+                }
+
+                $buffer .= $chunk;
+                if (null === $key_offset) {
+                    $offset = strpos($buffer, $key_marker);
+                    if (false === $offset) {
+                        continue;
+                    }
+
+                    $key_offset = $offset;
+                }
+
+                $search_offset = $key_offset + strlen($key_marker);
+                $ids_offset = strpos($buffer, $ids_marker, $search_offset);
+                $count_offset = strpos($buffer, $count_marker, $search_offset);
+                if (false !== $ids_offset && ( false === $count_offset || $count_offset > $ids_offset )) {
+                    throw new StorageException('Malformed equality index: ' . $path);
+                }
+
+                if (false !== $ids_offset) {
+                    $ids_seen = true;
+                }
+
+                if (null !== $count) {
+                    if ($ids_seen) {
+                        break;
+                    }
+
+                    continue;
+                }
+
+                if (false === $count_offset) {
+                    continue;
+                }
+
+                $start = $count_offset + strlen($count_marker);
+                $end = $start;
+                $length = strlen($buffer);
+                while ($end < $length && ctype_digit($buffer[ $end ])) {
+                    $end++;
+                }
+
+                if ($end === $start) {
+                    throw new StorageException('Malformed equality index: ' . $path);
+                }
+
+                if ($end === $length && ! feof($handle)) {
+                    continue;
+                }
+
+                $count = (int) substr($buffer, $start, $end - $start);
+                if ($ids_seen) {
+                    break;
+                }
+            }
+        } finally {
+            fclose($handle);
+        }
+
+        if (null === $key_offset) {
             return 0;
         }
 
-        $ids_marker = ',"ids":[';
-        $ids_offset = strpos($contents, $ids_marker, $key_offset + strlen($key_marker));
-        if (false === $ids_offset) {
+        if (null === $count || ! $ids_seen) {
             throw new StorageException('Malformed equality index: ' . $path);
         }
-
-        $count_marker = ',"count":';
-        $count_offset = strpos($contents, $count_marker, $key_offset + strlen($key_marker));
-        if (false === $count_offset || $count_offset > $ids_offset) {
-            throw new StorageException('Malformed equality index: ' . $path);
-        }
-
-        $start = $count_offset + strlen($count_marker);
-        $end = $start;
-        $length = strlen($contents);
-        while ($end < $length && ctype_digit($contents[ $end ])) {
-            $end++;
-        }
-
-        if ($end === $start) {
-            throw new StorageException('Malformed equality index: ' . $path);
-        }
-
-        $count = (int) substr($contents, $start, $end - $start);
 
         return null === $limit ? $count : min($count, $limit);
     }

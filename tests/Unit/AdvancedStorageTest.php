@@ -346,6 +346,22 @@ final class AdvancedStorageTest extends TestCase
         $this->assertSame($ids[259], $records[259]->id());
     }
 
+    public function test_equality_index_count_reads_long_values(): void
+    {
+        $ids = $this->fixed_ids(3);
+        $store = new DocPerFileStore($this->root, 'long-eq-count', $this->id_generator($ids));
+        $value = str_repeat('x', 12000);
+        $store->put(array( 'tag' => $value, 'name' => 'first' ));
+        $store->put(array( 'tag' => $value, 'name' => 'second' ));
+        $store->put(array( 'tag' => 'short', 'name' => 'third' ));
+
+        $store->indexes()->field('tag')->sync();
+
+        $this->assertSame(2, $store->query()->where('tag')->eq($value)->count());
+        $this->assertSame(1, $store->query()->where('tag')->eq($value)->limit(1)->count());
+        $this->assertSame(0, $store->query()->where('tag')->eq(str_repeat('y', 12000))->count());
+    }
+
     public function test_range_sparse_index_reads_duplicate_keys_across_checkpoints(): void
     {
         $ids = $this->fixed_ids(300);
