@@ -12,7 +12,7 @@ final class DocStoreIndexManager
 
     private const RANGE_SPARSE_STRIDE = 256;
 
-    private const VALUE_COUNT_SCAN_CHUNK_BYTES = 8192;
+    private const VALUE_COUNT_SCAN_CHUNK_BYTES = 512;
 
     /** @var array<string, array{field: string, unique: bool, range: bool}> */
     private array $pending = array();
@@ -1608,8 +1608,8 @@ final class DocStoreIndexManager
                 array(
                     'field' => $field,
                     'key'   => $key,
-                    'value' => $value,
                     'count' => count($encoded_ids),
+                    'value' => $value,
                     'ids'   => $encoded_ids,
                 )
             )
@@ -1695,10 +1695,8 @@ final class DocStoreIndexManager
         $count = null;
         $key_marker = '"key":"' . $expected_key . '"';
         $count_marker = ',"count":';
-        $ids_marker = ',"ids":[';
         $buffer = '';
         $key_offset = null;
-        $ids_seen = false;
 
         try {
             while (! feof($handle)) {
@@ -1718,24 +1716,7 @@ final class DocStoreIndexManager
                 }
 
                 $search_offset = $key_offset + strlen($key_marker);
-                $ids_offset = strpos($buffer, $ids_marker, $search_offset);
                 $count_offset = strpos($buffer, $count_marker, $search_offset);
-                if (false !== $ids_offset && ( false === $count_offset || $count_offset > $ids_offset )) {
-                    throw new StorageException('Malformed equality index: ' . $path);
-                }
-
-                if (false !== $ids_offset) {
-                    $ids_seen = true;
-                }
-
-                if (null !== $count) {
-                    if ($ids_seen) {
-                        break;
-                    }
-
-                    continue;
-                }
-
                 if (false === $count_offset) {
                     continue;
                 }
@@ -1756,9 +1737,7 @@ final class DocStoreIndexManager
                 }
 
                 $count = (int) substr($buffer, $start, $end - $start);
-                if ($ids_seen) {
-                    break;
-                }
+                break;
             }
         } finally {
             fclose($handle);
@@ -1768,7 +1747,7 @@ final class DocStoreIndexManager
             return 0;
         }
 
-        if (null === $count || ! $ids_seen) {
+        if (null === $count) {
             throw new StorageException('Malformed equality index: ' . $path);
         }
 
