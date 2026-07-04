@@ -2021,14 +2021,20 @@ final class DocStoreIndexManager
      */
     private function string_keyed(array $value): array
     {
-        $object = array();
-        foreach ($value as $key => $item) {
-            if (is_string($key)) {
-                $object[ $key ] = $item;
+        foreach ($value as $key => $_item) {
+            if (! is_string($key)) {
+                $object = array();
+                foreach ($value as $copy_key => $item) {
+                    if (is_string($copy_key)) {
+                        $object[ $copy_key ] = $item;
+                    }
+                }
+
+                return $object;
             }
         }
 
-        return $object;
+        return $value;
     }
 
     private function indexable(mixed $value): bool
