@@ -10,6 +10,7 @@ use Storh\DocPerFileStore;
 use Storh\Jsonc;
 use Storh\LogQueue;
 use Storh\QueryBuilder;
+use Storh\QueryCondition;
 use Storh\RecordQuery;
 use Storh\SegmentedLogStore;
 use Storh\StorageRecord;
@@ -71,6 +72,70 @@ final class PropertyStorageTest extends TestCase
         $this->assert_doc_store_matches_reference($store, $reference, $ids);
         $this->assertSame(4, $store->reindex()['fields']);
         $this->assert_doc_store_matches_reference($store, $reference, $ids);
+    }
+
+    public function test_query_builder_random_predicates_match_reference_model(): void
+    {
+        $ids = $this->fixed_ids(64, 1_700_350_000_000);
+        $store = new DocPerFileStore($this->root, 'query-fuzz', cache: Cache::memory(512));
+        $store->indexes()
+            ->field('status')->index()
+            ->field('kind')->index()
+            ->field('bucket')->index()
+            ->field('rank')->range()
+            ->field('flag')->index()
+            ->field('nullable')->sync();
+
+        $reference = array();
+        foreach ($ids as $slot => $id) {
+            $data = $this->query_doc_data($slot);
+            $store->put($data, $id);
+            $reference[ $id ] = $data;
+        }
+
+        $this->assertTrue($store->verify()['ok']);
+
+        $seed = 59021;
+        for ($case = 0; $case < 140; $case++) {
+            $groups = $this->random_query_groups($seed, $ids);
+            $query = $this->query_from_groups($store, $groups);
+            $order_field = null;
+            $order_direction = 'asc';
+
+            if ($this->next_int($seed, 100) < 70) {
+                $order_fields = array( 'id', 'rank', 'slug' );
+                $order_field = $order_fields[ $this->next_int($seed, count($order_fields)) ];
+                $order_direction = 0 === $this->next_int($seed, 2) ? 'asc' : 'desc';
+                $query = $query->orderBy($order_field, $order_direction);
+            }
+
+            $cursor = null;
+            if ($this->next_int($seed, 100) < 35) {
+                $cursor = $ids[ $this->next_int($seed, count($ids)) ];
+                $query = $query->cursor($cursor);
+            }
+
+            $limit = null;
+            if ($this->next_int($seed, 100) < 75) {
+                $limit = 1 + $this->next_int($seed, 14);
+                $query = $query->limit($limit);
+            }
+
+            $expected = $this->reference_query_ids_for_groups(
+                $reference,
+                $groups,
+                $order_field,
+                $order_direction,
+                $cursor,
+                $limit
+            );
+            $message = 'random query case ' . $case . ' groups=' . json_encode($groups, JSON_THROW_ON_ERROR);
+
+            $this->assertContains($query->explain()['plan'], array( 'full_scan', 'index_scan' ), $message);
+            $this->assertSame($expected, $this->record_ids($query->get()), $message);
+            $this->assertSame(count($expected), $query->count(), $message);
+            $this->assertSame($expected[0] ?? null, $query->first()?->id(), $message);
+        }
     }
 
     public function test_segmented_log_random_operations_match_reference_after_compaction_and_reopen(): void
@@ -321,6 +386,212 @@ final class PropertyStorageTest extends TestCase
     }
 
     /**
+     * @param list<list<array<string, mixed>>> $groups
+     */
+    private function query_from_groups(DocPerFileStore $store, array $groups): QueryBuilder
+    {
+        $query = $this->apply_query_group($store->query(), $groups[0]);
+        foreach (array_slice($groups, 1) as $group) {
+            $query = $query->orWhere(fn(QueryBuilder $branch): QueryBuilder => $this->apply_query_group($branch, $group));
+        }
+
+        return $query;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $group
+     */
+    private function apply_query_group(QueryBuilder $query, array $group): QueryBuilder
+    {
+        foreach ($group as $condition) {
+            $query = $this->apply_query_condition($query, $condition);
+        }
+
+        return $query;
+    }
+
+    /**
+     * @param array<string, mixed> $condition
+     */
+    private function apply_query_condition(QueryBuilder $query, array $condition): QueryBuilder
+    {
+        $field = (string) $condition['field'];
+        $operator = (string) $condition['operator'];
+
+        return match ($operator) {
+            'eq' => $query->where($field)->eq($condition['value']),
+            'neq' => $query->where($field)->neq($condition['value']),
+            'in' => $query->where($field)->in($condition['value']),
+            'notIn' => $query->where($field)->notIn($condition['value']),
+            'gt' => $query->where($field)->gt($condition['value']),
+            'gte' => $query->where($field)->gte($condition['value']),
+            'lt' => $query->where($field)->lt($condition['value']),
+            'lte' => $query->where($field)->lte($condition['value']),
+            'between' => $query->where($field)->between($condition['value'], $condition['second']),
+            'exists' => $query->where($field)->exists(),
+            'missing' => $query->where($field)->missing(),
+            'prefix' => $query->where($field)->prefix((string) $condition['value']),
+            default => throw new \LogicException('Unknown query operator: ' . $operator),
+        };
+    }
+
+    /**
+     * @param list<string> $ids
+     * @return list<list<array<string, mixed>>>
+     */
+    private function random_query_groups(int &$seed, array $ids): array
+    {
+        $groups = array();
+        $group_count = 1 + $this->next_int($seed, 3);
+        for ($group_index = 0; $group_index < $group_count; $group_index++) {
+            $conditions = array();
+            $condition_count = 1 + $this->next_int($seed, 3);
+            for ($condition_index = 0; $condition_index < $condition_count; $condition_index++) {
+                $conditions[] = $this->random_query_condition($seed, $ids);
+            }
+
+            $groups[] = $conditions;
+        }
+
+        return $groups;
+    }
+
+    /**
+     * @param list<string> $ids
+     * @return array<string, mixed>
+     */
+    private function random_query_condition(int &$seed, array $ids): array
+    {
+        $status_values = array( 'draft', 'published', 'archived', 'missing-status' );
+        $kind_values = array( 'page', 'post', 'note', 'asset' );
+        $bucket_values = array( 0, 1, 2, 3, 4, 5, 9 );
+        $rank_value = $this->next_int($seed, 2600);
+        $first_rank = $this->next_int($seed, 2100);
+        $second_rank = $first_rank + $this->next_int($seed, 400);
+
+        return match ($this->next_int($seed, 22)) {
+            0 => array( 'field' => 'status', 'operator' => 'eq', 'value' => $status_values[ $this->next_int($seed, count($status_values)) ] ),
+            1 => array( 'field' => 'status', 'operator' => 'in', 'value' => array( 'draft', 'published' ) ),
+            2 => array( 'field' => 'status', 'operator' => 'notIn', 'value' => array( 'archived' ) ),
+            3 => array( 'field' => 'kind', 'operator' => 'eq', 'value' => $kind_values[ $this->next_int($seed, count($kind_values)) ] ),
+            4 => array( 'field' => 'kind', 'operator' => 'prefix', 'value' => array( 'p', 'po', 'n' )[ $this->next_int($seed, 3) ] ),
+            5 => array( 'field' => 'bucket', 'operator' => 'eq', 'value' => $bucket_values[ $this->next_int($seed, count($bucket_values)) ] ),
+            6 => array( 'field' => 'bucket', 'operator' => 'in', 'value' => array( 1, 3, 5 ) ),
+            7 => array( 'field' => 'bucket', 'operator' => 'gte', 'value' => $this->next_int($seed, 7) ),
+            8 => array( 'field' => 'bucket', 'operator' => 'between', 'value' => 1, 'second' => 4 ),
+            9 => array( 'field' => 'rank', 'operator' => 'gt', 'value' => $rank_value ),
+            10 => array( 'field' => 'rank', 'operator' => 'gte', 'value' => $rank_value ),
+            11 => array( 'field' => 'rank', 'operator' => 'lt', 'value' => $rank_value ),
+            12 => array( 'field' => 'rank', 'operator' => 'lte', 'value' => $rank_value ),
+            13 => array( 'field' => 'rank', 'operator' => 'between', 'value' => $first_rank, 'second' => $second_rank ),
+            14 => array( 'field' => 'flag', 'operator' => 'eq', 'value' => 0 === $this->next_int($seed, 2) ),
+            15 => array( 'field' => 'nullable', 'operator' => 'eq', 'value' => null ),
+            16 => array( 'field' => 'optional', 'operator' => 'exists' ),
+            17 => array( 'field' => 'optional', 'operator' => 'missing' ),
+            18 => array( 'field' => 'slug', 'operator' => 'prefix', 'value' => 'query-' . $this->next_int($seed, 8) ),
+            19 => array( 'field' => 'id', 'operator' => 'eq', 'value' => $ids[ $this->next_int($seed, count($ids)) ] ),
+            20 => array( 'field' => 'rank', 'operator' => 'eq', 'value' => ( $this->next_int($seed, 64) * 37 ) + 11 ),
+            default => array( 'field' => 'optional', 'operator' => 'neq', 'value' => 'optional-3' ),
+        };
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $reference
+     * @param list<list<array<string, mixed>>> $groups
+     * @return list<string>
+     */
+    private function reference_query_ids_for_groups(
+        array $reference,
+        array $groups,
+        ?string $order_field,
+        string $order_direction,
+        ?string $cursor,
+        ?int $limit
+    ): array {
+        $matches = array();
+        foreach ($reference as $id => $data) {
+            if (null !== $cursor && strcmp($id, $cursor) <= 0) {
+                continue;
+            }
+
+            if ($this->reference_query_matches($id, $data, $groups)) {
+                $matches[ $id ] = $data;
+            }
+        }
+
+        if (null === $order_field) {
+            ksort($matches);
+            $ids = array_keys($matches);
+        } else {
+            $ids = array_keys($matches);
+            usort(
+                $ids,
+                function (string $left, string $right) use ($matches, $order_field, $order_direction): int {
+                    $result = QueryCondition::compare(
+                        $this->reference_order_value($left, $matches[ $left ], $order_field),
+                        $this->reference_order_value($right, $matches[ $right ], $order_field)
+                    );
+
+                    return 'desc' === $order_direction ? -$result : $result;
+                }
+            );
+        }
+
+        return null === $limit ? $ids : array_slice($ids, 0, $limit);
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     * @param list<list<array<string, mixed>>> $groups
+     */
+    private function reference_query_matches(string $id, array $data, array $groups): bool
+    {
+        foreach ($groups as $group) {
+            $matches = true;
+            foreach ($group as $condition) {
+                if (! $this->reference_condition_matches($id, $data, $condition)) {
+                    $matches = false;
+                    break;
+                }
+            }
+
+            if ($matches) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     * @param array<string, mixed> $condition
+     */
+    private function reference_condition_matches(string $id, array $data, array $condition): bool
+    {
+        $query_condition = new QueryCondition(
+            (string) $condition['field'],
+            (string) $condition['operator'],
+            $condition['value'] ?? null,
+            $condition['second'] ?? null
+        );
+
+        return $query_condition->matches_data($id, $data);
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    private function reference_order_value(string $id, array $data, string $field): mixed
+    {
+        if ('id' === $field) {
+            return $id;
+        }
+
+        return array_key_exists($field, $data) ? $data[ $field ] : null;
+    }
+
+    /**
      * @param array<string, array<string, mixed>> $reference
      * @param list<string> $ids
      */
@@ -420,6 +691,31 @@ final class PropertyStorageTest extends TestCase
         }
         if (0 === ( $slot + $step ) % 5) {
             $data['optional'] = 'present';
+        }
+
+        return $data;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function query_doc_data(int $slot): array
+    {
+        $data = array(
+            'slug'   => 'query-' . $slot,
+            'status' => array( 'draft', 'published', 'archived' )[ $slot % 3 ],
+            'kind'   => array( 'page', 'post', 'note' )[ ( $slot * 5 ) % 3 ],
+            'rank'   => ( $slot * 37 ) + 11,
+            'bucket' => $slot % 6,
+            'flag'   => 0 === $slot % 2,
+        );
+
+        if (0 === $slot % 4) {
+            $data['nullable'] = null;
+        }
+
+        if (0 === $slot % 5) {
+            $data['optional'] = 'optional-' . ( $slot % 7 );
         }
 
         return $data;

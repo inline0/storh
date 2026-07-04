@@ -742,7 +742,7 @@ final class DocStoreIndexManager
 
         $condition = $group[0];
         if (! $query->has_ordering()) {
-            return $this->range_condition_supported($condition) ? null : $limit;
+            return 'eq' === $condition->operator() ? $limit : null;
         }
 
         if ('asc' !== $query->order_direction() || null === $this->ordered_range_condition($query, $groups)) {
