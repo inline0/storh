@@ -50,7 +50,7 @@ final class SegmentedLogStore implements FileStoreInterface
 
     private bool $equality_counts_rebuild_attempted = false;
 
-    /** @var array<string, array{min: string|null, max: string|null, records: int}> */
+    /** @var array<string, array{min: string|null, max: string|null, records: int, ordered: bool}> */
     private array $segment_stats = array();
 
     /** @var array<string, list<array{0: string, 1: int}>> */
@@ -249,6 +249,8 @@ final class SegmentedLogStore implements FileStoreInterface
 
             $offset = $this->seek_offset_for($segment, $this->seek_id_for_query($query));
             $query->notify_segment_open($file);
+            $ordered_segment = $this->segment_is_ordered($segment);
+            $upper_id = $query->upper_id();
 
             $handle = @fopen($this->segment_path($file), 'rb');
             if (false === $handle) {
@@ -278,6 +280,10 @@ final class SegmentedLogStore implements FileStoreInterface
                     }
 
                     $id    = $envelope['id'];
+                    if ($ordered_segment && null !== $upper_id && strcmp($id, $upper_id) > 0) {
+                        break;
+                    }
+
                     $entry = $this->state_entry($id);
                     if (null === $entry || $entry['deleted'] || ! $this->state_entry_matches($entry, $file, $line_offset)) {
                         continue;
@@ -551,6 +557,7 @@ final class SegmentedLogStore implements FileStoreInterface
                                 'max'     => null,
                                 'min'     => null,
                                 'records' => 0,
+                                'ordered' => true,
                             ),
                         )
                     );
@@ -827,6 +834,7 @@ final class SegmentedLogStore implements FileStoreInterface
             'max'     => is_array($stats) ? $stats['max'] : ( $active['max'] ?? null ),
             'min'     => is_array($stats) ? $stats['min'] : ( $active['min'] ?? null ),
             'records' => $active_records,
+            'ordered' => is_array($stats) ? $stats['ordered'] : true,
         );
         $next_segment = isset($manifest['nextSegment']) && is_int($manifest['nextSegment'])
             ? $manifest['nextSegment']
@@ -841,6 +849,7 @@ final class SegmentedLogStore implements FileStoreInterface
             'max'     => null,
             'min'     => null,
             'records' => 0,
+            'ordered' => true,
         );
 
         @touch($this->segment_path($active_new));
@@ -848,6 +857,7 @@ final class SegmentedLogStore implements FileStoreInterface
             'min'     => null,
             'max'     => null,
             'records' => 0,
+            'ordered' => true,
         );
         $this->segment_sparse_offsets[ $active_new ] = array();
         $this->write_manifest($manifest);
@@ -1057,6 +1067,7 @@ final class SegmentedLogStore implements FileStoreInterface
                 'min'     => $min,
                 'max'     => $max,
                 'records' => 0,
+                'ordered' => true,
             );
 
             return array(
@@ -1065,6 +1076,7 @@ final class SegmentedLogStore implements FileStoreInterface
                 'max'       => $max,
                 'min'       => $min,
                 'records'   => 0,
+                'ordered'   => true,
                 'compacted' => true,
             );
         }
@@ -1075,6 +1087,7 @@ final class SegmentedLogStore implements FileStoreInterface
             'min'     => $min,
             'max'     => $max,
             'records' => $records,
+            'ordered' => false,
         );
 
         return array(
@@ -1083,6 +1096,7 @@ final class SegmentedLogStore implements FileStoreInterface
             'max'       => $max,
             'min'       => $min,
             'records'   => $records,
+            'ordered'   => false,
             'compacted' => true,
         );
     }
@@ -1146,6 +1160,7 @@ final class SegmentedLogStore implements FileStoreInterface
                 $segment['min']     = $stats['min'];
                 $segment['max']     = $stats['max'];
                 $segment['records'] = $stats['records'];
+                $segment['ordered'] = $stats['ordered'];
                 $sealed[ $index ] = $segment;
             }
             $manifest['sealed'] = $sealed;
@@ -1160,6 +1175,7 @@ final class SegmentedLogStore implements FileStoreInterface
                 $manifest['active']['min']     = $stats['min'];
                 $manifest['active']['max']     = $stats['max'];
                 $manifest['active']['records'] = $stats['records'];
+                $manifest['active']['ordered'] = $stats['ordered'];
             }
         }
 
@@ -1167,7 +1183,7 @@ final class SegmentedLogStore implements FileStoreInterface
     }
 
     /**
-     * @return array{min: string|null, max: string|null, records: int}
+     * @return array{min: string|null, max: string|null, records: int, ordered: bool}
      */
     private function segment_stats_for(string $file): array
     {
@@ -1175,6 +1191,7 @@ final class SegmentedLogStore implements FileStoreInterface
             'min'     => null,
             'max'     => null,
             'records' => 0,
+            'ordered' => true,
         );
     }
 
@@ -1278,7 +1295,12 @@ final class SegmentedLogStore implements FileStoreInterface
      */
     private function seek_offset_for(array $segment, ?string $seek_id): int
     {
-        if (null === $seek_id || ! isset($segment['index']) || ! is_string($segment['index'])) {
+        if (
+            null === $seek_id ||
+            ! isset($segment['index']) ||
+            ! is_string($segment['index']) ||
+            ! $this->segment_is_ordered($segment)
+        ) {
             return 0;
         }
 
@@ -1313,6 +1335,20 @@ final class SegmentedLogStore implements FileStoreInterface
         }
 
         return $offset;
+    }
+
+    /**
+     * @param array<string, mixed> $segment
+     */
+    private function segment_is_ordered(array $segment): bool
+    {
+        $file = isset($segment['file']) && is_string($segment['file']) ? $segment['file'] : '';
+        $stats = '' !== $file && isset($this->segment_stats[ $file ]) ? $this->segment_stats[ $file ] : null;
+        if (is_array($stats)) {
+            return $stats['ordered'];
+        }
+
+        return true === ( $segment['ordered'] ?? false );
     }
 
     private function seek_id_for_query(RecordQuery $query): ?string
@@ -1364,6 +1400,8 @@ final class SegmentedLogStore implements FileStoreInterface
                 $min     = null;
                 $max     = null;
                 $records = 0;
+                $ordered = true;
+                $last_id = null;
                 $offsets = array();
                 $last_good_offset = 0;
                 while (true) {
@@ -1389,6 +1427,10 @@ final class SegmentedLogStore implements FileStoreInterface
                     $line_end = ftell($handle);
                     $last_good_offset = false === $line_end ? $last_good_offset : $line_end;
                     $id            = $envelope['id'];
+                    if (null !== $last_id && strcmp($id, $last_id) < 0) {
+                        $ordered = false;
+                    }
+                    $last_id       = $id;
                     $min           = null === $min || strcmp($id, $min) < 0 ? $id : $min;
                     $max           = null === $max || strcmp($id, $max) > 0 ? $id : $max;
                     if (0 === $records % $this->sparse_index_interval) {
@@ -1423,6 +1465,7 @@ final class SegmentedLogStore implements FileStoreInterface
                     'min'     => $min,
                     'max'     => $max,
                     'records' => $records,
+                    'ordered' => $ordered,
                 );
                 $sparse_offsets[ $file ] = $offsets;
             } finally {
@@ -2203,8 +2246,12 @@ final class SegmentedLogStore implements FileStoreInterface
             'min'     => null,
             'max'     => null,
             'records' => 0,
+            'ordered' => true,
         );
 
+        if (null !== $stats['max'] && strcmp($id, $stats['max']) < 0) {
+            $stats['ordered'] = false;
+        }
         $stats['min'] = null === $stats['min'] || strcmp($id, $stats['min']) < 0 ? $id : $stats['min'];
         $stats['max'] = null === $stats['max'] || strcmp($id, $stats['max']) > 0 ? $id : $stats['max'];
         if (0 === $stats['records'] % $this->sparse_index_interval) {

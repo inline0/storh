@@ -686,6 +686,19 @@ final class AdvancedStorageTest extends TestCase
             array_map(static fn($record): int => $record->data()['index'], $middleRange)
         );
 
+        $unordered = new SegmentedLogStore($this->root, 'unordered-range', 4096, 1);
+        $unordered->appendStream(
+            array(
+                array( 'id' => UuidV7::generate(1_700_000_000_000), 'data' => array( 'index' => 0 ) ),
+                array( 'id' => UuidV7::generate(1_700_000_000_020), 'data' => array( 'index' => 20 ) ),
+                array( 'id' => UuidV7::generate(1_700_000_000_010), 'data' => array( 'index' => 10 ) ),
+            )
+        );
+        $unorderedRange = iterator_to_array(
+            $unordered->stream(RecordQuery::all()->time_range_ms(1_700_000_000_010, 1_700_000_000_010))
+        );
+        $this->assertSame(array( 10 ), array_map(static fn($record): int => $record->data()['index'], $unorderedRange));
+
         $deleted = $store->retain()->olderThanMs(UuidV7::timestamp_ms($ids[0]))->compact();
         $this->assertSame(1, $deleted);
         $this->assertNull($store->get($ids[0]));
