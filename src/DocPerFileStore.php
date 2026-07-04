@@ -432,16 +432,81 @@ final class DocPerFileStore implements FileStoreInterface
                 $field = $simple_equal['field'];
                 $value = $simple_equal['value'];
                 if ($this->record_cache_ordered) {
-                    foreach ($this->record_data_cache as $id => $data) {
-                        if ('id' === $field) {
+                    if ('id' === $field) {
+                        foreach ($this->record_data_cache as $id => $data) {
                             if ($id !== $value) {
                                 continue;
                             }
-                        } else {
+
+                            $records[] = new StorageRecord($id, $data);
+                            if ($can_stop_early && count($records) >= $limit) {
+                                return $records;
+                            }
+                        }
+
+                        return $records;
+                    }
+
+                    if (null === $value) {
+                        foreach ($this->record_data_cache as $id => $data) {
                             $actual = $data[ $field ] ?? null;
-                            if (( null === $actual && ! array_key_exists($field, $data) ) || $actual !== $value) {
+                            if (( null === $actual && ! array_key_exists($field, $data) ) || null !== $actual) {
                                 continue;
                             }
+
+                            $records[] = new StorageRecord($id, $data);
+                            if ($can_stop_early && count($records) >= $limit) {
+                                return $records;
+                            }
+                        }
+
+                        return $records;
+                    }
+
+                    foreach ($this->record_data_cache as $id => $data) {
+                        if (( $data[ $field ] ?? null ) !== $value) {
+                            continue;
+                        }
+
+                        $records[] = new StorageRecord($id, $data);
+                        if ($can_stop_early && count($records) >= $limit) {
+                            return $records;
+                        }
+                    }
+
+                    return $records;
+                }
+
+                if ('id' === $field) {
+                    foreach ($this->cached_record_ids() as $id) {
+                        if ($id !== $value) {
+                            continue;
+                        }
+
+                        $data = $this->record_data_cache[ $id ] ?? null;
+                        if (null === $data) {
+                            continue;
+                        }
+
+                        $records[] = new StorageRecord($id, $data);
+                        if ($can_stop_early && count($records) >= $limit) {
+                            return $records;
+                        }
+                    }
+
+                    return $records;
+                }
+
+                if (null === $value) {
+                    foreach ($this->cached_record_ids() as $id) {
+                        $data = $this->record_data_cache[ $id ] ?? null;
+                        if (null === $data) {
+                            continue;
+                        }
+
+                        $actual = $data[ $field ] ?? null;
+                        if (( null === $actual && ! array_key_exists($field, $data) ) || null !== $actual) {
+                            continue;
                         }
 
                         $records[] = new StorageRecord($id, $data);
@@ -455,19 +520,8 @@ final class DocPerFileStore implements FileStoreInterface
 
                 foreach ($this->cached_record_ids() as $id) {
                     $data = $this->record_data_cache[ $id ] ?? null;
-                    if (null === $data) {
+                    if (null === $data || ( $data[ $field ] ?? null ) !== $value) {
                         continue;
-                    }
-
-                    if ('id' === $field) {
-                        if ($id !== $value) {
-                            continue;
-                        }
-                    } else {
-                        $actual = $data[ $field ] ?? null;
-                        if (( null === $actual && ! array_key_exists($field, $data) ) || $actual !== $value) {
-                            continue;
-                        }
                     }
 
                     $records[] = new StorageRecord($id, $data);
@@ -542,16 +596,67 @@ final class DocPerFileStore implements FileStoreInterface
                 $field = $simple_equal['field'];
                 $value = $simple_equal['value'];
                 if ($this->record_cache_ordered) {
-                    foreach ($this->record_data_cache as $id => $data) {
-                        if ('id' === $field) {
+                    if ('id' === $field) {
+                        foreach ($this->record_data_cache as $id => $data) {
                             if ($id !== $value) {
                                 continue;
                             }
-                        } else {
+
+                            return new StorageRecord($id, $data);
+                        }
+
+                        return null;
+                    }
+
+                    if (null === $value) {
+                        foreach ($this->record_data_cache as $id => $data) {
                             $actual = $data[ $field ] ?? null;
-                            if (( null === $actual && ! array_key_exists($field, $data) ) || $actual !== $value) {
+                            if (( null === $actual && ! array_key_exists($field, $data) ) || null !== $actual) {
                                 continue;
                             }
+
+                            return new StorageRecord($id, $data);
+                        }
+
+                        return null;
+                    }
+
+                    foreach ($this->record_data_cache as $id => $data) {
+                        if (( $data[ $field ] ?? null ) !== $value) {
+                            continue;
+                        }
+
+                        return new StorageRecord($id, $data);
+                    }
+
+                    return null;
+                }
+
+                if ('id' === $field) {
+                    foreach ($this->cached_record_ids() as $id) {
+                        if ($id !== $value) {
+                            continue;
+                        }
+
+                        $data = $this->record_data_cache[ $id ] ?? null;
+                        if (null !== $data) {
+                            return new StorageRecord($id, $data);
+                        }
+                    }
+
+                    return null;
+                }
+
+                if (null === $value) {
+                    foreach ($this->cached_record_ids() as $id) {
+                        $data = $this->record_data_cache[ $id ] ?? null;
+                        if (null === $data) {
+                            continue;
+                        }
+
+                        $actual = $data[ $field ] ?? null;
+                        if (( null === $actual && ! array_key_exists($field, $data) ) || null !== $actual) {
+                            continue;
                         }
 
                         return new StorageRecord($id, $data);
@@ -562,22 +667,9 @@ final class DocPerFileStore implements FileStoreInterface
 
                 foreach ($this->cached_record_ids() as $id) {
                     $data = $this->record_data_cache[ $id ] ?? null;
-                    if (null === $data) {
-                        continue;
+                    if (null !== $data && ( $data[ $field ] ?? null ) === $value) {
+                        return new StorageRecord($id, $data);
                     }
-
-                    if ('id' === $field) {
-                        if ($id !== $value) {
-                            continue;
-                        }
-                    } else {
-                        $actual = $data[ $field ] ?? null;
-                        if (( null === $actual && ! array_key_exists($field, $data) ) || $actual !== $value) {
-                            continue;
-                        }
-                    }
-
-                    return new StorageRecord($id, $data);
                 }
 
                 return null;
@@ -653,16 +745,40 @@ final class DocPerFileStore implements FileStoreInterface
             if (null !== $simple_equal) {
                 $field = $simple_equal['field'];
                 $value = $simple_equal['value'];
-                foreach ($this->record_data_cache as $id => $data) {
-                    if ('id' === $field) {
+                if ('id' === $field) {
+                    foreach ($this->record_data_cache as $id => $_data) {
                         if ($id !== $value) {
                             continue;
                         }
-                    } else {
+
+                        $count++;
+                        if (null !== $limit && $count >= $limit) {
+                            return $count;
+                        }
+                    }
+
+                    return $count;
+                }
+
+                if (null === $value) {
+                    foreach ($this->record_data_cache as $data) {
                         $actual = $data[ $field ] ?? null;
-                        if (( null === $actual && ! array_key_exists($field, $data) ) || $actual !== $value) {
+                        if (( null === $actual && ! array_key_exists($field, $data) ) || null !== $actual) {
                             continue;
                         }
+
+                        $count++;
+                        if (null !== $limit && $count >= $limit) {
+                            return $count;
+                        }
+                    }
+
+                    return $count;
+                }
+
+                foreach ($this->record_data_cache as $data) {
+                    if (( $data[ $field ] ?? null ) !== $value) {
+                        continue;
                     }
 
                     $count++;

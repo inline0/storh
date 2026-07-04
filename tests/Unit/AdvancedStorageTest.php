@@ -190,6 +190,21 @@ final class AdvancedStorageTest extends TestCase
             array( 'stream-a', 'stream-b' ),
             array_map(static fn(StorageRecord $record): string => $record->data()['slug'], iterator_to_array($streamed->stream()))
         );
+
+        $nullable_cache = new DocPerFileStore($this->root, 'nullable-cache-docs');
+        $nullable_cache->putMany(
+            array(
+                array( 'slug' => 'explicit-null', 'marker' => null ),
+                array( 'slug' => 'missing-marker' ),
+                array( 'slug' => 'has-value', 'marker' => 'value' ),
+            )
+        );
+        $this->assertSame(1, $nullable_cache->query()->where('marker')->eq(null)->count());
+        $this->assertSame('explicit-null', $nullable_cache->query()->where('marker')->eq(null)->first()?->data()['slug'] ?? null);
+        $this->assertSame(
+            array( 'explicit-null' ),
+            array_map(static fn(StorageRecord $record): string => $record->data()['slug'], $nullable_cache->query()->where('marker')->eq(null)->get())
+        );
         $this->assertTrue($store->health()['ok']);
         $this->assertTrue($store->verify()['ok']);
         $this->assertSame(3, $store->reindex()['fields']);
