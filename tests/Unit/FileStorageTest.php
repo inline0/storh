@@ -139,6 +139,9 @@ JSONC
         touch($leftover, time() - 120);
 
         $this->assertSame(array( 'ok' => true ), AtomicFilesystem::read_jsonc_object($path));
+        AtomicFilesystem::append($this->root . '/atomic/events.log', "first\n");
+        AtomicFilesystem::append($this->root . '/atomic/events.log', "second\n");
+        $this->assertSame("first\nsecond\n", file_get_contents($this->root . '/atomic/events.log'));
         AtomicFilesystem::cleanup_temp_files(dirname($path));
         $this->assertFileDoesNotExist($leftover);
         AtomicFilesystem::cleanup_temp_files($this->root . '/missing');

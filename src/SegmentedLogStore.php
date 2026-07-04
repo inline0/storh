@@ -620,7 +620,8 @@ final class SegmentedLogStore implements FileStoreInterface
         $offset = false === $offset ? 0 : $offset;
         $line = $this->encode_line($envelope);
         AtomicFilesystem::write_all($handle, $line, $path);
-        $this->active_handle_dirty = true;
+        AtomicFilesystem::sync_handle($handle, $path);
+        $this->active_handle_dirty = false;
         $end_offset = $offset + strlen($line);
 
         $id = $envelope['id'];
@@ -680,7 +681,7 @@ final class SegmentedLogStore implements FileStoreInterface
                 $this->flush_put_record_buffer($handle, $buffer, $path, $pending);
 
                 if ($position >= $this->max_segment_bytes) {
-                    fflush($handle);
+                    AtomicFilesystem::sync_handle($handle, $path);
                     fclose($handle);
 
                     $this->roll_active_segment();
@@ -704,7 +705,7 @@ final class SegmentedLogStore implements FileStoreInterface
             $this->flush_put_record_buffer($handle, $buffer, $path, $pending);
         } finally {
             if (is_resource($handle)) {
-                fflush($handle);
+                AtomicFilesystem::sync_handle($handle, $path);
                 fclose($handle);
             }
         }
@@ -756,7 +757,7 @@ final class SegmentedLogStore implements FileStoreInterface
                 $this->flush_put_record_buffer($handle, $buffer, $path, $pending);
 
                 if ($position >= $this->max_segment_bytes) {
-                    fflush($handle);
+                    AtomicFilesystem::sync_handle($handle, $path);
                     fclose($handle);
 
                     $this->roll_active_segment();
@@ -780,7 +781,7 @@ final class SegmentedLogStore implements FileStoreInterface
             $this->flush_put_record_buffer($handle, $buffer, $path, $pending);
         } finally {
             if (is_resource($handle)) {
-                fflush($handle);
+                AtomicFilesystem::sync_handle($handle, $path);
                 fclose($handle);
             }
         }
@@ -797,6 +798,7 @@ final class SegmentedLogStore implements FileStoreInterface
         }
 
         AtomicFilesystem::write_all($handle, $buffer, $path);
+        AtomicFilesystem::sync_handle($handle, $path);
 
         foreach ($pending as $entry) {
             $id = $entry[0];
@@ -1049,6 +1051,7 @@ final class SegmentedLogStore implements FileStoreInterface
         }
 
         AtomicFilesystem::write_all($handle, $buffer, $path);
+        AtomicFilesystem::sync_handle($handle, $path);
         foreach ($pending_state_entries as $entry) {
             $this->write_compacted_state_entry($entry[0], $entry[1], $entry[2], $entry[3]);
         }
@@ -1455,6 +1458,7 @@ final class SegmentedLogStore implements FileStoreInterface
                     } catch (\Throwable $throwable) {
                         if ($truncate_torn) {
                             ftruncate($handle, max(0, $last_good_offset));
+                            AtomicFilesystem::sync_handle($handle, $path);
                             break;
                         }
 
@@ -2273,7 +2277,7 @@ final class SegmentedLogStore implements FileStoreInterface
             return;
         }
 
-        fflush($this->active_handle);
+        AtomicFilesystem::sync_handle($this->active_handle, $this->active_handle_path ?? 'active segment');
         $this->active_handle_dirty = false;
     }
 

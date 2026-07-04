@@ -5,9 +5,14 @@ description: How storh handles atomic writes, torn records, and compaction lefto
 
 # Atomicity & Recovery
 
-`AtomicFilesystem::write_atomic()` writes to a temporary file and renames it over
-the target path. Temporary files left behind by crashes are cleaned up when
-stores initialize.
+`AtomicFilesystem::write_atomic()` writes to a temporary file, flushes and
+fsyncs that file handle, renames it over the target path, and attempts to fsync
+the parent directory. Temporary files left behind by crashes are cleaned up when
+stores initialize or repair.
+
+Append-only engines flush and fsync their log file handles before considering
+events committed in memory. Power-loss durability still depends on the
+underlying filesystem and mount options honoring file and directory syncs.
 
 The segmented log writes each line as:
 

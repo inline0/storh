@@ -1645,16 +1645,23 @@ final class DocPerFileStore implements FileStoreInterface
     {
         $this->ensure_known_directory($directory);
         $temp = $directory . '/.' . $this->temp_prefix . '.' . ++$this->temp_counter . '.tmp';
-        $written = @file_put_contents($temp, $contents);
-        if (strlen($contents) !== $written) {
-            @unlink($temp);
-            throw new StorageException('Could not write storage file: ' . $temp);
+        $handle = @fopen($temp, 'wb');
+        if (false === $handle) {
+            throw new StorageException('Could not open temporary storage file for writing: ' . $temp);
+        }
+
+        try {
+            AtomicFilesystem::write_all($handle, $contents, $temp);
+            AtomicFilesystem::sync_handle($handle, $temp);
+        } finally {
+            fclose($handle);
         }
 
         if (! @rename($temp, $path)) {
             @unlink($temp);
             throw new StorageException('Could not atomically replace storage file: ' . $path);
         }
+        AtomicFilesystem::sync_directory($directory);
 
         unset($this->validated_record_cache[ $id ]);
         $this->last_record_content_path = $path;

@@ -123,9 +123,10 @@ processes. Concurrent writes to distinct record ids are safe under the same
 filesystem atomic-rename assumptions. Concurrent writes to the same id are
 last-rename-wins.
 
-storh flushes file handles before rename or append completion. It does not
-currently fsync the parent directory, so power-loss durability is limited by the
-underlying filesystem and mount options.
+storh flushes and fsyncs file handles before rename or append completion, and
+attempts to fsync parent directories after atomic renames. Power-loss durability
+still depends on the underlying filesystem and mount options honoring those
+syncs.
 
 ## Querying and Indexes
 

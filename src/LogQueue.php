@@ -494,7 +494,7 @@ final class LogQueue
                 if ($truncate_torn) {
                     $truncate_at = max(0, $line_start);
                     ftruncate($handle, $truncate_at);
-                    fflush($handle);
+                    AtomicFilesystem::sync_handle($handle, $this->log_path());
                 }
                 break;
             }
@@ -549,7 +549,7 @@ final class LogQueue
      */
     private function finish_appended_event(mixed $handle, ?int $written_bytes = null): void
     {
-        fflush($handle);
+        AtomicFilesystem::sync_handle($handle, $this->log_path());
         if (null !== $written_bytes) {
             $this->log_offset += $written_bytes;
             return;
@@ -602,7 +602,7 @@ final class LogQueue
             return;
         }
 
-        fflush($handle);
+        AtomicFilesystem::sync_handle($handle, $path);
         $offset = ftell($handle);
         $this->log_offset = false === $offset ? $this->log_offset : $offset;
     }

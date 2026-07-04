@@ -31,7 +31,7 @@ final class AtomicFilesystem
 
         try {
             self::write_all($handle, $contents, $temp);
-            fflush($handle);
+            self::sync_handle($handle, $temp);
         } finally {
             fclose($handle);
         }
@@ -40,6 +40,7 @@ final class AtomicFilesystem
             @unlink($temp);
             throw new StorageException('Could not atomically replace storage file: ' . $path);
         }
+        self::sync_directory(dirname($path));
     }
 
     /**
@@ -67,6 +68,52 @@ final class AtomicFilesystem
                 throw new StorageException('Could not write storage file: ' . $path);
             }
             $offset += $written;
+        }
+    }
+
+    public static function append(string $path, string $contents): void
+    {
+        self::ensure_directory(dirname($path));
+        $handle = @fopen($path, 'ab');
+        if (false === $handle) {
+            throw new StorageException('Could not open storage file for appending: ' . $path);
+        }
+
+        try {
+            self::write_all($handle, $contents, $path);
+            self::sync_handle($handle, $path);
+        } finally {
+            fclose($handle);
+        }
+    }
+
+    /**
+     * @param resource $handle
+     */
+    public static function sync_handle(mixed $handle, string $path): void
+    {
+        if (! @fflush($handle)) {
+            throw new StorageException('Could not flush storage file: ' . $path);
+        }
+
+        if (function_exists('fsync') && ! @fsync($handle)) {
+            throw new StorageException('Could not sync storage file: ' . $path);
+        }
+    }
+
+    public static function sync_directory(string $directory): void
+    {
+        $handle = @fopen($directory, 'rb');
+        if (false === $handle) {
+            return;
+        }
+
+        try {
+            if (function_exists('fsync')) {
+                @fsync($handle);
+            }
+        } finally {
+            fclose($handle);
         }
     }
 

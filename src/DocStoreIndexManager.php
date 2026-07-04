@@ -2286,9 +2286,7 @@ final class DocStoreIndexManager
             )
         );
 
-        if (false === @file_put_contents($path, $line, FILE_APPEND)) {
-            throw new StorageException('Could not write range index: ' . $path);
-        }
+        AtomicFilesystem::append($path, $line);
     }
 
     /**
