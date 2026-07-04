@@ -61,8 +61,14 @@ final class MemoryCache implements CacheInterface
     {
         $this->values[ $key ]  = $value;
         $this->expires[ $key ] = null === $ttl_seconds ? null : time() + max(1, $ttl_seconds);
+        unset($this->ticks[ $key ]);
+        $this->evict($key);
+        if (! array_key_exists($key, $this->values)) {
+            return;
+        }
+
         $this->touch($key);
-        $this->evict();
+        $this->evict($key);
     }
 
     public function delete(string $key): void
@@ -87,12 +93,15 @@ final class MemoryCache implements CacheInterface
         $this->access_ticks[] = $tick;
     }
 
-    private function evict(): void
+    private function evict(?string $protected_key = null): void
     {
         while (array() !== $this->values && ( count($this->values) > $this->max_entries || $this->over_memory_budget() )) {
-            $key = $this->next_evictable_key();
+            $key = $this->next_evictable_key($protected_key);
             if (null === $key) {
-                $key = array_key_first($this->values);
+                $key = $this->first_evictable_key($protected_key);
+            }
+            if (null === $key && null !== $protected_key && array_key_exists($protected_key, $this->values)) {
+                $key = $protected_key;
             }
 
             if (! is_string($key)) {
@@ -105,7 +114,7 @@ final class MemoryCache implements CacheInterface
         $this->compact_access_order();
     }
 
-    private function next_evictable_key(): ?string
+    private function next_evictable_key(?string $protected_key = null): ?string
     {
         $count = count($this->access_keys);
         while ($this->access_offset < $count) {
@@ -113,7 +122,22 @@ final class MemoryCache implements CacheInterface
             $key   = $this->access_keys[ $index ];
             $tick  = $this->access_ticks[ $index ];
 
+            if ($key === $protected_key) {
+                continue;
+            }
+
             if (isset($this->ticks[ $key ]) && $this->ticks[ $key ] === $tick) {
+                return $key;
+            }
+        }
+
+        return null;
+    }
+
+    private function first_evictable_key(?string $protected_key): ?string
+    {
+        foreach ($this->values as $key => $_value) {
+            if ($key !== $protected_key) {
                 return $key;
             }
         }

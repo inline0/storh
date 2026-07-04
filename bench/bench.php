@@ -349,26 +349,24 @@ function bench_recovery(string $root, int $dataset): array
  */
 function bench_cache(string $root, int $dataset, string $cache_validation): array
 {
-    $cache = Cache::memory($dataset + 10);
-    $writer = new DocPerFileStore($root, 'cache', cache: $cache, cache_validation: $cache_validation);
-    $ids   = array();
+    $writer = new DocPerFileStore($root, 'cache');
     for ($i = 0; $i < $dataset; $i++) {
-        $ids[] = $writer->put(row($i))->id();
+        $writer->put(row($i), cache_bench_id($i));
     }
     unset($writer);
     release_bench_memory();
 
+    $cache = Cache::memory($dataset + 10);
     $store = new DocPerFileStore($root, 'cache', cache: $cache, cache_validation: $cache_validation);
-    $cache->clear_prefix('doc:cache:');
-    $cold = timed(static function () use ($store, $ids): void {
-        foreach ($ids as $id) {
-            $store->get($id);
+    $cold = timed(static function () use ($store, $dataset): void {
+        for ($i = 0; $i < $dataset; $i++) {
+            $store->get(cache_bench_id($i));
         }
     });
 
-    $warm = timed(static function () use ($store, $ids): void {
-        foreach ($ids as $id) {
-            $store->get($id);
+    $warm = timed(static function () use ($store, $dataset): void {
+        for ($i = 0; $i < $dataset; $i++) {
+            $store->get(cache_bench_id($i));
         }
     });
 
@@ -504,6 +502,17 @@ function rows_with_ids(int $dataset, int $startTimestampMs): Generator
             'data' => row($i),
         );
     }
+}
+
+function cache_bench_id(int $index): string
+{
+    $timestamp = str_pad(dechex(1_700_100_000_000 + $index), 12, '0', STR_PAD_LEFT);
+    $tail      = str_pad(dechex(( ( $index + 1 ) * 1_103_515_245 ) & 0xffffffffffff), 12, '0', STR_PAD_LEFT);
+
+    return substr($timestamp, 0, 8)
+        . '-' . substr($timestamp, 8, 4)
+        . '-7000-8000-'
+        . $tail;
 }
 
 function timed(callable $callback): float

@@ -53,6 +53,8 @@ final class DocPerFileStore implements FileStoreInterface
     /** @var array<string, array{mtime: int, size: int, hash: string, data: array<string, mixed>}> */
     private array $validated_record_cache = array();
 
+    private ?int $validated_record_cache_max_bytes;
+
     public function __construct(
         private readonly string $root,
         private readonly string $collection,
@@ -75,6 +77,7 @@ final class DocPerFileStore implements FileStoreInterface
         $this->cache_scope     = hash(self::CACHE_HASH_ALGORITHM, $this->collection_path);
         $this->data_path       = $this->collection_path . '/data';
         $this->temp_prefix     = getmypid() . '.' . bin2hex(random_bytes(4));
+        $this->validated_record_cache_max_bytes = self::default_validated_record_cache_max_bytes();
         AtomicFilesystem::cleanup_temp_files($this->collection_root());
         if (! is_dir($this->data_root())) {
             $this->record_path_cache = array();
@@ -912,11 +915,13 @@ final class DocPerFileStore implements FileStoreInterface
 
     /**
      * @param array<string, mixed> $data
-     * @return array<string, mixed>
      */
-    private function cache_data_payload(array $data): array
+    private function cache_data_payload(array $data): string
     {
-        return $data;
+        return json_encode(
+            $data,
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
+        );
     }
 
     /**
@@ -947,7 +952,10 @@ final class DocPerFileStore implements FileStoreInterface
      */
     private function remember_validated_record(string $id, array $data, int $mtime, int $size, string $hash): void
     {
-        if (! isset($this->validated_record_cache[ $id ]) && count($this->validated_record_cache) >= self::WRITE_CACHE_LIMIT) {
+        if (
+            ! isset($this->validated_record_cache[ $id ]) &&
+            ( count($this->validated_record_cache) >= self::WRITE_CACHE_LIMIT || $this->over_validated_record_cache_budget() )
+        ) {
             return;
         }
 
@@ -957,6 +965,48 @@ final class DocPerFileStore implements FileStoreInterface
             'hash'  => $hash,
             'data'  => $data,
         );
+    }
+
+    private function over_validated_record_cache_budget(): bool
+    {
+        return null !== $this->validated_record_cache_max_bytes &&
+            memory_get_usage(true) >= $this->validated_record_cache_max_bytes;
+    }
+
+    private static function default_validated_record_cache_max_bytes(): ?int
+    {
+        $limit = ini_get('memory_limit');
+        if (false === $limit || '-1' === trim($limit)) {
+            return null;
+        }
+
+        $bytes = self::parse_bytes($limit);
+        if (null === $bytes) {
+            return null;
+        }
+
+        return max(1_048_576, (int) floor($bytes * 0.60));
+    }
+
+    private static function parse_bytes(string $value): ?int
+    {
+        $value = trim($value);
+        if ('' === $value) {
+            return null;
+        }
+
+        $unit   = strtolower($value[strlen($value) - 1]);
+        $number = (float) $value;
+        if ($number <= 0) {
+            return null;
+        }
+
+        return match ($unit) {
+            'g' => (int) floor($number * 1024 * 1024 * 1024),
+            'm' => (int) floor($number * 1024 * 1024),
+            'k' => (int) floor($number * 1024),
+            default => (int) floor($number),
+        };
     }
 
     /**
