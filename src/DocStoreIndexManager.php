@@ -100,7 +100,7 @@ final class DocStoreIndexManager
             $entries++;
 
             if ($this->bucket_id_count($buckets) >= self::EQ_REBUILD_FLUSH_IDS) {
-                $this->merge_index_buckets($buckets);
+                $this->merge_index_buckets($buckets, false);
                 $buckets = array();
             }
 
@@ -111,7 +111,7 @@ final class DocStoreIndexManager
             }
         }
 
-        $this->merge_index_buckets($buckets);
+        $this->merge_index_buckets($buckets, false);
         $this->flush_range_chunks($range_buckets, $range_chunks);
         $this->write_range_chunks($range_chunks);
 
@@ -1326,7 +1326,7 @@ final class DocStoreIndexManager
     /**
      * @param array<string, array{path: string, field: string, key: string, value: mixed, ids: array<string, true>}> $buckets
      */
-    private function merge_index_buckets(array $buckets): void
+    private function merge_index_buckets(array $buckets, bool $sort_ids = true): void
     {
         foreach ($buckets as $bucket) {
             $ids = is_file($bucket['path'])
@@ -1337,17 +1337,19 @@ final class DocStoreIndexManager
                 $ids[ $id ] = true;
             }
 
-            $this->write_value_index($bucket['path'], $bucket['field'], $bucket['key'], $bucket['value'], $ids);
+            $this->write_value_index($bucket['path'], $bucket['field'], $bucket['key'], $bucket['value'], $ids, $sort_ids);
         }
     }
 
     /**
      * @param array<string, true> $ids
      */
-    private function write_value_index(string $path, string $field, string $key, mixed $value, array $ids): void
+    private function write_value_index(string $path, string $field, string $key, mixed $value, array $ids, bool $sort_ids = true): void
     {
         $encoded_ids = array_keys($ids);
-        sort($encoded_ids);
+        if ($sort_ids) {
+            sort($encoded_ids);
+        }
 
         AtomicFilesystem::write_atomic(
             $path,
