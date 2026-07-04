@@ -63,6 +63,21 @@ final class Jsonc
         return $json . "\n";
     }
 
+    /**
+     * @param array<string, mixed> $data
+     */
+    public static function encode_compact_object(array $data): string
+    {
+        if (array() === $data) {
+            return "{}\n";
+        }
+
+        return json_encode(
+            $data,
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
+        ) . "\n";
+    }
+
     public static function strip_jsonc(string $jsonc): string
     {
         return self::strip_trailing_commas(self::strip_comments($jsonc));

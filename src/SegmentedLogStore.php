@@ -1153,7 +1153,7 @@ final class SegmentedLogStore implements FileStoreInterface
     private function write_manifest(array $manifest): void
     {
         $path = $this->manifest_path();
-        AtomicFilesystem::write_atomic($path, Jsonc::encode_object($manifest));
+        AtomicFilesystem::write_atomic($path, Jsonc::encode_compact_object($manifest));
         clearstatcache(true, $path);
         $exists = is_file($path);
         $this->manifest_state = $manifest;
@@ -2153,7 +2153,7 @@ final class SegmentedLogStore implements FileStoreInterface
             );
         }
 
-        AtomicFilesystem::write_atomic($path, Jsonc::encode_object(array( 'entries' => $encoded )));
+        AtomicFilesystem::write_atomic($path, Jsonc::encode_compact_object(array( 'entries' => $encoded )));
         if ($this->cache_enabled) {
             $this->cache->delete($this->sparse_cache_key($path));
         }

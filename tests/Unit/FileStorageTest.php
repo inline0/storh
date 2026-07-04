@@ -99,6 +99,7 @@ JSONC
         $this->assertSame('/* not comment */', $decoded['block']);
         $this->assertSame(array( 'one', 'two' ), $decoded['items']);
         $this->assertSame("{\n    \"alpha\": 1\n}\n", Jsonc::encode_object(array( 'alpha' => 1 )));
+        $this->assertSame("{\"alpha\":1}\n", Jsonc::encode_compact_object(array( 'alpha' => 1 )));
 
         $this->expectException(StorageException::class);
         Jsonc::decode_object('[]');
@@ -113,7 +114,9 @@ JSONC
     public function test_jsonc_covers_empty_objects_numeric_keys_and_escaped_strings(): void
     {
         $this->assertSame("{}\n", Jsonc::encode_object(array()));
+        $this->assertSame("{}\n", Jsonc::encode_compact_object(array()));
         $this->assertStringContainsString('1.0', Jsonc::encode_object(array( 'float' => 1.0 )));
+        $this->assertStringContainsString('1.0', Jsonc::encode_compact_object(array( 'float' => 1.0 )));
         $this->assertSame(array( 'quote' => 'a"b', 'path' => 'c\\d' ), Jsonc::decode_object('{"quote":"a\"b","path":"c\\\\d",}'));
 
         try {
