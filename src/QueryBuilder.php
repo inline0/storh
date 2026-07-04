@@ -150,6 +150,25 @@ final class QueryBuilder
             return $id_records[0] ?? null;
         }
 
+        if (null === $this->order_field && ! $this->store instanceof DocPerFileStore) {
+            $record_query = $this->record_query(1);
+            if (null !== $record_query) {
+                foreach ($this->store->stream($record_query) as $record) {
+                    return $record;
+                }
+
+                return null;
+            }
+
+            foreach ($this->store->stream(null) as $record) {
+                if ($this->matches($record)) {
+                    return $record;
+                }
+            }
+
+            return null;
+        }
+
         $next = clone $this;
         $next->limit = 1;
 
@@ -390,7 +409,7 @@ final class QueryBuilder
         return array($record);
     }
 
-    private function record_query(): ?RecordQuery
+    private function record_query(?int $limit_override = null): ?RecordQuery
     {
         if (null !== $this->order_field || 1 !== count($this->groups)) {
             return null;
@@ -401,8 +420,9 @@ final class QueryBuilder
             $query = $query->after($this->cursor);
         }
 
-        if (null !== $this->limit) {
-            $query = $query->limit($this->limit);
+        $limit = $limit_override ?? $this->limit;
+        if (null !== $limit) {
+            $query = $query->limit($limit);
         }
 
         $seen_fields = array();
