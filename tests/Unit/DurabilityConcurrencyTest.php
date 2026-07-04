@@ -419,6 +419,103 @@ final class DurabilityConcurrencyTest extends TestCase
         $this->assertTrue($reopened->verify()['ok']);
     }
 
+    public function test_doc_store_readers_do_not_observe_torn_records_during_concurrent_writes(): void
+    {
+        if (! function_exists('pcntl_fork') || ! function_exists('pcntl_waitpid')) {
+            $this->markTestSkipped('pcntl is required for forked writes.');
+        }
+
+        $records = 24;
+        $rounds = 36;
+        $ids = $this->fixed_ids($records, 1_700_900_000_000);
+        $collection = 'reader-writer-docs';
+        $store = new DocPerFileStore($this->root, $collection);
+        $store->indexes()->field('bucket')->field('version')->range()->sync();
+        foreach ($ids as $slot => $id) {
+            $store->put(
+                array(
+                    'slot'    => $slot,
+                    'version' => 0,
+                    'bucket'  => $slot % 4,
+                    'marker'  => 'round-0-slot-' . $slot,
+                ),
+                $id
+            );
+        }
+        unset($store);
+
+        $pid = pcntl_fork();
+        if (0 === $pid) {
+            try {
+                usleep(5000);
+                $child_store = new DocPerFileStore($this->root, $collection);
+                for ($round = 1; $round <= $rounds; $round++) {
+                    foreach ($ids as $slot => $id) {
+                        $child_store->put(
+                            array(
+                                'slot'    => $slot,
+                                'version' => $round,
+                                'bucket'  => ( $slot + $round ) % 4,
+                                'marker'  => 'round-' . $round . '-slot-' . $slot,
+                            ),
+                            $id
+                        );
+
+                        if (0 === $slot % 6) {
+                            usleep(500);
+                        }
+                    }
+                }
+                exit(0);
+            } catch (\Throwable) {
+                exit(1);
+            }
+        }
+
+        $this->assertIsInt($pid);
+        $id_to_slot = array_flip($ids);
+        $read_passes = 0;
+        $status = 0;
+        while (true) {
+            $waited = pcntl_waitpid($pid, $status, WNOHANG);
+            if ($pid === $waited) {
+                break;
+            }
+            $this->assertSame(0, $waited);
+
+            $reader = new DocPerFileStore($this->root, $collection);
+            $seen = 0;
+            foreach ($reader->stream() as $record) {
+                $expected_slot = $id_to_slot[ $record->id() ] ?? null;
+                $this->assertIsInt($expected_slot);
+
+                $data = $record->data();
+                $slot = $data['slot'] ?? null;
+                $version = $data['version'] ?? null;
+                $bucket = $data['bucket'] ?? null;
+                $this->assertSame($expected_slot, $slot);
+                $this->assertIsInt($version);
+                $this->assertGreaterThanOrEqual(0, $version);
+                $this->assertLessThanOrEqual($rounds, $version);
+                $this->assertSame(( $slot + $version ) % 4, $bucket);
+                $this->assertSame('round-' . $version . '-slot-' . $slot, $data['marker'] ?? null);
+                $seen++;
+            }
+
+            $this->assertSame($records, $seen);
+            $read_passes++;
+            usleep(1000);
+        }
+
+        $this->assertSame(0, pcntl_wexitstatus($status));
+        $this->assertGreaterThan(0, $read_passes);
+
+        $reopened = new DocPerFileStore($this->root, $collection);
+        $this->assertSame($records, $reopened->stats()['records']);
+        $this->assertSame($records, $reopened->query()->where('version')->eq($rounds)->count());
+        $this->assertTrue($reopened->verify()['ok']);
+    }
+
     /**
      * @return list<string>
      */
