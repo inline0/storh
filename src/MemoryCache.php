@@ -62,11 +62,6 @@ final class MemoryCache implements CacheInterface
         $this->values[ $key ]  = $value;
         $this->expires[ $key ] = null === $ttl_seconds ? null : time() + max(1, $ttl_seconds);
         unset($this->ticks[ $key ]);
-        $this->evict($key);
-        if (! array_key_exists($key, $this->values)) {
-            return;
-        }
-
         $this->touch($key);
         $this->evict($key);
     }
