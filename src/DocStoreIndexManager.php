@@ -313,6 +313,11 @@ final class DocStoreIndexManager
         return null === $limit ? $count : min($count, $limit);
     }
 
+    public function candidate_order_satisfies(QueryBuilder $query): bool
+    {
+        return null !== $this->ordered_range_condition($query, $query->groups());
+    }
+
     private function candidate_count_for_condition(QueryCondition $condition, ?int $limit): ?int
     {
         if (! $this->indexed_condition_supported($condition)) {
@@ -431,11 +436,33 @@ final class DocStoreIndexManager
             return $this->range_condition_supported($condition) ? null : $limit;
         }
 
+        if ('asc' !== $query->order_direction() || null === $this->ordered_range_condition($query, $groups)) {
+            return null;
+        }
+
+        return $limit;
+    }
+
+    /**
+     * @param list<list<QueryCondition>> $groups
+     * @return QueryCondition|null
+     */
+    private function ordered_range_condition(QueryBuilder $query, array $groups): ?QueryCondition
+    {
         if (
-            'asc' !== $query->order_direction() ||
-            $query->order_field() !== $condition->field() ||
-            ! $this->range_condition_supported($condition)
+            null === $query->limit_value() ||
+            null !== $query->cursor_id() ||
+            ! in_array($query->order_direction(), array( 'asc', 'desc' ), true)
         ) {
+            return null;
+        }
+
+        if (1 !== count($groups) || 1 !== count($groups[0])) {
+            return null;
+        }
+
+        $condition = $groups[0][0];
+        if ($query->order_field() !== $condition->field() || ! $this->range_order_supported($condition)) {
             return null;
         }
 
@@ -444,7 +471,7 @@ final class DocStoreIndexManager
             return null;
         }
 
-        return $limit;
+        return $condition;
     }
 
     /**
@@ -454,21 +481,12 @@ final class DocStoreIndexManager
     private function ordered_range_candidate_ids(QueryBuilder $query, array $groups): ?array
     {
         $limit = $query->limit_value();
-        if (null === $limit || null !== $query->cursor_id() || 'desc' !== $query->order_direction()) {
+        if (null === $limit || 'desc' !== $query->order_direction()) {
             return null;
         }
 
-        if (1 !== count($groups) || 1 !== count($groups[0])) {
-            return null;
-        }
-
-        $condition = $groups[0][0];
-        if ($query->order_field() !== $condition->field() || ! $this->range_condition_supported($condition)) {
-            return null;
-        }
-
-        $definition = $this->definitions()[ $condition->field() ] ?? null;
-        if (null === $definition || ! $definition['range'] || is_file($this->range_delta_field_root($condition->field()))) {
+        $condition = $this->ordered_range_condition($query, $groups);
+        if (null === $condition) {
             return null;
         }
 
@@ -799,7 +817,7 @@ final class DocStoreIndexManager
         $ids = array();
         $this->collect_range_condition_ids($this->range_field_root($condition->field()), $condition, $ids, true);
 
-        return array_slice(array_keys($ids), -$limit);
+        return array_reverse(array_slice(array_keys($ids), -$limit));
     }
 
     private function count_for_range_condition(QueryCondition $condition, ?int $limit = null): int
@@ -859,6 +877,20 @@ final class DocStoreIndexManager
     private function range_condition_supported(QueryCondition $condition): bool
     {
         return in_array($condition->operator(), array( 'gt', 'gte', 'lt', 'lte', 'between', 'prefix' ), true);
+    }
+
+    private function range_order_supported(QueryCondition $condition): bool
+    {
+        if (! $this->range_condition_supported($condition)) {
+            return false;
+        }
+
+        return match ($condition->operator()) {
+            'prefix' => is_string($condition->value()),
+            'between' => null !== $this->ordered_range_key($condition->value()) &&
+                null !== $this->ordered_range_key($condition->second_value()),
+            default => null !== $this->ordered_range_key($condition->value()),
+        };
     }
 
     /**

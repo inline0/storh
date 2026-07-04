@@ -116,7 +116,7 @@ final class QueryBuilder
     {
         $records = $this->candidate_records();
 
-        if (null !== $this->order_field) {
+        if (null !== $this->order_field && ! $this->candidate_records_are_ordered()) {
             usort(
                 $records,
                 function (StorageRecord $left, StorageRecord $right): int {
@@ -319,6 +319,11 @@ final class QueryBuilder
         }
 
         return $records;
+    }
+
+    private function candidate_records_are_ordered(): bool
+    {
+        return $this->store instanceof DocPerFileStore && $this->store->query_records_are_ordered($this);
     }
 
     /**

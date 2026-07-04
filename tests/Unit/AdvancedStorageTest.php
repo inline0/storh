@@ -220,6 +220,20 @@ final class AdvancedStorageTest extends TestCase
         $this->assertSame(0, $store->query()->where('score')->gt(99)->count());
         $this->assertNull($store->indexes()->candidate_ids($store->query()));
         $this->assertSame(array(), $store->indexes()->candidate_ids($store->query()->where('score')->eq(array( 'bad' ))));
+        $negative = new DocPerFileStore($this->root, 'negative-range', $this->id_generator($this->fixed_ids(4)));
+        $negative->putMany(
+            array(
+                array( 'score' => -2 ),
+                array( 'score' => -1 ),
+                array( 'score' => 0 ),
+                array( 'score' => 1 ),
+            )
+        );
+        $negative->indexes()->field('score')->range()->sync();
+        $negative_asc = $negative->query()->where('score')->gte(-2)->orderBy('score')->limit(3)->get();
+        $this->assertSame(array( -2, -1, 0 ), array_map(static fn($record): int => $record->data()['score'], $negative_asc));
+        $negative_desc = $negative->query()->where('score')->gte(-2)->orderBy('score', 'desc')->limit(3)->get();
+        $this->assertSame(array( 1, 0, -1 ), array_map(static fn($record): int => $record->data()['score'], $negative_desc));
         $reopened = new DocPerFileStore($this->root, 'indexed');
         $this->assertSame(1, $reopened->query()->where('metric')->eq(1.0)->count());
         $this->assertSame(5, $reopened->reindex()['fields']);

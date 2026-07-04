@@ -477,6 +477,11 @@ final class DocPerFileStore implements FileStoreInterface
         return $records;
     }
 
+    public function query_records_are_ordered(QueryBuilder $query): bool
+    {
+        return $this->indexes()->candidate_order_satisfies($query);
+    }
+
     public function count_records(QueryBuilder $query): int
     {
         $indexed_count = $this->indexed_count($query);
