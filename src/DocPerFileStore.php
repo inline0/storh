@@ -1300,8 +1300,11 @@ final class DocPerFileStore implements FileStoreInterface
         $this->forget_written_record_cache();
 
         while (false !== ( $line = fgets($handle) )) {
-            $line = trim($line);
+            $line = rtrim($line, "\r\n");
             if ('' === $line) {
+                continue;
+            }
+            if (ctype_space($line)) {
                 continue;
             }
 
