@@ -104,6 +104,62 @@ final class DurabilityConcurrencyTest extends TestCase
         $this->assertTrue($store->verify()['ok']);
     }
 
+    public function test_doc_repair_recovers_when_crash_leaves_committed_record_ahead_of_indexes(): void
+    {
+        $id = UuidV7::generate(1_700_480_000_000);
+        $store = new DocPerFileStore($this->root, 'crash-ahead-docs');
+        $store->indexes()->field('kind')->field('bucket')->field('score')->range()->sync();
+        $old = array( 'kind' => 'old', 'bucket' => 1, 'score' => 10 );
+        $new = array( 'kind' => 'new', 'bucket' => 2, 'score' => 90 );
+        $store->put($old, $id);
+
+        $this->write_doc_record_file($store, $id, $new);
+        $reopened = new DocPerFileStore($this->root, 'crash-ahead-docs');
+
+        $this->assertSame($new, $reopened->get($id)?->data());
+        $this->assertSame(array( $id ), $reopened->indexes()->candidate_ids($reopened->query()->where('kind')->eq('old')));
+        $this->assertSame(array(), $reopened->indexes()->candidate_ids($reopened->query()->where('kind')->eq('new')));
+        $this->assertFalse($reopened->verify()['ok']);
+
+        $repair = $reopened->repair();
+
+        $this->assertTrue($repair['ok']);
+        $this->assertSame(0, $repair['quarantined']);
+        $this->assertSame(array(), $reopened->indexes()->candidate_ids($reopened->query()->where('kind')->eq('old')));
+        $this->assertSame(array( $id ), $reopened->indexes()->candidate_ids($reopened->query()->where('kind')->eq('new')));
+        $this->assertSame(array( $id ), $reopened->indexes()->candidate_ids($reopened->query()->where('score')->gte(80)));
+        $this->assertSame(1, $reopened->query()->where('kind')->eq('new')->where('bucket')->eq(2)->count());
+        $this->assertTrue($reopened->verify()['ok']);
+    }
+
+    public function test_doc_repair_recovers_when_crash_leaves_removed_old_indexes_without_new_indexes(): void
+    {
+        $id = UuidV7::generate(1_700_490_000_000);
+        $store = new DocPerFileStore($this->root, 'crash-gap-docs');
+        $store->indexes()->field('kind')->field('bucket')->field('score')->range()->sync();
+        $old = array( 'kind' => 'old', 'bucket' => 1, 'score' => 10 );
+        $new = array( 'kind' => 'new', 'bucket' => 3, 'score' => 70 );
+        $store->put($old, $id);
+
+        $this->write_doc_record_file($store, $id, $new);
+        $store->indexes()->remove_record($id, $old);
+        $reopened = new DocPerFileStore($this->root, 'crash-gap-docs');
+
+        $this->assertSame($new, $reopened->get($id)?->data());
+        $this->assertSame(array(), $reopened->indexes()->candidate_ids($reopened->query()->where('kind')->eq('old')));
+        $this->assertSame(array(), $reopened->indexes()->candidate_ids($reopened->query()->where('kind')->eq('new')));
+        $this->assertFalse($reopened->verify()['ok']);
+
+        $repair = $reopened->repair();
+
+        $this->assertTrue($repair['ok']);
+        $this->assertSame(0, $repair['quarantined']);
+        $this->assertSame(array( $id ), $reopened->indexes()->candidate_ids($reopened->query()->where('kind')->eq('new')));
+        $this->assertSame(array( $id ), $reopened->indexes()->candidate_ids($reopened->query()->where('score')->between(60, 80)));
+        $this->assertSame(1, $reopened->query()->where('kind')->eq('new')->where('bucket')->eq(3)->count());
+        $this->assertTrue($reopened->verify()['ok']);
+    }
+
     public function test_log_queue_reopen_truncates_torn_tail_without_losing_committed_events(): void
     {
         $ids = $this->fixed_ids(3, 1_700_500_000_000);
@@ -549,6 +605,19 @@ final class DurabilityConcurrencyTest extends TestCase
         }
 
         return $this->root . '/' . $collection . '/segments/' . $active['file'];
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    private function write_doc_record_file(DocPerFileStore $store, string $id, array $data): void
+    {
+        $json = json_encode(
+            array( 'id' => $id, 'data' => $data ),
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
+        );
+        AtomicFilesystem::write_atomic($store->path_for_id($id), $json . "\n");
+        clearstatcache(true, $store->path_for_id($id));
     }
 
     /**
