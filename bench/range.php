@@ -5,6 +5,7 @@ declare(strict_types=1);
 use Storh\CacheValidation;
 
 require dirname(__DIR__) . '/vendor/autoload.php';
+require __DIR__ . '/process.php';
 
 $options = getopt('', array( 'datasets::', 'engines::', 'output-dir::', 'cache-validations::', 'memory-limit::' ));
 
@@ -89,8 +90,8 @@ function run_bench(int $dataset, string $engine, string $output_dir, string $cac
     $command[] = '--output=' . $output;
     $command[] = '--cache-validation=' . $cache_validation;
 
-    echo '$ ' . implode(' ', array_map('escapeshellarg', $command)) . PHP_EOL;
-    passthru(implode(' ', array_map('escapeshellarg', $command)), $code);
+    echo '$ ' . storh_bench_command_line($command) . PHP_EOL;
+    $code = storh_bench_run_passthrough($command);
 
     if (0 !== $code) {
         throw new RuntimeException('Benchmark failed for ' . $engine . ' dataset ' . $dataset);

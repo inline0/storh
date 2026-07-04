@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+require __DIR__ . '/process.php';
+
 $options = getopt('', array( 'dataset::', 'engine::', 'output::', 'cache-validation::', 'repeat::', 'memory-limit::' ));
 $dataset = max(1, (int) ( $options['dataset'] ?? 1000 ));
 $engine  = (string) ( $options['engine'] ?? 'all' );
@@ -27,11 +29,9 @@ for ($index = 0; $index < $repeat; $index++) {
     $command[] = '--cache-validation=' . $cache_validation;
     $command[] = '--output=' . $temp;
 
-    $lines = array();
-    $code = 0;
-    exec(implode(' ', array_map('escapeshellarg', $command)), $lines, $code);
-    if (0 !== $code) {
-        throw new RuntimeException('Benchmark run failed: ' . implode("\n", $lines));
+    $result = storh_bench_run_capture($command);
+    if (0 !== $result['code']) {
+        throw new RuntimeException('Benchmark run failed: ' . implode("\n", $result['output']));
     }
 
     $run = read_bench($temp);
