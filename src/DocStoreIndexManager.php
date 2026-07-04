@@ -67,25 +67,37 @@ final class DocStoreIndexManager
 
     public function sync(bool $rebuild = true): void
     {
-        $before = $this->definitions();
-        $after  = $this->pending;
-        ksort($after);
+        $this->store->with_write_lock(
+            function () use ($rebuild): void {
+                $before = $this->definitions();
+                $after  = $this->pending;
+                ksort($after);
 
-        AtomicFilesystem::write_atomic(
-            $this->manifest_path(),
-            Jsonc::encode_object(array( 'fields' => array_values($after) ))
+                AtomicFilesystem::write_atomic(
+                    $this->manifest_path(),
+                    Jsonc::encode_object(array( 'fields' => array_values($after) ))
+                );
+                $this->definitions_cache = $after;
+
+                if ($rebuild && $before !== $after) {
+                    $this->rebuild();
+                }
+            }
         );
-        $this->definitions_cache = $after;
-
-        if ($rebuild && $before !== $after) {
-            $this->rebuild();
-        }
     }
 
     /**
      * @return array{fields: int, entries: int}
      */
     public function rebuild(): array
+    {
+        return $this->store->with_write_lock(fn(): array => $this->rebuild_unlocked());
+    }
+
+    /**
+     * @return array{fields: int, entries: int}
+     */
+    private function rebuild_unlocked(): array
     {
         $this->delete_directory($this->entries_root());
         AtomicFilesystem::ensure_directory($this->entries_root());
@@ -212,13 +224,17 @@ final class DocStoreIndexManager
      */
     public function update_record(string $id, array $data, ?array $old_data): void
     {
-        if (null !== $old_data) {
-            $this->remove_record($id, $old_data);
-        }
+        $this->store->with_write_lock(
+            function () use ($id, $data, $old_data): void {
+                if (null !== $old_data) {
+                    $this->remove_record($id, $old_data);
+                }
 
-        $buckets = array();
-        $this->collect_index_entries($buckets, $this->definitions(), $id, $data);
-        $this->merge_index_buckets($buckets);
+                $buckets = array();
+                $this->collect_index_entries($buckets, $this->definitions(), $id, $data);
+                $this->merge_index_buckets($buckets);
+            }
+        );
     }
 
     /**
@@ -226,25 +242,33 @@ final class DocStoreIndexManager
      */
     public function remove_record(string $id, array $data): void
     {
-        $definitions = $this->definitions();
-        $compound_values = array();
-        foreach ($definitions as $definition) {
-            $field = $definition['field'];
-            if (! array_key_exists($field, $data) || ! $this->indexable($data[ $field ])) {
-                continue;
-            }
+        $this->store->with_write_lock(
+            function () use ($id, $data): void {
+                $definitions = $this->definitions();
+                $compound_values = array();
+                foreach ($definitions as $definition) {
+                    $field = $definition['field'];
+                    if (! array_key_exists($field, $data) || ! $this->indexable($data[ $field ])) {
+                        continue;
+                    }
 
-            if ($definition['range']) {
-                $this->append_range_entry($field, $data[ $field ], array(), array( $id ));
-            } else {
-                $this->remove_id_from_entry($this->eq_entry_path($field, $data[ $field ]), $this->value_key($data[ $field ]), $id);
-                if (! $definition['unique']) {
-                    $compound_values[ $field ] = $data[ $field ];
+                    if ($definition['range']) {
+                        $this->append_range_entry($field, $data[ $field ], array(), array( $id ));
+                    } else {
+                        $this->remove_id_from_entry(
+                            $this->eq_entry_path($field, $data[ $field ]),
+                            $this->value_key($data[ $field ]),
+                            $id
+                        );
+                        if (! $definition['unique']) {
+                            $compound_values[ $field ] = $data[ $field ];
+                        }
+                    }
                 }
-            }
-        }
 
-        $this->remove_compound_entries($id, $compound_values);
+                $this->remove_compound_entries($id, $compound_values);
+            }
+        );
     }
 
     /**

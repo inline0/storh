@@ -55,6 +55,11 @@ final class DocPerFileStore implements FileStoreInterface
 
     private ?bool $index_manifest_exists = null;
 
+    /** @var resource|null */
+    private mixed $write_lock_handle = null;
+
+    private int $write_lock_depth = 0;
+
     /** @var array<string, array{mtime: int, size: int, hash: string, data: array<string, mixed>}> */
     private array $validated_record_cache = array();
 
@@ -94,10 +99,25 @@ final class DocPerFileStore implements FileStoreInterface
         }
     }
 
+    public function __destruct()
+    {
+        if (is_resource($this->write_lock_handle)) {
+            fclose($this->write_lock_handle);
+        }
+    }
+
     /**
      * @param array<string, mixed> $data
      */
     public function put(array $data, ?string $id = null): StorageRecord
+    {
+        return $this->with_write_lock(fn(): StorageRecord => $this->put_unlocked($data, $id));
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    private function put_unlocked(array $data, ?string $id = null): StorageRecord
     {
         $generated = null === $id;
         $id ??= ( $this->id_generator )();
@@ -132,42 +152,46 @@ final class DocPerFileStore implements FileStoreInterface
      */
     public function putMany(iterable $records): array
     {
-        $stored = array();
-        $indexes = $this->active_indexes();
-        $has_indexes = null !== $indexes;
+        return $this->with_write_lock(
+            function () use ($records): array {
+                $stored = array();
+                $indexes = $this->active_indexes();
+                $has_indexes = null !== $indexes;
 
-        foreach ($records as $record) {
-            $id   = isset($record['id']) && is_string($record['id']) ? $record['id'] : null;
-            $data = isset($record['data']) && is_array($record['data']) ? $record['data'] : $record;
-            $generated = null === $id;
-            $id ??= ( $this->id_generator )();
-            $this->assert_record_id($id, $generated);
+                foreach ($records as $record) {
+                    $id   = isset($record['id']) && is_string($record['id']) ? $record['id'] : null;
+                    $data = isset($record['data']) && is_array($record['data']) ? $record['data'] : $record;
+                    $generated = null === $id;
+                    $id ??= ( $this->id_generator )();
+                    $this->assert_record_id($id, $generated);
 
-            /** @var array<string, mixed> $data */
-            $this->schema?->validate($data);
+                    /** @var array<string, mixed> $data */
+                    $this->schema?->validate($data);
 
-            $old = $generated || ! $has_indexes ? null : $this->get($id);
-            if ($has_indexes) {
-                $indexes->validate_unique($id, $data, $old?->data());
+                    $old = $generated || ! $has_indexes ? null : $this->get($id);
+                    if ($has_indexes) {
+                        $indexes->validate_unique($id, $data, $old?->data());
+                    }
+
+                    $directory = $this->record_directory_for_id($id);
+                    $path = $directory . '/' . $id . '.jsonc';
+                    $this->write_record_file($directory, $path, $id, $data);
+                    $this->remember_written_record($id, $path, $data);
+
+                    if ($has_indexes) {
+                        $indexes->update_record($id, $data, $old?->data());
+                    }
+
+                    $storage_record = new StorageRecord($id, $data);
+                    if ($this->cache_enabled) {
+                        $this->cache_record($storage_record, $path);
+                    }
+                    $stored[] = $storage_record;
+                }
+
+                return $stored;
             }
-
-            $directory = $this->record_directory_for_id($id);
-            $path = $directory . '/' . $id . '.jsonc';
-            $this->write_record_file($directory, $path, $id, $data);
-            $this->remember_written_record($id, $path, $data);
-
-            if ($has_indexes) {
-                $indexes->update_record($id, $data, $old?->data());
-            }
-
-            $storage_record = new StorageRecord($id, $data);
-            if ($this->cache_enabled) {
-                $this->cache_record($storage_record, $path);
-            }
-            $stored[] = $storage_record;
-        }
-
-        return $stored;
+        );
     }
 
     /**
@@ -175,42 +199,46 @@ final class DocPerFileStore implements FileStoreInterface
      */
     public function putStream(iterable $records): int
     {
-        $count = 0;
-        $indexes = $this->active_indexes();
-        $has_indexes = null !== $indexes;
+        return $this->with_write_lock(
+            function () use ($records): int {
+                $count = 0;
+                $indexes = $this->active_indexes();
+                $has_indexes = null !== $indexes;
 
-        foreach ($records as $record) {
-            $id   = isset($record['id']) && is_string($record['id']) ? $record['id'] : null;
-            $data = isset($record['data']) && is_array($record['data']) ? $record['data'] : $record;
-            $generated = null === $id;
-            $id ??= ( $this->id_generator )();
-            $this->assert_record_id($id, $generated);
+                foreach ($records as $record) {
+                    $id   = isset($record['id']) && is_string($record['id']) ? $record['id'] : null;
+                    $data = isset($record['data']) && is_array($record['data']) ? $record['data'] : $record;
+                    $generated = null === $id;
+                    $id ??= ( $this->id_generator )();
+                    $this->assert_record_id($id, $generated);
 
-            /** @var array<string, mixed> $data */
-            $this->schema?->validate($data);
+                    /** @var array<string, mixed> $data */
+                    $this->schema?->validate($data);
 
-            $old = $generated || ! $has_indexes ? null : $this->get($id);
-            if ($has_indexes) {
-                $indexes->validate_unique($id, $data, $old?->data());
+                    $old = $generated || ! $has_indexes ? null : $this->get($id);
+                    if ($has_indexes) {
+                        $indexes->validate_unique($id, $data, $old?->data());
+                    }
+
+                    $directory = $this->record_directory_for_id($id);
+                    $path = $directory . '/' . $id . '.jsonc';
+                    $this->write_record_file($directory, $path, $id, $data);
+                    $this->remember_written_record($id, $path, $data);
+
+                    if ($has_indexes) {
+                        $indexes->update_record($id, $data, $old?->data());
+                    }
+
+                    if ($this->cache_enabled) {
+                        $this->cache_record(new StorageRecord($id, $data), $path);
+                    }
+
+                    $count++;
+                }
+
+                return $count;
             }
-
-            $directory = $this->record_directory_for_id($id);
-            $path = $directory . '/' . $id . '.jsonc';
-            $this->write_record_file($directory, $path, $id, $data);
-            $this->remember_written_record($id, $path, $data);
-
-            if ($has_indexes) {
-                $indexes->update_record($id, $data, $old?->data());
-            }
-
-            if ($this->cache_enabled) {
-                $this->cache_record(new StorageRecord($id, $data), $path);
-            }
-
-            $count++;
-        }
-
-        return $count;
+        );
     }
 
     public function get(string $id): ?StorageRecord
@@ -259,29 +287,33 @@ final class DocPerFileStore implements FileStoreInterface
 
     public function delete(string $id): void
     {
-        UuidV7::assert_valid($id);
-        $path = $this->record_path_for_id($id);
-        $old  = is_file($path) ? $this->get($id) : null;
+        $this->with_write_lock(
+            function () use ($id): void {
+                UuidV7::assert_valid($id);
+                $path = $this->record_path_for_id($id);
+                $old  = is_file($path) ? $this->get($id) : null;
 
-        if (is_file($path) && ! @unlink($path)) {
-            throw new StorageException('Could not delete storage record: ' . $id);
-        }
-        if (null !== $this->record_path_cache) {
-            unset($this->record_path_cache[ $id ]);
-            $this->record_sorted_ids_cache = null;
-        }
-        if (null !== $this->record_data_cache) {
-            unset($this->record_data_cache[ $id ]);
-        }
-        unset($this->validated_record_cache[ $id ]);
+                if (is_file($path) && ! @unlink($path)) {
+                    throw new StorageException('Could not delete storage record: ' . $id);
+                }
+                if (null !== $this->record_path_cache) {
+                    unset($this->record_path_cache[ $id ]);
+                    $this->record_sorted_ids_cache = null;
+                }
+                if (null !== $this->record_data_cache) {
+                    unset($this->record_data_cache[ $id ]);
+                }
+                unset($this->validated_record_cache[ $id ]);
 
-        if (null !== $old) {
-            $this->indexes()->remove_record($id, $old->data());
-        }
+                if (null !== $old) {
+                    $this->indexes()->remove_record($id, $old->data());
+                }
 
-        if ($this->cache_enabled) {
-            $this->cache_missing($id, $path);
-        }
+                if ($this->cache_enabled) {
+                    $this->cache_missing($id, $path);
+                }
+            }
+        );
     }
 
     /**
@@ -968,7 +1000,7 @@ final class DocPerFileStore implements FileStoreInterface
      */
     public function reindex(): array
     {
-        return $this->indexes()->rebuild();
+        return $this->with_write_lock(fn(): array => $this->indexes()->rebuild());
     }
 
     /**
@@ -1029,11 +1061,15 @@ final class DocPerFileStore implements FileStoreInterface
      */
     public function repair(): array
     {
-        AtomicFilesystem::cleanup_temp_files($this->collection_root());
+        return $this->with_write_lock(
+            function (): array {
+                AtomicFilesystem::cleanup_temp_files($this->collection_root());
 
-        return array(
-            'ok'        => true,
-            'reindexed' => $this->reindex(),
+                return array(
+                    'ok'        => true,
+                    'reindexed' => $this->reindex(),
+                );
+            }
         );
     }
 
@@ -1056,7 +1092,7 @@ final class DocPerFileStore implements FileStoreInterface
         }
 
         try {
-            return $this->import_jsonl_records($handle);
+            return $this->with_write_lock(fn(): int => $this->import_jsonl_records($handle));
         } finally {
             fclose($handle);
         }
@@ -1166,6 +1202,53 @@ final class DocPerFileStore implements FileStoreInterface
     public function collection_root(): string
     {
         return $this->collection_path;
+    }
+
+    /**
+     * @internal
+     * @template T
+     * @param callable(): T $callback
+     * @return T
+     */
+    public function with_write_lock(callable $callback): mixed
+    {
+        if ($this->write_lock_depth > 0) {
+            return $callback();
+        }
+
+        $handle = $this->write_lock_handle();
+        if (! flock($handle, LOCK_EX)) {
+            throw new StorageException('Could not lock DocStore collection.');
+        }
+
+        $this->write_lock_depth++;
+        try {
+            return $callback();
+        } finally {
+            $this->write_lock_depth--;
+            flock($handle, LOCK_UN);
+        }
+    }
+
+    /**
+     * @return resource
+     */
+    private function write_lock_handle(): mixed
+    {
+        if (is_resource($this->write_lock_handle)) {
+            return $this->write_lock_handle;
+        }
+
+        $lock_directory = $this->collection_root() . '/.storh';
+        AtomicFilesystem::ensure_directory($lock_directory);
+        $handle = @fopen($lock_directory . '/write.lock', 'c+b');
+        if (false === $handle) {
+            throw new StorageException('Could not open DocStore collection lock.');
+        }
+
+        $this->write_lock_handle = $handle;
+
+        return $handle;
     }
 
     private function data_root(): string

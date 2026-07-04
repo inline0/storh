@@ -117,11 +117,11 @@ or repair, torn tails are truncated to the last committed event and in-memory
 state is rebuilt from durable log contents. Log and queue writes are serialized
 with filesystem locks.
 
-`DocStore` concurrent writes to distinct record ids are safe under the same
+`DocStore` mutations are serialized with a collection-level write lock, so
+record files and secondary indexes update as one consistency boundary across
+processes. Concurrent writes to distinct record ids are safe under the same
 filesystem atomic-rename assumptions. Concurrent writes to the same id are
-last-rename-wins. For multi-process writes to indexed document collections,
-serialize writers at the application level until indexed DocStore writes gain a
-collection-level write lock.
+last-rename-wins.
 
 storh flushes file handles before rename or append completion. It does not
 currently fsync the parent directory, so power-loss durability is limited by the

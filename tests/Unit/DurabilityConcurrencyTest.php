@@ -120,6 +120,68 @@ final class DurabilityConcurrencyTest extends TestCase
         $this->assertTrue($store->verify()['ok']);
     }
 
+    public function test_indexed_doc_store_serializes_concurrent_writes_without_index_drift(): void
+    {
+        if (! function_exists('pcntl_fork') || ! function_exists('pcntl_waitpid')) {
+            $this->markTestSkipped('pcntl is required for forked writes.');
+        }
+
+        $workers = 4;
+        $per_worker = 16;
+        $ids = $this->fixed_ids($workers * $per_worker, 1_700_700_000_000);
+        $store = new DocPerFileStore($this->root, 'indexed-concurrent-docs');
+        $store->indexes()->field('kind')->field('bucket')->sync();
+        unset($store);
+
+        $children = array();
+        for ($worker = 0; $worker < $workers; $worker++) {
+            $pid = pcntl_fork();
+            if (0 === $pid) {
+                try {
+                    $child_store = new DocPerFileStore($this->root, 'indexed-concurrent-docs');
+                    for ($index = 0; $index < $per_worker; $index++) {
+                        $offset = $worker * $per_worker + $index;
+                        $child_store->put(
+                            array(
+                                'kind'   => 'page',
+                                'bucket' => $index % 4,
+                                'worker' => $worker,
+                                'index'  => $index,
+                            ),
+                            $ids[ $offset ]
+                        );
+                    }
+                    exit(0);
+                } catch (\Throwable) {
+                    exit(1);
+                }
+            }
+
+            $this->assertIsInt($pid);
+            $children[] = $pid;
+        }
+
+        foreach ($children as $child) {
+            pcntl_waitpid($child, $status);
+            $this->assertSame(0, pcntl_wexitstatus($status));
+        }
+
+        $reopened = new DocPerFileStore($this->root, 'indexed-concurrent-docs');
+        $query = $reopened->query()->where('kind')->eq('page');
+        $this->assertSame($workers * $per_worker, $reopened->stats()['records']);
+        $this->assertSame($workers * $per_worker, $query->count());
+        $this->assertSame($ids, $this->record_ids($query->get()));
+
+        $candidate_ids = $reopened->indexes()->candidate_ids($query);
+        $this->assertIsArray($candidate_ids);
+        $this->assertSame($ids, $candidate_ids);
+
+        $bucket_query = $reopened->query()->where('kind')->eq('page')->where('bucket')->eq(3);
+        $this->assertSame($workers * 4, $bucket_query->count());
+        $this->assertSame($workers * 4, count($reopened->indexes()->candidate_ids($bucket_query) ?? array()));
+        $this->assertTrue($reopened->verify()['ok']);
+    }
+
     /**
      * @return list<string>
      */
