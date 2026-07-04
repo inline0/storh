@@ -1044,6 +1044,10 @@ final class DocStoreIndexManager
 
     private function range_key(mixed $value): string
     {
+        if (is_int($value) && $value >= 0) {
+            return 'n-' . str_pad((string) $value, 17, '0', STR_PAD_LEFT) . 'd000000';
+        }
+
         if (is_int($value) || is_float($value)) {
             return 'n-' . str_replace(array( '-', '.' ), array( 'm', 'd' ), sprintf('%024.6F', (float) $value));
         }
