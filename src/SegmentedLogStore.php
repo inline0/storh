@@ -638,7 +638,6 @@ final class SegmentedLogStore implements FileStoreInterface
         $position = false === $position ? 0 : $position;
         $buffer = '';
         $pending = array();
-        $counts_invalidated = false;
 
         try {
             foreach ($records as $record) {
@@ -646,12 +645,8 @@ final class SegmentedLogStore implements FileStoreInterface
                 $data   = $record->data();
                 $line   = $this->encode_put_line($id, $data);
                 $length = strlen($line);
-                if (! $counts_invalidated) {
-                    $this->invalidate_equality_counts();
-                    $counts_invalidated = true;
-                }
 
-                $pending[] = array( $id, $file, $position );
+                $pending[] = array( $id, $file, $position, $data );
                 $buffer .= $line;
                 $position += $length;
 
@@ -713,7 +708,6 @@ final class SegmentedLogStore implements FileStoreInterface
         $position = false === $position ? 0 : $position;
         $buffer = '';
         $pending = array();
-        $counts_invalidated = false;
 
         try {
             foreach ($records as $record) {
@@ -726,13 +720,9 @@ final class SegmentedLogStore implements FileStoreInterface
                 /** @var array<string, mixed> $data */
                 $line   = $this->encode_put_line($id, $data);
                 $length = strlen($line);
-                if (! $counts_invalidated) {
-                    $this->invalidate_equality_counts();
-                    $counts_invalidated = true;
-                }
 
                 $count++;
-                $pending[] = array( $id, $file, $position );
+                $pending[] = array( $id, $file, $position, $data );
                 $buffer .= $line;
                 $position += $length;
 
@@ -775,7 +765,7 @@ final class SegmentedLogStore implements FileStoreInterface
 
     /**
      * @param resource $handle
-     * @param list<array{0: string, 1: string, 2: int}> $pending
+     * @param list<array{0: string, 1: string, 2: int, 3: array<string, mixed>}> $pending
      */
     private function flush_put_record_buffer(mixed $handle, string &$buffer, string $path, array &$pending): void
     {
@@ -791,6 +781,8 @@ final class SegmentedLogStore implements FileStoreInterface
             $replaces_existing = null !== $this->state && isset($this->state[ $id ]);
             if ($replaces_existing) {
                 $this->invalidate_equality_counts();
+            } else {
+                $this->remember_record_equality_counts($entry[3]);
             }
 
             $this->write_state_entry_without_aliases($id, false, $entry[1], $entry[2]);

@@ -304,6 +304,10 @@ function bench_log(string $root, int $dataset): array
         $bulk_store->appendStream(rows_with_ids($dataset, $bulk_start_ms));
     });
 
+    $bulk_query_count = timed(static function () use ($bulk_store): void {
+        $bulk_store->query()->where('status')->eq('published')->count();
+    });
+
     $bulk_cursor = timed(static function () use ($bulk_store, $bulk_cursor_id): void {
         iterator_to_array($bulk_store->stream(RecordQuery::all()->after($bulk_cursor_id)->limit(100)));
     });
@@ -330,6 +334,7 @@ function bench_log(string $root, int $dataset): array
         'stats',
         'compact',
         'bulk_append',
+        'bulk_query_count',
         'bulk_cursor',
         'bulk_range',
         'bulk_compact'

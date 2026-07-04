@@ -653,6 +653,19 @@ final class AdvancedStorageTest extends TestCase
         $this->assertSame(3, $reopened_stream->query()->where('type')->eq('streamed')->count());
         $this->assertSame(5, $reopened_stream->get($ids[4])?->data()['value'] ?? null);
 
+        $counted = new SegmentedLogStore($this->root, 'bulk-counts', 512, 1, $this->id_generator($ids));
+        $counted->appendStream(
+            array(
+                array( 'type' => 'published' ),
+                array( 'type' => 'published' ),
+                array( 'type' => 'draft' ),
+            )
+        );
+        $this->assertSame(2, $counted->query()->where('type')->eq('published')->count());
+        $counted->appendMany(array(array( 'id' => $ids[1], 'data' => array( 'type' => 'draft' ) )));
+        $this->assertSame(1, $counted->query()->where('type')->eq('published')->count());
+        $this->assertSame(2, $counted->query()->where('type')->eq('draft')->count());
+
         $deleted = $store->retain()->olderThanMs(UuidV7::timestamp_ms($ids[0]))->compact();
         $this->assertSame(1, $deleted);
         $this->assertNull($store->get($ids[0]));
