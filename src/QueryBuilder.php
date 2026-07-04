@@ -163,9 +163,9 @@ final class QueryBuilder
             null === $this->order_field &&
             $this->store instanceof DocPerFileStore
         ) {
-            $cached_records = $this->store->cached_records(1);
-            if (null !== $cached_records) {
-                return $cached_records[0] ?? null;
+            $cached_record = $this->store->cached_first_record();
+            if (false !== $cached_record) {
+                return $cached_record;
             }
         }
 

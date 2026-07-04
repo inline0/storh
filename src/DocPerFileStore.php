@@ -615,6 +615,30 @@ final class DocPerFileStore implements FileStoreInterface
         return null === $limit ? $count : min($count, $limit);
     }
 
+    public function cached_first_record(): StorageRecord|false|null
+    {
+        if (null === $this->record_path_cache || null === $this->record_data_cache) {
+            return false;
+        }
+
+        if ($this->record_cache_ordered) {
+            foreach ($this->record_data_cache as $id => $data) {
+                return new StorageRecord($id, $data);
+            }
+
+            return null;
+        }
+
+        foreach ($this->cached_record_ids() as $id) {
+            $data = $this->record_data_cache[ $id ] ?? null;
+            if (null !== $data) {
+                return new StorageRecord($id, $data);
+            }
+        }
+
+        return null;
+    }
+
     /**
      * @return list<StorageRecord>|null
      */
