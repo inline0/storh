@@ -129,12 +129,16 @@ final class LogQueue
                 $this->append_claim_event($id, time());
 
                 $record = new StorageRecord($id, $this->payload_for_id($id));
-                $this->compact_pending_order();
+                if ($this->pending_offset >= 4096 && $this->pending_offset * 2 >= $pending_count) {
+                    $this->compact_pending_order();
+                }
 
                 return $record;
             }
 
-            $this->compact_pending_order();
+            if ($this->pending_offset >= 4096 && $this->pending_offset * 2 >= $pending_count) {
+                $this->compact_pending_order();
+            }
 
             return null;
         });
@@ -167,7 +171,9 @@ final class LogQueue
                 $claimed++;
             }
 
-            $this->compact_pending_order();
+            if ($this->pending_offset >= 4096 && $this->pending_offset * 2 >= $pending_count) {
+                $this->compact_pending_order();
+            }
             $this->append_claim_events($records, $now);
 
             return $records;
@@ -946,14 +952,20 @@ final class LogQueue
 
     private function apply_complete_event(string $id, bool $keep_done, int $ts): void
     {
+        $removed_pending = false;
+        $removed_processing = false;
+        $removed_done = false;
+
         if (isset($this->pending[ $id ])) {
             unset($this->pending[ $id ]);
             $this->pending_deletes++;
+            $removed_pending = true;
         }
 
         if (isset($this->processing[ $id ])) {
             unset($this->processing[ $id ]);
             $this->processing_deletes++;
+            $removed_processing = true;
         }
 
         unset($this->payloads[ $id ]);
@@ -962,11 +974,18 @@ final class LogQueue
         } elseif (isset($this->done[ $id ])) {
             unset($this->done[ $id ]);
             $this->done_deletes++;
+            $removed_done = true;
         }
 
-        $this->compact_pending_map();
-        $this->compact_processing_map();
-        $this->compact_done_map();
+        if ($removed_pending) {
+            $this->compact_pending_map();
+        }
+        if ($removed_processing) {
+            $this->compact_processing_map();
+        }
+        if ($removed_done) {
+            $this->compact_done_map();
+        }
     }
 
     /**
