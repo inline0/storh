@@ -12,7 +12,7 @@ import {
 const iconClass = "h-5 w-5 text-fd-primary";
 
 export default defineConfig({
-  title: "storh",
+  title: "Storh",
   description:
     "File-first records for PHP: JSONC documents, append-only segmented logs, and log-backed queues with UUIDv7 ids.",
   logo: {
