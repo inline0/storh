@@ -9,8 +9,6 @@ import {
   ListChecks,
   Rows3,
 } from "lucide-react";
-import { HeroLeft } from "./src/components/hero-left";
-
 const iconClass = "h-5 w-5 text-fd-primary";
 
 export default defineConfig({
@@ -29,9 +27,6 @@ export default defineConfig({
     links: [{ label: "Inline0.com", href: "https://inline0.com" }],
   },
   homepage: {
-    hero: {
-      left: HeroLeft,
-    },
     features: [
       {
         title: "JSONC Document Store",
