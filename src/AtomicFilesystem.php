@@ -8,6 +8,8 @@ final class AtomicFilesystem
 {
     private const TEMP_FILE_GRACE_SECONDS = 60;
 
+    private const WRITERS_DIRECTORY = '/.storh/writers';
+
     public static function ensure_directory(string $directory): void
     {
         if (is_dir($directory)) {
@@ -32,9 +34,12 @@ final class AtomicFilesystem
         try {
             self::write_all($handle, $contents, $temp);
             self::sync_handle($handle, $temp);
-        } finally {
+        } catch (\Throwable $throwable) {
             fclose($handle);
+            @unlink($temp);
+            throw $throwable;
         }
+        fclose($handle);
 
         if (! @rename($temp, $path)) {
             @unlink($temp);
@@ -147,15 +152,18 @@ final class AtomicFilesystem
         );
 
         foreach ($iterator as $file) {
-            if (! $file instanceof \SplFileInfo || ! $file->isFile()) {
+            // Check the name before isFile() so record files never cost a
+            // stat during a sweep.
+            if (
+                ! $file instanceof \SplFileInfo ||
+                ! str_starts_with($file->getBasename(), '.') ||
+                ! str_ends_with($file->getBasename(), '.tmp') ||
+                ! $file->isFile()
+            ) {
                 continue;
             }
 
             $name = $file->getBasename();
-            if (! str_starts_with($name, '.') || ! str_ends_with($name, '.tmp')) {
-                continue;
-            }
-
             if (self::temp_file_owner_is_alive($name)) {
                 continue;
             }
@@ -166,6 +174,53 @@ final class AtomicFilesystem
 
             @unlink($file->getPathname());
         }
+    }
+
+    public static function cleanup_temp_files_on_open(string $collection_root): void
+    {
+        $writers = $collection_root . self::WRITERS_DIRECTORY;
+        if (! is_dir($writers)) {
+            self::cleanup_temp_files($collection_root);
+            self::ensure_directory($writers);
+            return;
+        }
+
+        $stale = array();
+        foreach (new \FilesystemIterator($writers, \FilesystemIterator::SKIP_DOTS) as $path => $marker) {
+            // A plain (int) cast would read "123.4e5" markers as scientific
+            // notation, so extract the pid digits explicitly.
+            $name = $marker instanceof \SplFileInfo ? $marker->getBasename() : basename((string) $path);
+            if (1 !== preg_match('/^(\d+)\./', $name, $matches) || ! self::process_is_alive((int) $matches[1])) {
+                $stale[] = (string) $path;
+            }
+        }
+
+        if (array() === $stale) {
+            return;
+        }
+
+        self::cleanup_temp_files($collection_root);
+        foreach ($stale as $marker_path) {
+            @unlink($marker_path);
+        }
+    }
+
+    public static function writer_marker_path(string $collection_root, string $name): string
+    {
+        return $collection_root . self::WRITERS_DIRECTORY . '/' . $name;
+    }
+
+    public static function register_writer(string $marker_path): void
+    {
+        self::ensure_directory(dirname($marker_path));
+        if (false === @touch($marker_path)) {
+            throw new StorageException('Could not register storage writer marker: ' . $marker_path);
+        }
+    }
+
+    public static function unregister_writer(string $marker_path): void
+    {
+        @unlink($marker_path);
     }
 
     private static function has_process_owner(string $name): bool
@@ -179,8 +234,12 @@ final class AtomicFilesystem
             return false;
         }
 
-        $pid = (int) $matches[1];
-        if ($pid < 1) {
+        return self::process_is_alive((int) $matches[1]);
+    }
+
+    private static function process_is_alive(int $pid): bool
+    {
+        if ($pid < 1 || $pid > 0x7fffffff) {
             return false;
         }
 

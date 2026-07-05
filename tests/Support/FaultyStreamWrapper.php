@@ -10,15 +10,36 @@ final class FaultyStreamWrapper
 
     public mixed $context;
 
+    /** @var list<string> */
+    public static array $unlinked = array();
+
     private string $mode = '';
 
     private int $position = 0;
 
     public static function register(): void
     {
+        self::$unlinked = array();
         if (! in_array(self::SCHEME, stream_get_wrappers(), true)) {
             stream_wrapper_register(self::SCHEME, self::class);
         }
+    }
+
+    public function mkdir(string $path, int $mode, int $options): bool
+    {
+        return true;
+    }
+
+    public function unlink(string $path): bool
+    {
+        self::$unlinked[] = $path;
+
+        return true;
+    }
+
+    public function rename(string $from, string $to): bool
+    {
+        return false;
     }
 
     public static function path(string $mode): string

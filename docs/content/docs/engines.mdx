@@ -91,7 +91,8 @@ $job = $queue->claim();
 
 storh publishes file writes with atomic rename inside the target directory.
 Reopen and `repair()` remove abandoned temp files whose owner process is gone,
-while leaving live writer temp files alone.
+while leaving live writer temp files alone. Writer markers make that check
+constant-time, so opening a store sweeps the collection only after a crash.
 
 `SegmentedLog` and `Queue` write length and checksum guarded log lines. Reopen
 or repair truncates torn tails to the last committed event and rebuilds in-memory

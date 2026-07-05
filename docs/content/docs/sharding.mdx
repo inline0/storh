@@ -44,13 +44,14 @@ collection size. What grows is files per bucket:
 
 Modern filesystems index directory entries, so a few thousand files per
 bucket keeps point lookups fast; 1M records is comfortable for `get()` and
-indexed queries. What does grow linearly at that scale are whole-collection
-operations: unindexed scans, `reindex()`, `verify()`, and the orphaned
-temp-file sweep on store construction each walk every record file, so treat
-them as batch jobs. Past roughly 10M records per collection, per-bucket
-counts and total inode usage start to matter: split collections, or use the
-segmented log for scan-shaped data, which keeps file counts low by
-construction.
+indexed queries. Opening a store is constant-time regardless of collection
+size: the orphaned temp-file sweep only runs when a dead writer marker shows
+a previous process crashed mid-write. What does grow linearly at scale are
+whole-collection operations: unindexed scans, `reindex()`, and `verify()`
+each walk every record file, so treat them as batch jobs. Past roughly 10M
+records per collection, per-bucket counts and total inode usage start to
+matter: split collections, or use the segmented log for scan-shaped data,
+which keeps file counts low by construction.
 
 ## The other engines
 

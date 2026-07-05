@@ -132,7 +132,8 @@ the docs.
 storh writes data files in place-specific temporary files and publishes them
 with an atomic rename inside the target directory. Reopen and `repair()` clean
 abandoned temp files whose owner process is gone, while leaving live writer temp
-files alone.
+files alone. Writer markers make that check constant-time: opening a store
+sweeps the collection only when a previous writer actually crashed.
 
 `SegmentedLog` and `Queue` use length and checksum guarded log lines. On reopen
 or repair, torn tails are truncated to the last committed event and in-memory
@@ -267,50 +268,51 @@ derived from the medians; run `composer bench` for your own hardware.
 
 | DocStore, 50k records                          | median          |
 | ---------------------------------------------- | --------------- |
-| `put()`, one durable file per record           | 3.5k records/s  |
-| `putStream()` bulk ingest                      | 3.5k records/s  |
-| `importJsonl()`                                | 3.7k records/s  |
-| `get()` point read, STAT-validated             | 6.3 µs          |
+| `put()`, one durable file per record           | 3.3k records/s  |
+| `putStream()` bulk ingest                      | 3.7k records/s  |
+| `importJsonl()`                                | 3.6k records/s  |
+| `get()` point read, STAT-validated             | 5.6 µs          |
+| reopen an existing store                       | 0.26 ms         |
 | indexed equality query, `limit(100)`           | 1.1 ms          |
-| indexed `count()` across the collection        | 38 µs           |
-| index build, 2 equality + 1 range field        | 51k records/s   |
+| indexed `count()` across the collection        | 41 µs           |
+| index build, 2 equality + 1 range field        | 52k records/s   |
 | full `stream()` with STAT re-validation        | 103k records/s  |
-| `exportJsonl()`                                | 99k records/s   |
+| `exportJsonl()`                                | 104k records/s  |
 
 | SegmentedLog, 50k records, 16 KB segments      | median          |
 | ---------------------------------------------- | --------------- |
 | `put()`, fsync per append                      | 16k appends/s   |
-| `appendStream()` bulk ingest                   | 55k records/s   |
-| cursor read, 100 records from the midpoint     | 2.2 ms          |
+| `appendStream()` bulk ingest                   | 56k records/s   |
+| cursor read, 100 records from the midpoint     | 2.1 ms          |
 | time-range read                                | 1.1 ms          |
 | equality `count()`                             | 11 µs           |
 | `compact()` all sealed segments                | 69k records/s   |
-| reopen with torn-tail recovery                 | 214k records/s  |
+| reopen with torn-tail recovery                 | 218k records/s  |
 
 The benchmark seals a segment every 16 KB to stress segment rolls; the
 default segment size is 1 MiB.
 
 | Queue, 50k jobs                                | median          |
 | ---------------------------------------------- | --------------- |
-| `enqueue()`, fsync per event                   | 21k jobs/s      |
-| `claim()`                                      | 22k jobs/s      |
+| `enqueue()`, fsync per event                   | 22k jobs/s      |
+| `claim()`                                      | 23k jobs/s      |
 | `complete()`                                   | 23k jobs/s      |
-| `enqueueMany()`                                | 202k jobs/s     |
-| `claimMany()`                                  | 466k jobs/s     |
-| `completeMany()`                               | 497k jobs/s     |
+| `enqueueMany()`                                | 209k jobs/s     |
+| `claimMany()`                                  | 467k jobs/s     |
+| `completeMany()`                               | 512k jobs/s     |
 
 | SQL Mirror, SQLite, 50k records                | median          |
 | ---------------------------------------------- | --------------- |
-| initial `push()`                               | 63k rows/s      |
-| `push()` with nothing changed                  | 87k records/s   |
-| `flush()`, 100 ids                             | 6.9 ms          |
-| indexed SQL `COUNT` over the mirror            | 6.7 ms          |
+| initial `push()`                               | 61k rows/s      |
+| `push()` with nothing changed                  | 86k records/s   |
+| `flush()`, 100 ids                             | 7.1 ms          |
+| indexed SQL `COUNT` over the mirror            | 6.9 ms          |
 | `rebuild()`                                    | 65k rows/s      |
-| `pull()` restore, one durable file per record  | 3.4k records/s  |
+| `pull()` restore, one durable file per record  | 3.2k records/s  |
 
 | Micro                                          | median          |
 | ---------------------------------------------- | --------------- |
-| cached `get()`, cold then warm (MemoryCache, STAT) | 78 µs / 6.3 µs |
+| cached `get()`, cold then warm (MemoryCache, STAT) | 83 µs / 6.3 µs |
 | UUIDv7 generate                                | 1.3 µs          |
 | UUIDv7 validate                                | 0.30 µs         |
 | in-memory predicate filtering                  | 4.4M rows/s     |

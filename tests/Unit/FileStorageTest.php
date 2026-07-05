@@ -169,6 +169,60 @@ JSONC
 
         $owner_alive = new \ReflectionMethod(AtomicFilesystem::class, 'temp_file_owner_is_alive');
         $this->assertFalse($owner_alive->invoke(null, '.0.abcdef.1.tmp'));
+
+        $process_alive = new \ReflectionMethod(AtomicFilesystem::class, 'process_is_alive');
+        $this->assertFalse($process_alive->invoke(null, PHP_INT_MAX));
+    }
+
+    public function test_atomic_write_failures_unlink_their_temp_files(): void
+    {
+        \Storh\Tests\Support\FaultyStreamWrapper::register();
+        $target = \Storh\Tests\Support\FaultyStreamWrapper::path('write-fail') . '/doc.jsonc';
+
+        try {
+            AtomicFilesystem::write_atomic($target, '{}');
+            $this->fail('Expected the faulty write to fail.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('Could not write storage file', $exception->getMessage());
+        }
+
+        $this->assertCount(1, \Storh\Tests\Support\FaultyStreamWrapper::$unlinked);
+        $this->assertStringEndsWith('.tmp', \Storh\Tests\Support\FaultyStreamWrapper::$unlinked[0]);
+
+        $store = new DocPerFileStore($this->root, 'faulty-writes');
+        $faulty_directory = \Storh\Tests\Support\FaultyStreamWrapper::path('write-fail') . '/data/2d';
+        $writer = new \ReflectionMethod($store, 'write_record_file_contents');
+        \Storh\Tests\Support\FaultyStreamWrapper::$unlinked = array();
+
+        try {
+            $writer->invoke($store, $faulty_directory, $faulty_directory . '/x.jsonc', 'x', '{}');
+            $this->fail('Expected the faulty record write to fail.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('Could not write storage file', $exception->getMessage());
+        }
+
+        $this->assertCount(1, \Storh\Tests\Support\FaultyStreamWrapper::$unlinked);
+        $this->assertStringEndsWith('.tmp', \Storh\Tests\Support\FaultyStreamWrapper::$unlinked[0]);
+    }
+
+    public function test_register_writer_reports_unwritable_marker_directories(): void
+    {
+        if (function_exists('posix_geteuid') && 0 === posix_geteuid()) {
+            $this->markTestSkipped('Directory permissions do not bind for root.');
+        }
+
+        $writers = $this->root . '/locked/.storh/writers';
+        mkdir($writers, 0755, true);
+        chmod($writers, 0555);
+
+        try {
+            AtomicFilesystem::register_writer($writers . '/12345.abcd');
+            $this->fail('Expected an unwritable marker directory failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('writer marker', $exception->getMessage());
+        } finally {
+            chmod($writers, 0755);
+        }
     }
 
     public function test_atomic_filesystem_reports_write_failures(): void

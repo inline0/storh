@@ -34,6 +34,78 @@ final class DurabilityConcurrencyTest extends TestCase
         parent::tearDown();
     }
 
+    public function test_reopen_sweeps_temp_files_only_when_a_writer_crashed(): void
+    {
+        $id = UuidV7::generate(1_700_390_000_000);
+        $store = new DocPerFileStore($this->root, 'marker-docs');
+        $store->put(array( 'title' => 'Committed' ), $id);
+
+        $collection_root = $this->root . '/marker-docs';
+        $writers = glob($collection_root . '/.storh/writers/*') ?: array();
+        $this->assertCount(1, $writers, 'A writing instance must register exactly one marker.');
+        $this->assertStringStartsWith((string) getmypid(), basename($writers[0]));
+
+        unset($store);
+        $this->assertSame(array(), glob($collection_root . '/.storh/writers/*') ?: array(), 'A clean destruct must unregister the marker.');
+
+        $temp = dirname(( new DocPerFileStore($this->root, 'marker-docs') )->path_for_id($id)) . '/.99999999.abcdef01.1.tmp';
+        file_put_contents($temp, 'torn');
+        touch($temp, time() - 120);
+
+        $reopened = new DocPerFileStore($this->root, 'marker-docs');
+        $this->assertFileExists($temp, 'A reopen after clean shutdowns must skip the sweep.');
+
+        $live_second = new DocPerFileStore($this->root, 'marker-docs');
+        $live_second->put(array( 'title' => 'Second writer' ));
+        $third = new DocPerFileStore($this->root, 'marker-docs');
+        $this->assertFileExists($temp, 'Live writer markers must not trigger a sweep.');
+        unset($live_second, $third, $reopened);
+
+        AtomicFilesystem::register_writer(
+            AtomicFilesystem::writer_marker_path($collection_root, '99999999.deadbeef')
+        );
+        $garbage_marker = AtomicFilesystem::writer_marker_path($collection_root, 'not-a-pid');
+        AtomicFilesystem::register_writer($garbage_marker);
+
+        new DocPerFileStore($this->root, 'marker-docs');
+        $this->assertFileDoesNotExist($temp, 'A dead writer marker must trigger the sweep.');
+        $this->assertFileDoesNotExist($garbage_marker, 'Unparseable markers count as dead.');
+
+        TestFilesystem::remove_path($collection_root . '/.storh/writers');
+        $compat_temp = $collection_root . '/data/.99999999.abcdef01.2.tmp';
+        file_put_contents($compat_temp, 'pre-marker leftover');
+        touch($compat_temp, time() - 120);
+
+        new DocPerFileStore($this->root, 'marker-docs');
+        $this->assertFileDoesNotExist($compat_temp, 'A collection without a writers directory must sweep once.');
+        $this->assertDirectoryExists($collection_root . '/.storh/writers');
+    }
+
+    public function test_log_reopen_sweeps_temp_files_only_when_a_writer_crashed(): void
+    {
+        $log = new SegmentedLogStore($this->root, 'marker-log', 4096);
+        $log->put(array( 'type' => 'event' ));
+
+        $collection_root = $this->root . '/marker-log';
+        $this->assertCount(1, glob($collection_root . '/.storh/writers/*') ?: array());
+        unset($log);
+        $this->assertSame(array(), glob($collection_root . '/.storh/writers/*') ?: array());
+
+        $temp = $collection_root . '/segments/.99999999.abcdef01.1.tmp';
+        file_put_contents($temp, 'torn');
+        touch($temp, time() - 120);
+
+        $reopened = new SegmentedLogStore($this->root, 'marker-log', 4096);
+        $this->assertFileExists($temp, 'A clean log reopen must skip the sweep.');
+        unset($reopened);
+
+        AtomicFilesystem::register_writer(
+            AtomicFilesystem::writer_marker_path($collection_root, '99999999.deadbeef')
+        );
+        new SegmentedLogStore($this->root, 'marker-log', 4096);
+        $this->assertFileDoesNotExist($temp, 'A dead log writer marker must trigger the sweep.');
+    }
+
     public function test_doc_repair_removes_abandoned_nested_atomic_temp_files_without_touching_records(): void
     {
         $id = UuidV7::generate(1_700_400_000_000);
@@ -195,7 +267,15 @@ final class DurabilityConcurrencyTest extends TestCase
         touch($index_temp, time() - 120);
         unset($store);
 
+        $dead_marker = AtomicFilesystem::writer_marker_path(
+            $this->root . '/unrenamed-temp-docs',
+            '99999999.deadbeef'
+        );
+        AtomicFilesystem::register_writer($dead_marker);
+
         $reopened = new DocPerFileStore($this->root, 'unrenamed-temp-docs');
+
+        $this->assertFileDoesNotExist($dead_marker);
 
         $this->assertFileDoesNotExist($record_temp);
         $this->assertFileDoesNotExist($index_temp);

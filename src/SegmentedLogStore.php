@@ -59,6 +59,12 @@ final class SegmentedLogStore implements FileStoreInterface
     /** @var resource|null */
     private mixed $lock_handle = null;
 
+    private string $writer_marker_path = '';
+
+    private bool $writer_registered = false;
+
+    private int $writer_pid = 0;
+
     /** @var resource|null */
     private mixed $active_handle = null;
 
@@ -104,12 +110,21 @@ final class SegmentedLogStore implements FileStoreInterface
         $this->collection_root_path  = rtrim($this->root, '/\\') . '/' . $this->collection_path;
         $this->segments_root_path    = $this->collection_root_path . '/segments';
         $this->manifest_file_path    = $this->collection_root_path . '/manifest.jsonc';
+        $this->writer_marker_path    = AtomicFilesystem::writer_marker_path(
+            $this->collection_root_path,
+            getmypid() . '.' . bin2hex(random_bytes(4))
+        );
         $this->initialize();
     }
 
     public function __destruct()
     {
         $this->close_active_handle();
+        // Only the registering process may unlink its marker: a forked child
+        // inherits this object but must not unregister the parent's writer.
+        if ($this->writer_registered && $this->writer_pid === getmypid()) {
+            AtomicFilesystem::unregister_writer($this->writer_marker_path);
+        }
         if (is_resource($this->lock_handle)) {
             fclose($this->lock_handle);
         }
@@ -573,7 +588,12 @@ final class SegmentedLogStore implements FileStoreInterface
         $this->with_lock(
             function (): void {
                 AtomicFilesystem::ensure_directory($this->segments_root());
-                AtomicFilesystem::cleanup_temp_files($this->collection_root());
+                // Sweep before registering this writer so a first open after
+                // an upgrade still cleans pre-marker leftovers.
+                AtomicFilesystem::cleanup_temp_files_on_open($this->collection_root());
+                AtomicFilesystem::register_writer($this->writer_marker_path);
+                $this->writer_registered = true;
+                $this->writer_pid        = (int) getmypid();
                 $this->delete_compaction_leftovers();
 
                 if (! is_file($this->manifest_path())) {

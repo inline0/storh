@@ -4,6 +4,25 @@ All notable changes to storh are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Opening a store is now constant-time at any collection size. Writing
+  instances register a per-process marker under `.storh/writers/` and remove
+  it on clean shutdown; the orphaned temp-file sweep on open only runs when
+  a marker's owner process is gone, which is the only case that can leave
+  temp files behind. Reopening a 50k-record collection drops from about
+  207 ms to 0.04 ms, and the first open after upgrading sweeps once to
+  clean any pre-marker leftovers. `repair()` still always sweeps.
+
+### Fixed
+
+- Failed atomic writes now remove their own temporary files instead of
+  leaving them for the next sweep.
+- A store instance inherited by a forked child process no longer unregisters
+  the parent's writer marker in the child's shutdown.
+
 ## [0.4.0] - 2026-07-05
 
 ### Added
@@ -92,6 +111,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - CLI for stats, verify, compaction, and document reindex operations.
 - Documentation site, README examples, security policy, and MIT license.
 
+[Unreleased]: https://github.com/inline0/storh/compare/v0.4.0...HEAD
 [0.4.0]: https://github.com/inline0/storh/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/inline0/storh/compare/v0.0.2...v0.3.0
 [0.0.2]: https://github.com/inline0/storh/compare/v0.0.1...v0.0.2

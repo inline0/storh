@@ -211,6 +211,10 @@ function bench_doc(string $root, int $dataset): array
         iterator_to_array($store->stream(RecordQuery::all()->where_equal('kind', 'page')->limit(100)));
     });
 
+    $reopen = timed(static function () use ($root): void {
+        new DocPerFileStore($root, 'docs');
+    });
+
     unset($store, $ids);
     release_bench_memory();
 
@@ -256,6 +260,7 @@ function bench_doc(string $root, int $dataset): array
         'unindexed_count',
         'unindexed_limit_count',
         'full',
+        'reopen',
         'bulk_put',
         'jsonl_export',
         'jsonl_import'

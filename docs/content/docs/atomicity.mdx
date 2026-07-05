@@ -7,8 +7,14 @@ description: How storh handles atomic writes, torn records, and compaction lefto
 
 `AtomicFilesystem::write_atomic()` writes to a temporary file, flushes and
 fsyncs that file handle, renames it over the target path, and attempts to fsync
-the parent directory. Temporary files left behind by crashes are cleaned up when
-stores initialize or repair.
+the parent directory. Failed writes remove their own temporary file.
+
+Writing store instances register a per-process marker under
+`.storh/writers/` and remove it on clean shutdown. Opening a store checks
+those markers: when every marker's owner is alive (or none exist), the open
+is constant-time; a marker whose owner process is gone means a writer
+crashed, so the open sweeps the collection for orphaned temporary files and
+clears the stale marker. `repair()` always sweeps.
 
 DocStore repair quarantines corrupt or truncated record files under
 `.storh/corrupt/` and rebuilds secondary indexes from the remaining valid

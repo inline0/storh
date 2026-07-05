@@ -64,6 +64,12 @@ final class DocPerFileStore implements FileStoreInterface
 
     private int $write_lock_depth = 0;
 
+    private string $writer_marker_path;
+
+    private bool $writer_registered = false;
+
+    private int $writer_pid = 0;
+
     /** @var array<string, array{mtime: int, size: int, hash: string, data: array<string, mixed>}> */
     private array $validated_record_cache = array();
 
@@ -91,8 +97,9 @@ final class DocPerFileStore implements FileStoreInterface
         $this->cache_scope     = hash(self::CACHE_HASH_ALGORITHM, $this->collection_path);
         $this->data_path       = $this->collection_path . '/data';
         $this->temp_prefix     = getmypid() . '.' . bin2hex(random_bytes(4));
+        $this->writer_marker_path = AtomicFilesystem::writer_marker_path($this->collection_path, $this->temp_prefix);
         $this->validated_record_cache_max_bytes = self::default_validated_record_cache_max_bytes();
-        AtomicFilesystem::cleanup_temp_files($this->collection_root());
+        AtomicFilesystem::cleanup_temp_files_on_open($this->collection_root());
         if (! is_dir($this->data_root())) {
             $this->record_path_cache = array();
             $this->record_data_cache = array();
@@ -105,6 +112,11 @@ final class DocPerFileStore implements FileStoreInterface
 
     public function __destruct()
     {
+        // Only the registering process may unlink its marker: a forked child
+        // inherits this object but must not unregister the parent's writer.
+        if ($this->writer_registered && $this->writer_pid === getmypid()) {
+            AtomicFilesystem::unregister_writer($this->writer_marker_path);
+        }
         if (is_resource($this->write_lock_handle)) {
             fclose($this->write_lock_handle);
         }
@@ -1358,6 +1370,14 @@ final class DocPerFileStore implements FileStoreInterface
             throw new StorageException('Could not lock DocStore collection.');
         }
 
+        if (! $this->writer_registered) {
+            // The marker must exist before any temp file so a crash mid-write
+            // is detectable by the next cleanup_temp_files_on_open().
+            AtomicFilesystem::register_writer($this->writer_marker_path);
+            $this->writer_registered = true;
+            $this->writer_pid        = (int) getmypid();
+        }
+
         $this->write_lock_depth++;
         try {
             return $callback();
@@ -1863,9 +1883,12 @@ final class DocPerFileStore implements FileStoreInterface
                 $mtime = isset($stat['mtime']) ? (int) $stat['mtime'] : null;
                 $size  = isset($stat['size']) ? (int) $stat['size'] : strlen($contents);
             }
-        } finally {
+        } catch (\Throwable $throwable) {
             fclose($handle);
+            @unlink($temp);
+            throw $throwable;
         }
+        fclose($handle);
 
         if (! @rename($temp, $path)) {
             @unlink($temp);
