@@ -464,15 +464,16 @@ final class LogQueue
         }
 
         fseek($handle, $this->log_offset);
+        $offset = $this->log_offset;
         while (false !== ( $line = fgets($handle) )) {
-            $offset = ftell($handle);
+            $offset += strlen($line);
             try {
                 $this->apply_event($this->decode_line($line));
             } catch (\Throwable) {
                 break;
             }
 
-            $this->log_offset = false === $offset ? $this->log_offset : $offset;
+            $this->log_offset = $offset;
         }
 
         $this->pending_order = $this->effective_pending_order($this->pending, $this->pending_order, 0);
@@ -495,9 +496,10 @@ final class LogQueue
 
         $handle = $this->log_handle();
         fseek($handle, 0);
+        $offset = 0;
         while (false !== ( $line = fgets($handle) )) {
             $line_start = $this->log_offset;
-            $offset = ftell($handle);
+            $offset += strlen($line);
             try {
                 $this->apply_event($this->decode_line($line));
             } catch (\Throwable) {
@@ -509,7 +511,7 @@ final class LogQueue
                 break;
             }
 
-            $this->log_offset = false === $offset ? $this->log_offset : $offset;
+            $this->log_offset = $offset;
         }
 
         $this->pending_order = $this->effective_pending_order($this->pending, $this->pending_order, 0);

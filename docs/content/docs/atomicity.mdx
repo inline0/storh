@@ -23,7 +23,7 @@ underlying filesystem and mount options honoring file and directory syncs.
 The segmented log writes each line as:
 
 ```text
-<byte-length>\t<crc32b>\t<json>\n
+<byte-length>\t<xxh32>\t<json>\n
 ```
 
 Reads verify the byte length and checksum. Recovery scans each segment and

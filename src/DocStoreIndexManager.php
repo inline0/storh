@@ -496,14 +496,6 @@ final class DocStoreIndexManager
                     throw new StorageException('Unique index violation on field: ' . $definition['field']);
                 }
             }
-
-            if (
-                null !== $old_data &&
-                array_key_exists($definition['field'], $old_data) &&
-                $old_data[ $definition['field'] ] !== $value
-            ) {
-                continue;
-            }
         }
     }
 
@@ -2098,15 +2090,11 @@ final class DocStoreIndexManager
     {
         $key = $this->range_key($value);
         $value_key = $this->value_key($value);
-        $range_buckets[ $field ][] = $key . "\t" . $value_key . "\t" . $this->encode_index_object(
-            array(
-                'key'    => $key,
-                'value'  => $value,
-                'count'  => 1,
-                'ids'    => array( $id ),
-                'remove' => array(),
-            )
-        );
+        $range_buckets[ $field ][] = $key . "\t" . $value_key . "\t"
+            . '{"key":"' . $key . '","value":' . json_encode(
+                $value,
+                JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR
+            ) . ',"count":1,"ids":["' . $id . '"],"remove":[]}' . "\n";
         $range_entries++;
     }
 

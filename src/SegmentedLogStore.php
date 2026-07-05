@@ -264,13 +264,15 @@ final class SegmentedLogStore implements FileStoreInterface
                     fseek($handle, $offset);
                 }
 
+                $position = $offset;
                 while (true) {
-                    $line_offset = ftell($handle);
+                    $line_offset = $position;
                     $line        = fgets($handle);
-                    if (false === $line || false === $line_offset) {
+                    if (false === $line) {
                         break;
                     }
 
+                    $position += strlen($line);
                     try {
                         $envelope = $this->decode_line($line);
                     } catch (\Throwable $throwable) {
@@ -415,13 +417,15 @@ final class SegmentedLogStore implements FileStoreInterface
                     fseek($handle, $offset);
                 }
 
+                $position = $offset;
                 while (true) {
-                    $line_offset = ftell($handle);
+                    $line_offset = $position;
                     $line        = fgets($handle);
-                    if (false === $line || false === $line_offset) {
+                    if (false === $line) {
                         break;
                     }
 
+                    $position += strlen($line);
                     if (null !== $match_marker) {
                         $json = $this->validated_line_json($line);
                         if (! str_contains($json, $match_marker)) {
@@ -524,7 +528,9 @@ final class SegmentedLogStore implements FileStoreInterface
         }
 
         try {
-            iterator_to_array($this->stream());
+            foreach ($this->stream() as $_record) {
+                // Drain the stream so decode errors surface without holding every record in memory.
+            }
         } catch (\Throwable $throwable) {
             $errors[] = $throwable->getMessage();
         }
@@ -926,13 +932,15 @@ final class SegmentedLogStore implements FileStoreInterface
                 }
 
                 try {
+                    $input_position = 0;
                     while (true) {
-                        $input_offset = ftell($input_handle);
+                        $input_offset = $input_position;
                         $line         = fgets($input_handle);
-                        if (false === $input_offset || false === $line) {
+                        if (false === $line) {
                             break;
                         }
 
+                        $input_position += strlen($line);
                         $compaction_entry = $this->compaction_entry_from_line($line);
                         $id    = $compaction_entry['id'];
                         $entry = $this->state[ $id ] ?? null;
@@ -1450,13 +1458,15 @@ final class SegmentedLogStore implements FileStoreInterface
                 $last_id = null;
                 $offsets = array();
                 $last_good_offset = 0;
+                $position = 0;
                 while (true) {
-                    $offset = ftell($handle);
+                    $offset = $position;
                     $line   = fgets($handle);
-                    if (false === $offset || false === $line) {
+                    if (false === $line) {
                         break;
                     }
 
+                    $position += strlen($line);
                     try {
                         $envelope = $build_equality_counts
                             ? $this->decode_line($line)
@@ -1471,8 +1481,7 @@ final class SegmentedLogStore implements FileStoreInterface
                         throw $throwable;
                     }
 
-                    $line_end = ftell($handle);
-                    $last_good_offset = false === $line_end ? $last_good_offset : $line_end;
+                    $last_good_offset = $position;
                     $id            = $envelope['id'];
                     if (null !== $last_id && strcmp($id, $last_id) < 0) {
                         $ordered = false;
@@ -1620,9 +1629,6 @@ final class SegmentedLogStore implements FileStoreInterface
             'offset'  => $offset,
             'aliases' => array(),
         );
-        if ($this->cache_enabled) {
-            $this->cache->delete($this->state_cache_key($id));
-        }
     }
 
     /**
@@ -1650,9 +1656,6 @@ final class SegmentedLogStore implements FileStoreInterface
             'offset'  => $offset,
             'aliases' => $aliases,
         );
-        if ($this->cache_enabled) {
-            $this->cache->delete($this->state_cache_key($id));
-        }
     }
 
     /**
@@ -1660,9 +1663,6 @@ final class SegmentedLogStore implements FileStoreInterface
      */
     private function replace_state_index(array $state): void
     {
-        if ($this->cache_enabled) {
-            $this->cache->clear_prefix($this->state_cache_prefix());
-        }
         $this->state = $state;
         $this->refresh_state_counts();
     }
@@ -2354,9 +2354,6 @@ final class SegmentedLogStore implements FileStoreInterface
 
             unset($this->state[ $id ]);
         }
-        if ($this->cache_enabled) {
-            $this->cache->delete($this->state_cache_key($id));
-        }
     }
 
     private function segment_file_name(int $number): string
@@ -2512,16 +2509,6 @@ final class SegmentedLogStore implements FileStoreInterface
     private function sparse_cache_key(string $path): string
     {
         return 'log:sparse:' . $this->collection_path . ':' . basename($path);
-    }
-
-    private function state_cache_prefix(): string
-    {
-        return 'log:state:' . $this->collection_path . ':';
-    }
-
-    private function state_cache_key(string $id): string
-    {
-        return $this->state_cache_prefix() . $id;
     }
 
     /**

@@ -295,7 +295,8 @@ final class DocPerFileStore implements FileStoreInterface
             function () use ($id): void {
                 UuidV7::assert_valid($id);
                 $path = $this->record_path_for_id($id);
-                $old  = is_file($path) ? $this->get($id) : null;
+                $indexes = $this->active_indexes();
+                $old = null !== $indexes && is_file($path) ? $this->get($id) : null;
 
                 if (is_file($path) && ! @unlink($path)) {
                     throw new StorageException('Could not delete storage record: ' . $id);
@@ -309,8 +310,8 @@ final class DocPerFileStore implements FileStoreInterface
                 }
                 unset($this->validated_record_cache[ $id ]);
 
-                if (null !== $old) {
-                    $this->indexes()->remove_record($id, $old->data());
+                if (null !== $indexes && null !== $old) {
+                    $indexes->remove_record($id, $old->data());
                 }
 
                 if ($this->cache_enabled) {
