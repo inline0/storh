@@ -31,6 +31,18 @@ that want durable local records without a database server. It provides:
 - UUIDv7 ids, UUID-tail sharding, atomic writes, torn-write recovery, retention,
   and compaction
 
+The three engines store the same record shape (a UUIDv7 id plus an array of
+data) with three different disk layouts. Pick by workload:
+
+| Engine         | Use it for                                                               | Avoid it for                                        |
+| -------------- | ------------------------------------------------------------------------ | --------------------------------------------------- |
+| `DocStore`     | records you fetch by id, update in place, and query by indexed fields    | non-indexed field scans past roughly 10k records    |
+| `SegmentedLog` | append-heavy streams read by cursor or time window, into roughly 1M records | frequent single-record rewrites                     |
+| `Queue`        | durable job handoff between worker processes                             | payloads you need to read back after completion     |
+
+Engines compose: one storage root can hold `DocStore` collections,
+`SegmentedLog` streams, and `Queue` directories side by side.
+
 The caller provides a base directory. storh does not discover application paths
 or depend on a framework.
 
@@ -104,6 +116,10 @@ record objects.
 and done state in memory. Claims, completions, requeues, and purges append
 bounded events instead of creating one file per job. Bulk enqueue, claim, and
 complete methods reduce lock and flush cost for large queues.
+
+For a side-by-side comparison with rules of thumb, see
+[Choosing an engine](https://storh.dev/docs/engines#choosing-an-engine) in
+the docs.
 
 ## Durability & Concurrency
 

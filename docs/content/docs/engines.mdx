@@ -5,6 +5,34 @@ description: Choose between DocStore, SegmentedLog, and Queue.
 
 # Engines
 
+## Choosing an engine
+
+All three engines store the same thing, a UUIDv7 id plus an array of data,
+but lay it out differently on disk. That layout decides what each engine is
+good at:
+
+|            | DocStore | SegmentedLog | Queue |
+| ---------- | -------- | ------------ | ----- |
+| On disk    | one JSONC file per record, UUID-tail sharded | append-only NDJSON segments plus a manifest | one append-only event log |
+| Writing    | atomic file replace per record | checksummed appends; overwrites and deletes append new entries, reclaimed by `compact()` | checksummed append per queue event |
+| Reading    | `get()` by id, indexed queries | cursor and time-range scans, `get()` via the state index | `claim()` in enqueue order |
+| Sweet spot | point reads and indexed lookups at any collection size | append-heavy streams into roughly 1M records | durable work dispatch between processes |
+| Weak spot  | non-indexed field scans past roughly 10k records | frequent single-record rewrites (old versions occupy space until compaction) | not a general record store; payloads are dropped once a job completes |
+
+Rules of thumb:
+
+- Records you fetch, update, or delete individually and query by field:
+  `DocStore`. Add [indexes](/docs/indexes) for the fields you filter on.
+- Events or versions you mostly append and read back in order or by time
+  window: `SegmentedLog`.
+- Jobs handed from producers to worker processes: `Queue`. Claims and
+  completions are multi-process safe, and `claimMany()`/`completeMany()`
+  amortize lock and fsync cost.
+
+Engines compose: they only share the root directory, so one application can
+keep content in a `DocStore`, an audit trail in a `SegmentedLog`, and
+background work in a `Queue` under the same storage root.
+
 ## DocStore
 
 `DocStore` is for point reads and simple scans over durable records. It writes
@@ -40,7 +68,8 @@ $events->compact();
 `Queue` is for high-throughput durable work queues. Enqueue, claim, complete,
 requeue, and purge write append-only events to `queue.log`; queue state is
 replayed into memory when the queue opens. Batch methods amortize lock and
-flush cost across many jobs.
+flush cost across many jobs. The log grows with every event; `stats()`
+reports its current byte size.
 
 ```php
 $queue = new Storh\Queue($root, 'mail');

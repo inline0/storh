@@ -19,4 +19,6 @@ storh is file-first storage, not a relational query engine.
   filtering, or analytical scans over many fields.
 
 Use `DocStore` when point reads dominate, `SegmentedLog` when append and ordered
-reads dominate, and `Queue` for simple durable work dispatch.
+reads dominate, and `Queue` for simple durable work dispatch. See
+[Choosing an engine](/docs/engines#choosing-an-engine) for a side-by-side
+comparison.
