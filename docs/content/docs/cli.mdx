@@ -1,11 +1,31 @@
 ---
-title: Maintenance & CLI
-description: Stats, health checks, repair, compaction, and command-line tools.
+title: CLI
+description: Complete command reference for the bin/storh executable.
 ---
 
-# Maintenance & CLI
+# CLI
 
-All engines expose maintenance methods:
+```bash
+vendor/bin/storh stats <root> [collection] [doc|log|queue]
+vendor/bin/storh verify <root> [collection] [doc|log|queue]
+vendor/bin/storh compact <root> [collection] [doc|log]
+vendor/bin/storh reindex <root> [collection]
+```
+
+```bash
+vendor/bin/storh stats var/storh pages doc
+vendor/bin/storh verify var/storh events log
+vendor/bin/storh compact var/storh events log
+vendor/bin/storh reindex var/storh pages
+```
+
+The CLI prints stable JSON so it can be used from cron jobs and deployment
+health checks. The collection defaults to `default`; the engine defaults to
+`doc` for `stats`, `verify`, and `reindex`, and to `log` for `compact`.
+
+## Maintenance methods behind the commands
+
+All engines expose the maintenance methods the CLI drives:
 
 ```php
 $store->stats();
@@ -28,18 +48,6 @@ $log->compact();
 $log->recover();
 $log->state_index();
 ```
-
-CLI:
-
-```bash
-vendor/bin/storh stats var/storh pages doc
-vendor/bin/storh verify var/storh events log
-vendor/bin/storh compact var/storh events log
-vendor/bin/storh reindex var/storh pages
-```
-
-The CLI prints stable JSON so it can be used from cron jobs and deployment
-health checks.
 
 For DocStore, `verify()` checks that records parse cleanly and that equality,
 range, and compound indexes match a full record scan. `repair()` quarantines

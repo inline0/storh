@@ -11,7 +11,6 @@
     "caching",
     "bulk-data",
     "sql-mirror",
-    "maintenance-cli",
     "benchmarks",
     "jsonc",
     "uuidv7",
@@ -19,6 +18,7 @@
     "atomicity",
     "sharding",
     "scaling-limits",
+    "cli",
     "api"
   ]
 }
