@@ -30,6 +30,28 @@ Sharding is invisible to reads and queries: `get()` computes the bucket from
 the id, and `stream()` returns records sorted by id across all buckets, so
 cursor pagination behaves as if the collection were one ordered list.
 
+## At scale
+
+The bucket count never grows: two hex characters is 256 directories at any
+collection size. What grows is files per bucket:
+
+| Records | Files per bucket |
+| ------- | ---------------- |
+| 10k     | ~40              |
+| 100k    | ~390             |
+| 1M      | ~3,900           |
+| 10M     | ~39,000          |
+
+Modern filesystems index directory entries, so a few thousand files per
+bucket keeps point lookups fast; 1M records is comfortable for `get()` and
+indexed queries. What does grow linearly at that scale are whole-collection
+operations: unindexed scans, `reindex()`, `verify()`, and the orphaned
+temp-file sweep on store construction each walk every record file, so treat
+them as batch jobs. Past roughly 10M records per collection, per-bucket
+counts and total inode usage start to matter: split collections, or use the
+segmented log for scan-shaped data, which keeps file counts low by
+construction.
+
 ## The other engines
 
 `SegmentedLog` and `Queue` do not shard because they do not create one file
