@@ -8,7 +8,9 @@ use Storh\DocPerFileStore;
 use Storh\Queue;
 use Storh\QueryCondition;
 use Storh\RecordQuery;
+use Storh\Schema;
 use Storh\SegmentedLogStore;
+use Storh\SqlMirror;
 use Storh\UuidV7;
 
 require dirname(__DIR__) . '/vendor/autoload.php';
@@ -66,6 +68,15 @@ try {
 
     if ('all' === $engine || 'filter' === $engine) {
         $results['results']['filter'] = bench_filter($dataset);
+        release_bench_memory();
+    }
+
+    if (
+        ( 'all' === $engine || 'mirror' === $engine ) &&
+        class_exists(PDO::class) &&
+        in_array('sqlite', PDO::getAvailableDrivers(), true)
+    ) {
+        $results['results']['mirror'] = bench_mirror($root, $dataset);
         release_bench_memory();
     }
 
@@ -576,6 +587,57 @@ function bench_filter(int $dataset): array
     });
 
     return compact('record_equal', 'record_range', 'condition_equal');
+}
+
+/**
+ * @return array<string, float>
+ */
+function bench_mirror(string $root, int $dataset): array
+{
+    $store = new DocPerFileStore($root, 'mirror-docs');
+    $store->putStream(rows($dataset));
+
+    $schema = Schema::collection('mirror-docs')
+        ->string('kind')->index()
+        ->string('slug')->unique()
+        ->int('publishedAt')->range();
+
+    $pdo    = new PDO('sqlite:' . $root . '/mirror-bench.db');
+    $mirror = ( new SqlMirror($pdo, 'bench_') )->collection($store, 'docs', $schema);
+    $mirror->install();
+
+    $push = timed(static function () use ($mirror): void {
+        $mirror->push();
+    });
+
+    $reconcile = timed(static function () use ($mirror): void {
+        $mirror->push();
+    });
+
+    $flush_ids = array();
+    foreach ($store->stream(RecordQuery::all()->limit(100)) as $record) {
+        $flush_ids[] = $record->id();
+    }
+
+    $flush = timed(static function () use ($mirror, $flush_ids): void {
+        $mirror->flush('docs', $flush_ids);
+    });
+
+    $query = timed(static function () use ($pdo, $mirror): void {
+        $statement = $pdo->query(
+            'SELECT COUNT(*) FROM ' . $mirror->table('docs') . " WHERE kind = 'page' AND publishedAt >= 1700000000000"
+        );
+        if (false === $statement) {
+            throw new RuntimeException('Mirror bench query failed.');
+        }
+        $statement->fetchColumn();
+    });
+
+    $rebuild = timed(static function () use ($mirror): void {
+        $mirror->rebuild();
+    });
+
+    return compact('push', 'reconcile', 'flush', 'query', 'rebuild');
 }
 
 /**

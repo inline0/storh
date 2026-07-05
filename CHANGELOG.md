@@ -10,10 +10,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `SqlMirror`: push DocStore and SegmentedLog collections into SQLite or
   MySQL as derived, rebuildable tables for joins, search, and reporting.
-  Reconcile-based `push()` with per-collection transactions, `flush()` for
-  read-your-writes, `verify()` drift reports, `rebuild()`, and schema-mapped
-  typed columns with unique and index flags. Requires `ext-pdo` only when
-  used; the core package stays dependency-free.
+  Reconcile-based `push()` (whole mirror or one collection) with
+  per-collection transactions, `flush()` for read-your-writes, `verify()`
+  drift reports, `rebuild()`, and schema-mapped typed columns with unique
+  and index flags. Connects through PDO (sqlite/mysql) or mysqli, including
+  handles with mysqli error reporting disabled; `ext-pdo`/`ext-mysqli` are
+  required only when the mirror is used, so the core package stays
+  dependency-free. A dedicated CI job runs the mirror suite against a real
+  MySQL server, and `composer bench -- --engine=mirror` benchmarks push,
+  reconcile, flush, query, and rebuild.
 
 ## [0.0.2] - 2026-07-05
 

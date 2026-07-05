@@ -14,6 +14,8 @@ final class SqlMirror
 
     private const RESERVED_COLUMNS = array( 'id', 'hash', 'data' );
 
+    private readonly SqlMirrorConnection $connection;
+
     private readonly string $driver;
 
     /**
@@ -26,21 +28,24 @@ final class SqlMirror
     private array $collections = array();
 
     public function __construct(
-        private readonly \PDO $pdo,
+        \PDO|\mysqli|SqlMirrorConnection $connection,
         private readonly string $prefix = 'storh_',
         ?string $driver = null
     ) {
-        $detected = $driver ?? $this->pdo->getAttribute(\PDO::ATTR_DRIVER_NAME);
-        if (! is_string($detected) || ! in_array($detected, array( 'sqlite', 'mysql' ), true)) {
-            throw new StorageException('Unsupported SQL mirror driver: ' . (is_string($detected) ? $detected : gettype($detected)));
-        }
-
         if (1 !== preg_match('/^[A-Za-z0-9_]*$/', $this->prefix)) {
             throw new StorageException('SQL mirror table prefix must match [A-Za-z0-9_]*.');
         }
 
-        $this->driver = $detected;
-        $this->pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+        if ($connection instanceof \PDO) {
+            $connection = new PdoSqlMirrorConnection($connection, $driver);
+        } elseif (null !== $driver) {
+            throw new StorageException('SQL mirror driver overrides only apply to PDO connections.');
+        } elseif ($connection instanceof \mysqli) {
+            $connection = new MysqliSqlMirrorConnection($connection);
+        }
+
+        $this->connection = $connection;
+        $this->driver     = $connection->driver();
     }
 
     public function collection(FileStoreInterface $store, string $name, ?Schema $schema = null): self
@@ -70,9 +75,9 @@ final class SqlMirror
     public function install(): void
     {
         foreach ($this->collections as $collection) {
-            $this->execute($this->create_table_sql($collection));
+            $this->connection->execute($this->create_table_sql($collection));
             foreach ($this->create_index_sql($collection) as $sql) {
-                $this->execute($sql);
+                $this->connection->execute($sql);
             }
         }
     }
@@ -80,15 +85,21 @@ final class SqlMirror
     public function uninstall(): void
     {
         foreach ($this->collections as $collection) {
-            $this->execute('DROP TABLE IF EXISTS ' . $this->quote($collection['table']));
+            $this->connection->execute('DROP TABLE IF EXISTS ' . $this->quote($collection['table']));
         }
     }
 
     /**
      * @return array{inserted: int, updated: int, deleted: int, unchanged: int}
      */
-    public function push(): array
+    public function push(?string $name = null): array
     {
+        if (null !== $name) {
+            $this->registered($name);
+        }
+
+        $names = null === $name ? array_keys($this->collections) : array( $name );
+
         $totals = array(
             'inserted'  => 0,
             'updated'   => 0,
@@ -96,8 +107,8 @@ final class SqlMirror
             'unchanged' => 0,
         );
 
-        foreach (array_keys($this->collections) as $name) {
-            $result = $this->push_collection($name);
+        foreach ($names as $collection_name) {
+            $result = $this->push_collection($collection_name);
             $totals['inserted']  += $result['inserted'];
             $totals['updated']   += $result['updated'];
             $totals['deleted']   += $result['deleted'];
@@ -110,13 +121,14 @@ final class SqlMirror
     /**
      * @return array{inserted: int, updated: int, deleted: int, unchanged: int}
      */
-    public function rebuild(): array
+    public function rebuild(?string $name = null): array
     {
-        foreach ($this->collections as $collection) {
-            $this->execute('DELETE FROM ' . $this->quote($collection['table']));
+        $entries = null === $name ? $this->collections : array( $name => $this->registered($name) );
+        foreach ($entries as $collection) {
+            $this->connection->execute('DELETE FROM ' . $this->quote($collection['table']));
         }
 
-        return $this->push();
+        return $this->push($name);
     }
 
     /**
@@ -131,8 +143,8 @@ final class SqlMirror
 
         $this->transactional(
             function () use ($collection, $ids, &$upserted, &$deleted): void {
-                $upsert = $this->prepare($this->upsert_sql($collection));
-                $delete = $this->prepare(
+                $insert = $this->connection->statement($this->insert_sql($collection));
+                $delete = $this->connection->statement(
                     'DELETE FROM ' . $this->quote($collection['table']) . ' WHERE ' . $this->quote('id') . ' = ?'
                 );
 
@@ -144,13 +156,13 @@ final class SqlMirror
 
                     $seen[ $id ] = true;
                     $record = $collection['store']->get($id);
+                    $delete->execute(array( $id ));
                     if (null === $record) {
-                        $delete->execute(array( $id ));
                         $deleted++;
                         continue;
                     }
 
-                    $upsert->execute($this->row_values($collection, $record->id(), $record->data()));
+                    $insert->execute($this->row_values($collection, $record->id(), $record->data()));
                     $upserted++;
                 }
             }
@@ -230,7 +242,10 @@ final class SqlMirror
         $this->transactional(
             function () use ($collection, &$inserted, &$updated, &$deleted, &$unchanged): void {
                 $mirror = $this->mirror_hashes($collection['table']);
-                $upsert = $this->prepare($this->upsert_sql($collection));
+                $insert = $this->connection->statement($this->insert_sql($collection));
+                $replace = $this->connection->statement(
+                    'DELETE FROM ' . $this->quote($collection['table']) . ' WHERE ' . $this->quote('id') . ' = ?'
+                );
 
                 foreach ($collection['store']->stream() as $record) {
                     $id   = $record->id();
@@ -245,12 +260,13 @@ final class SqlMirror
                             continue;
                         }
 
-                        $upsert->execute($this->row_values($collection, $id, $data));
+                        $replace->execute(array( $id ));
+                        $insert->execute($this->row_values($collection, $id, $data));
                         $updated++;
                         continue;
                     }
 
-                    $upsert->execute($this->row_values($collection, $id, $data));
+                    $insert->execute($this->row_values($collection, $id, $data));
                     $inserted++;
                 }
 
@@ -274,7 +290,7 @@ final class SqlMirror
         $deleted = 0;
         foreach (array_chunk($ids, self::DELETE_CHUNK_SIZE) as $chunk) {
             $placeholders = implode(', ', array_fill(0, count($chunk), '?'));
-            $statement    = $this->prepare(
+            $statement    = $this->connection->statement(
                 'DELETE FROM ' . $this->quote($table) . ' WHERE ' . $this->quote('id') . ' IN (' . $placeholders . ')'
             );
             $statement->execute($chunk);
@@ -289,14 +305,11 @@ final class SqlMirror
      */
     private function mirror_hashes(string $table): array
     {
-        $statement = $this->prepare(
-            'SELECT ' . $this->quote('id') . ', ' . $this->quote('hash') . ' FROM ' . $this->quote($table)
-        );
-        $statement->execute();
+        $sql = 'SELECT ' . $this->quote('id') . ', ' . $this->quote('hash') . ' FROM ' . $this->quote($table);
 
         $hashes = array();
-        while (false !== ( $row = $statement->fetch(\PDO::FETCH_NUM) )) {
-            if (is_array($row) && isset($row[0], $row[1]) && is_string($row[0]) && is_string($row[1])) {
+        foreach ($this->connection->rows($sql) as $row) {
+            if (isset($row[0], $row[1]) && is_string($row[0]) && is_string($row[1])) {
                 $hashes[ $row[0] ] = $row[1];
             }
         }
@@ -307,7 +320,7 @@ final class SqlMirror
     /**
      * @param array{store: FileStoreInterface, table: string, columns: list<array{field: string, type: string, unique: bool, indexed: bool}>} $collection
      * @param array<string, mixed> $data
-     * @return list<mixed>
+     * @return list<int|float|string|null>
      */
     private function row_values(array $collection, string $id, array $data): array
     {
@@ -454,7 +467,7 @@ final class SqlMirror
     /**
      * @param array{store: FileStoreInterface, table: string, columns: list<array{field: string, type: string, unique: bool, indexed: bool}>} $collection
      */
-    private function upsert_sql(array $collection): string
+    private function insert_sql(array $collection): string
     {
         $columns = array( 'id', 'hash' );
         foreach ($collection['columns'] as $column) {
@@ -464,25 +477,9 @@ final class SqlMirror
 
         $quoted       = array_map(fn(string $column): string => $this->quote($column), $columns);
         $placeholders = implode(', ', array_fill(0, count($columns), '?'));
-        $insert       = 'INSERT INTO ' . $this->quote($collection['table'])
+
+        return 'INSERT INTO ' . $this->quote($collection['table'])
             . ' (' . implode(', ', $quoted) . ') VALUES (' . $placeholders . ')';
-
-        $updates = array();
-        foreach ($columns as $column) {
-            if ('id' === $column) {
-                continue;
-            }
-
-            $updates[] = 'sqlite' === $this->driver
-                ? $this->quote($column) . ' = excluded.' . $this->quote($column)
-                : $this->quote($column) . ' = VALUES(' . $this->quote($column) . ')';
-        }
-
-        if ('sqlite' === $this->driver) {
-            return $insert . ' ON CONFLICT(' . $this->quote('id') . ') DO UPDATE SET ' . implode(', ', $updates);
-        }
-
-        return $insert . ' ON DUPLICATE KEY UPDATE ' . implode(', ', $updates);
     }
 
     private function index_name(string $table, string $field): string
@@ -509,50 +506,16 @@ final class SqlMirror
         return $this->collections[ $name ];
     }
 
-    private function execute(string $sql): void
-    {
-        try {
-            $this->pdo->exec($sql);
-        } catch (\PDOException $exception) {
-            throw new StorageException('SQL mirror statement failed: ' . $exception->getMessage(), 0, $exception);
-        }
-    }
-
-    private function prepare(string $sql): \PDOStatement
-    {
-        try {
-            $statement = $this->pdo->prepare($sql);
-        } catch (\PDOException $exception) {
-            throw new StorageException('SQL mirror statement failed: ' . $exception->getMessage(), 0, $exception);
-        }
-
-        // @codeCoverageIgnoreStart
-        if (false === $statement) {
-            throw new StorageException('SQL mirror statement failed: ' . $sql);
-        }
-        // @codeCoverageIgnoreEnd
-
-        return $statement;
-    }
-
     private function transactional(callable $callback): void
     {
-        try {
-            $this->pdo->beginTransaction();
-        } catch (\PDOException $exception) {
-            throw new StorageException('SQL mirror transaction failed: ' . $exception->getMessage(), 0, $exception);
-        }
+        $this->connection->begin();
 
         try {
             $callback();
-            $this->pdo->commit();
+            $this->connection->commit();
         } catch (\Throwable $throwable) {
-            if ($this->pdo->inTransaction()) {
-                $this->pdo->rollBack();
-            }
-
-            if ($throwable instanceof \PDOException) {
-                throw new StorageException('SQL mirror write failed: ' . $throwable->getMessage(), 0, $throwable);
+            if ($this->connection->in_transaction()) {
+                $this->connection->rollback();
             }
 
             throw $throwable;

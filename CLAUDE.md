@@ -67,7 +67,7 @@ commas, canonical encode), `UuidV7` (monotonic ids, so record ids sort by
 creation time), `StorageRoot` (root/namespace path resolution), and the
 `MemoryCache`/`ApcuCache`/`NullCache` backends. `SqlMirror` optionally pushes
 collections into SQLite or MySQL as derived, rebuildable tables (files stay
-canonical; PDO is suggested, never required).
+canonical; connects via PDO or mysqli, both suggested, never required).
 
 Durability invariants are the point of this library: torn tails truncate on
 reopen, log and queue writes serialize behind filesystem locks, and writes

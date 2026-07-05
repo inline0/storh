@@ -41,6 +41,23 @@ independent of the store: declared `string`/`int`/`float`/`bool` fields
 become typed, indexed columns; everything else stays queryable in the `data`
 JSON column. `mixed` fields cannot be flagged for indexing.
 
+## Connections
+
+The constructor accepts a `PDO` handle (`sqlite` or `mysql` driver, detected
+automatically), a `mysqli` handle, or any `SqlMirrorConnection`
+implementation:
+
+```php
+$mirror = new SqlMirror(new PDO('sqlite:' . $root . '/mirror.db'));
+$mirror = new SqlMirror(new PDO('mysql:host=127.0.0.1;dbname=app;charset=utf8mb4', $user, $password));
+$mirror = new SqlMirror(new mysqli('127.0.0.1', $user, $password, 'app'), 'wp_storh_');
+```
+
+The mysqli path works with either mysqli error-reporting mode, so an existing
+handle from a host application (for example WordPress's `$wpdb->dbh`) can be
+reused as is. Behavior is identical across drivers; push failures roll back
+the collection's transaction on all of them.
+
 Every table gets `id` (primary key), `hash` (drives incremental pushes), the
 typed columns, and `data` (the full record JSON).
 
@@ -48,6 +65,7 @@ typed columns, and `data` (the full record JSON).
 
 ```php
 $mirror->push();                    // reconcile: insert, update, delete as needed
+$mirror->push('pages');             // reconcile a single collection
 $mirror->flush('pages', $ids);      // push or remove just these ids
 $mirror->verify();                  // report missing, stale, and orphaned rows
 $mirror->rebuild();                 // clear all rows and push from scratch

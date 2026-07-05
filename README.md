@@ -228,7 +228,8 @@ $pdo->query('SELECT ... FROM storh_pages INNER JOIN storh_events ON ...');
 
 `push()` reconciles by content hash and writes each collection in one
 transaction; `flush()` pushes specific ids for read-your-writes;
-`verify()` reports drift. Requires `ext-pdo` only when used.
+`verify()` reports drift. Connect with PDO (SQLite or MySQL) or an existing
+mysqli handle; the extensions are required only when the mirror is used.
 
 ## Operations
 

@@ -7,6 +7,7 @@ namespace Storh\Tests\Integration;
 use PHPUnit\Framework\TestCase;
 use Storh\DocPerFileStore;
 use Storh\Schema;
+use Storh\PdoSqlMirrorConnection;
 use Storh\SegmentedLogStore;
 use Storh\SqlMirror;
 use Storh\StorageException;
@@ -246,7 +247,7 @@ final class SqlMirrorTest extends TestCase
             $mirror->push();
             $this->fail('Expected a unique constraint failure from the mirror.');
         } catch (StorageException $exception) {
-            $this->assertStringContainsString('SQL mirror write failed', $exception->getMessage());
+            $this->assertStringContainsString('SQL mirror statement failed', $exception->getMessage());
         }
 
         $count = $pdo->query('SELECT COUNT(*) FROM storh_pages');
@@ -316,6 +317,67 @@ final class SqlMirrorTest extends TestCase
         }
     }
 
+    public function test_push_and_rebuild_scope_to_a_single_collection(): void
+    {
+        $pages  = new DocPerFileStore($this->root, 'pages');
+        $drafts = new DocPerFileStore($this->root, 'drafts');
+        $pages->put(array( 'slug' => 'page' ));
+        $drafts->put(array( 'slug' => 'draft' ));
+
+        $pdo    = new \PDO('sqlite::memory:');
+        $mirror = ( new SqlMirror($pdo) )
+            ->collection($pages, 'pages')
+            ->collection($drafts, 'drafts');
+        $mirror->install();
+
+        $this->assertSame(array( 'inserted' => 1, 'updated' => 0, 'deleted' => 0, 'unchanged' => 0 ), $mirror->push('pages'));
+
+        $drafts_rows = $pdo->query('SELECT COUNT(*) FROM storh_drafts');
+        $this->assertNotFalse($drafts_rows);
+        $this->assertSame(0, (int) $drafts_rows->fetchColumn());
+
+        $this->assertSame(array( 'inserted' => 1, 'updated' => 0, 'deleted' => 0, 'unchanged' => 0 ), $mirror->rebuild('drafts'));
+
+        try {
+            $mirror->push('unknown');
+            $this->fail('Expected an unknown collection failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('Unknown SQL mirror collection', $exception->getMessage());
+        }
+    }
+
+    public function test_connection_variants_are_normalized(): void
+    {
+        $store = new DocPerFileStore($this->root, 'pages');
+        $store->put(array( 'slug' => 'one' ));
+
+        $custom = new PdoSqlMirrorConnection(new \PDO('sqlite::memory:'));
+        $this->assertSame('sqlite', $custom->driver());
+        $this->assertFalse($custom->in_transaction());
+
+        $mirror = ( new SqlMirror($custom) )->collection($store, 'pages');
+        $mirror->install();
+        $this->assertSame(1, $mirror->push()['inserted']);
+
+        try {
+            new SqlMirror($custom, 'storh_', 'mysql');
+            $this->fail('Expected a driver override failure for non-PDO connections.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('only apply to PDO connections', $exception->getMessage());
+        }
+
+        if (! class_exists(\mysqli::class)) {
+            return;
+        }
+
+        $reflection = new \ReflectionClass(\mysqli::class);
+        $unconnected = $reflection->newInstanceWithoutConstructor();
+        $this->assertInstanceOf(\mysqli::class, $unconnected);
+
+        $mysqli_mirror = new SqlMirror($unconnected);
+        $this->assertSame('storh_pages', $mysqli_mirror->collection($store, 'pages')->table('pages'));
+    }
+
     public function test_sql_failures_surface_as_storage_exceptions(): void
     {
         $store = new DocPerFileStore($this->root, 'pages');
@@ -334,6 +396,13 @@ final class SqlMirrorTest extends TestCase
         try {
             $mirror->push();
             $this->fail('Expected a push failure without installed tables.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('SQL mirror statement failed', $exception->getMessage());
+        }
+
+        try {
+            $mirror->flush('pages', array());
+            $this->fail('Expected a flush failure without installed tables.');
         } catch (StorageException $exception) {
             $this->assertStringContainsString('SQL mirror statement failed', $exception->getMessage());
         }
@@ -387,12 +456,12 @@ final class SqlMirrorTest extends TestCase
 
         $this->assertSame(array(), $this->invoke_private($mirror, 'create_index_sql', array( $collection )));
 
-        $upsert = $this->invoke_private($mirror, 'upsert_sql', array( $collection ));
-        $this->assertIsString($upsert);
-        $this->assertStringContainsString('INSERT INTO `wp_pages`', $upsert);
-        $this->assertStringContainsString('ON DUPLICATE KEY UPDATE `hash` = VALUES(`hash`)', $upsert);
-        $this->assertStringContainsString('`data` = VALUES(`data`)', $upsert);
-        $this->assertStringNotContainsString('`id` = VALUES', $upsert);
+        $insert = $this->invoke_private($mirror, 'insert_sql', array( $collection ));
+        $this->assertSame(
+            'INSERT INTO `wp_pages` (`id`, `hash`, `slug`, `kind`, `title`, `views`, `score`, `active`, `data`)'
+            . ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            $insert
+        );
     }
 
     /**

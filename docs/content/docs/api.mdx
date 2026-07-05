@@ -124,16 +124,16 @@ Alias of `LogQueue`.
 
 ## `SqlMirror`
 
-Requires `ext-pdo` with the `sqlite` or `mysql` driver.
+Requires `ext-pdo` (`sqlite` or `mysql` driver) or `ext-mysqli`.
 
-- `new SqlMirror(PDO $pdo, string $prefix = 'storh_', ?string $driver = null)`
+- `new SqlMirror(PDO|mysqli|SqlMirrorConnection $connection, string $prefix = 'storh_', ?string $driver = null)`
 - `collection(FileStoreInterface $store, string $name, ?Schema $schema = null): SqlMirror`
 - `install(): void`
 - `uninstall(): void`
-- `push(): array`
+- `push(?string $name = null): array`
 - `flush(string $name, array $ids): array`
 - `verify(): array`
-- `rebuild(): array`
+- `rebuild(?string $name = null): array`
 - `table(string $name): string`
 
 ## `RecordQuery`

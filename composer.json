@@ -33,7 +33,8 @@
     "suggest": {
         "ext-pdo": "Required to mirror collections into SQLite or MySQL with SqlMirror.",
         "ext-pdo_sqlite": "SQLite driver for SqlMirror mirrors.",
-        "ext-pdo_mysql": "MySQL driver for SqlMirror mirrors."
+        "ext-pdo_mysql": "MySQL driver for SqlMirror mirrors.",
+        "ext-mysqli": "Reuse an existing mysqli connection for SqlMirror mirrors."
     },
     "require-dev": {
         "phpstan/phpstan": "^2.0",

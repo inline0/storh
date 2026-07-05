@@ -71,3 +71,35 @@ jobs:
           tools: composer
       - run: composer install --no-interaction --prefer-dist
       - run: composer bench:ci
+
+  mirror-mysql:
+    name: SQL Mirror MySQL
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: storh_test
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      STORH_MYSQL_HOST: 127.0.0.1
+      STORH_MYSQL_PORT: "3306"
+      STORH_MYSQL_DATABASE: storh_test
+      STORH_MYSQL_USER: root
+      STORH_MYSQL_PASSWORD: root
+    steps:
+      - uses: actions/checkout@v5
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: mysqli, pdo_mysql
+          tools: composer
+      - run: composer install --no-interaction --prefer-dist
+      - run: composer test:integration
