@@ -67,6 +67,7 @@ typed columns, and `data` (the full record JSON).
 $mirror->push();                    // reconcile: insert, update, delete as needed
 $mirror->push('pages');             // reconcile a single collection
 $mirror->flush('pages', $ids);      // push or remove just these ids
+$mirror->pull();                    // write mirror rows back into the store
 $mirror->verify();                  // report missing, stale, and orphaned rows
 $mirror->rebuild();                 // clear all rows and push from scratch
 $mirror->uninstall();               // drop the mirror tables
@@ -92,6 +93,31 @@ $pdo->query(
      ORDER BY sales DESC'
 );
 ```
+
+## Pulling back into files
+
+`pull()` reads mirror rows and writes them into the registered store, in id
+order. It covers two flows:
+
+- Restore: the files are gone but the mirror survives. Register a fresh store
+  under the same collection name and pull.
+- Seeding: rows loaded into the mirror table by external tooling become storh
+  records. Rows must carry valid UUIDv7 ids and an object in the `data`
+  column; typed columns are ignored on pull because `data` is the whole
+  record.
+
+```php
+$restored = new Storh\DocStore($root, 'pages');
+$mirror   = new SqlMirror($pdo);
+$mirror->collection($restored, 'pages');
+$mirror->pull();          // ['written' => n, 'unchanged' => m]
+```
+
+Pulled writes go through the normal store machinery, so schema validation and
+unique indexes apply, and every record is written durably. `pull()` never
+deletes local records, and records whose data already matches the mirror row
+are skipped. After seeding hand-inserted rows, run `push()` once: it rewrites
+those rows in canonical form so their hashes reconcile.
 
 ## Contract and limits
 

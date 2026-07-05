@@ -4,6 +4,16 @@ All notable changes to storh are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `SqlMirror::pull()`: write mirror rows back into the registered stores, in
+  id order, for restore and seeding flows. Pulled writes go through normal
+  store machinery (schema validation, unique indexes, durable writes), rows
+  must carry UUIDv7 ids and object data, matching records are skipped, and
+  local records are never deleted.
+
 ## [0.3.0] - 2026-07-05
 
 ### Added
@@ -67,6 +77,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - CLI for stats, verify, compaction, and document reindex operations.
 - Documentation site, README examples, security policy, and MIT license.
 
+[Unreleased]: https://github.com/inline0/storh/compare/v0.3.0...HEAD
 [0.3.0]: https://github.com/inline0/storh/compare/v0.0.2...v0.3.0
 [0.0.2]: https://github.com/inline0/storh/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/inline0/storh/releases/tag/v0.0.1

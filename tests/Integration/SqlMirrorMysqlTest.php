@@ -90,6 +90,11 @@ final class SqlMirrorMysqlTest extends TestCase
 
             $rebuilt = $mirror->rebuild();
             $this->assertSame(7, $rebuilt['inserted']);
+
+            $restored = new DocPerFileStore($this->root . '/restored', 'purchases');
+            $restore  = ( new SqlMirror($mysqli, $this->prefix) )->collection($restored, 'purchases');
+            $this->assertSame(array( 'written' => 6, 'unchanged' => 0 ), $restore->pull('purchases'));
+            $this->assertSame(6, iterator_count($restored->stream()));
         } finally {
             $mirror->uninstall();
             $mysqli->close();

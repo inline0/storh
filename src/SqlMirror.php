@@ -132,6 +132,53 @@ final class SqlMirror
     }
 
     /**
+     * @return array{written: int, unchanged: int}
+     */
+    public function pull(?string $name = null): array
+    {
+        if (null !== $name) {
+            $this->registered($name);
+        }
+
+        $names = null === $name ? array_keys($this->collections) : array( $name );
+
+        $written   = 0;
+        $unchanged = 0;
+        foreach ($names as $collection_name) {
+            $collection = $this->collections[ $collection_name ];
+            $sql = 'SELECT ' . $this->quote('id') . ', ' . $this->quote('data')
+                . ' FROM ' . $this->quote($collection['table'])
+                . ' ORDER BY ' . $this->quote('id');
+
+            foreach ($this->connection->rows($sql) as $row) {
+                if (! isset($row[0], $row[1]) || ! is_string($row[0]) || ! is_string($row[1])) {
+                    throw new StorageException('SQL mirror pull read a malformed row from: ' . $collection['table']);
+                }
+
+                $id = $row[0];
+                if (! UuidV7::is_valid($id)) {
+                    throw new StorageException('SQL mirror pull requires UUIDv7 row ids, got: ' . $id);
+                }
+
+                $data     = $this->pull_row_data($collection['table'], $id, $row[1]);
+                $existing = $collection['store']->get($id);
+                if (null !== $existing && $this->record_hash($existing->data()) === $this->record_hash($data)) {
+                    $unchanged++;
+                    continue;
+                }
+
+                $collection['store']->put($data, $id);
+                $written++;
+            }
+        }
+
+        return array(
+            'written'   => $written,
+            'unchanged' => $unchanged,
+        );
+    }
+
+    /**
      * @param list<string> $ids
      * @return array{upserted: int, deleted: int}
      */
@@ -343,6 +390,25 @@ final class SqlMirror
             'bool' => is_bool($value) ? (int) $value : null,
             default => throw new StorageException('Unsupported SQL mirror column type: ' . $type),
         };
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function pull_row_data(string $table, string $id, string $json): array
+    {
+        try {
+            $decoded = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\JsonException $exception) {
+            throw new StorageException('SQL mirror pull found invalid JSON for id ' . $id . ' in ' . $table, 0, $exception);
+        }
+
+        if (! is_array($decoded)) {
+            throw new StorageException('SQL mirror pull found a non-array data row for id ' . $id . ' in ' . $table);
+        }
+
+        /** @var array<string, mixed> $decoded */
+        return $decoded;
     }
 
     /**

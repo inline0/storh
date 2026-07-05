@@ -10,6 +10,8 @@ use Storh\Schema;
 use Storh\PdoSqlMirrorConnection;
 use Storh\SegmentedLogStore;
 use Storh\SqlMirror;
+use Storh\SqlMirrorConnection;
+use Storh\SqlMirrorStatement;
 use Storh\StorageException;
 use Storh\Tests\Support\TestFilesystem;
 use Storh\UuidV7;
@@ -315,6 +317,187 @@ final class SqlMirrorTest extends TestCase
         } catch (StorageException $exception) {
             $this->assertStringContainsString('cannot map schema field name', $exception->getMessage());
         }
+    }
+
+    public function test_pull_restores_files_from_the_mirror(): void
+    {
+        $source = new DocPerFileStore($this->root . '/live', 'pages');
+        $first  = $source->put(array( 'slug' => 'first', 'views' => 1, 'tags' => array( 'a', 'b' ) ));
+        $second = $source->put(array( 'slug' => 'second', 'nested' => array( 'deep' => true ) ));
+        $list   = $source->put(array( 'a', 'b' ));
+
+        $pdo = new \PDO('sqlite:' . $this->root . '/mirror.db');
+        ( new SqlMirror($pdo) )->collection($source, 'pages')->install();
+        ( new SqlMirror($pdo) )->collection($source, 'pages')->push();
+
+        $restored_store = new DocPerFileStore($this->root . '/restored', 'pages');
+        $restore = ( new SqlMirror($pdo) )->collection($restored_store, 'pages');
+
+        $this->assertSame(array( 'written' => 3, 'unchanged' => 0 ), $restore->pull());
+        $this->assertSame(array( 'written' => 0, 'unchanged' => 3 ), $restore->pull('pages'));
+
+        $this->assertSame($first->data(), $restored_store->get($first->id())?->data());
+        $this->assertSame($second->data(), $restored_store->get($second->id())?->data());
+        $this->assertSame(array( 'a', 'b' ), $restored_store->get($list->id())?->data());
+        $this->assertTrue($restore->verify()['ok']);
+    }
+
+    public function test_pull_seeds_hand_inserted_rows_and_push_canonicalizes_them(): void
+    {
+        $store = new DocPerFileStore($this->root, 'pages');
+        $pdo   = new \PDO('sqlite::memory:');
+
+        $mirror = ( new SqlMirror($pdo) )->collection($store, 'pages');
+        $mirror->install();
+
+        $seeded_id = '018bcfe5-6800-7abc-8def-0123456789ab';
+        $pdo->exec(
+            "INSERT INTO storh_pages (id, hash, data) VALUES"
+            . " ('" . $seeded_id . "', 'hand', '{ \"slug\" : \"seeded\", \"n\": 1.0 }')"
+        );
+
+        $this->assertSame(array( 'written' => 1, 'unchanged' => 0 ), $mirror->pull());
+        $record = $store->get($seeded_id);
+        $this->assertNotNull($record);
+        $this->assertSame('seeded', $record->data()['slug']);
+        $this->assertSame(1.0, $record->data()['n']);
+
+        $canonicalized = $mirror->push();
+        $this->assertSame(1, $canonicalized['updated']);
+        $this->assertTrue($mirror->verify()['ok']);
+        $this->assertSame(array( 'written' => 0, 'unchanged' => 1 ), $mirror->pull());
+    }
+
+    public function test_pull_rejects_bad_rows_and_enforces_store_constraints(): void
+    {
+        $schema = Schema::collection('pages')->string('slug')->unique();
+        $store  = new DocPerFileStore($this->root, 'pages', schema: $schema);
+        $store->put(array( 'slug' => 'taken' ));
+
+        $pdo    = new \PDO('sqlite::memory:');
+        $mirror = ( new SqlMirror($pdo) )->collection($store, 'pages', $schema);
+        $mirror->install();
+
+        $pdo->exec("INSERT INTO storh_pages (id, hash, data) VALUES ('not-a-uuid', 'x', '{}')");
+        try {
+            $mirror->pull();
+            $this->fail('Expected a UUIDv7 validation failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('requires UUIDv7 row ids', $exception->getMessage());
+        }
+        $pdo->exec('DELETE FROM storh_pages');
+
+        $pdo->exec("INSERT INTO storh_pages (id, hash, data) VALUES ('018bcfe5-6800-7abc-8def-0123456789ab', 'x', 'nope')");
+        try {
+            $mirror->pull();
+            $this->fail('Expected an invalid JSON failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('invalid JSON', $exception->getMessage());
+        }
+        $pdo->exec('DELETE FROM storh_pages');
+
+        $pdo->exec("INSERT INTO storh_pages (id, hash, data) VALUES ('018bcfe5-6800-7abc-8def-0123456789ab', 'x', '\"text\"')");
+        try {
+            $mirror->pull();
+            $this->fail('Expected a non-array data failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('non-array data row', $exception->getMessage());
+        }
+        $pdo->exec('DELETE FROM storh_pages');
+
+        $pdo->exec("INSERT INTO storh_pages (id, hash, data) VALUES (42, 'x', '{}')");
+        try {
+            $mirror->pull();
+            $this->fail('Expected a UUIDv7 validation failure for a numeric id.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('requires UUIDv7 row ids, got: 42', $exception->getMessage());
+        }
+        $pdo->exec('DELETE FROM storh_pages');
+
+        $malformed = new class implements SqlMirrorConnection {
+            public function driver(): string
+            {
+                return 'sqlite';
+            }
+
+            public function execute(string $sql): void
+            {
+            }
+
+            public function rows(string $sql): \Generator
+            {
+                yield array( 42, null );
+            }
+
+            public function statement(string $sql): SqlMirrorStatement
+            {
+                throw new StorageException('Statements are unused in this stub.');
+            }
+
+            public function begin(): void
+            {
+            }
+
+            public function commit(): void
+            {
+            }
+
+            public function rollback(): void
+            {
+            }
+
+            public function in_transaction(): bool
+            {
+                return false;
+            }
+        };
+
+        try {
+            ( new SqlMirror($malformed) )->collection($store, 'stub')->pull();
+            $this->fail('Expected a malformed row failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('malformed row', $exception->getMessage());
+        }
+
+        $pdo->exec(
+            "INSERT INTO storh_pages (id, hash, data) VALUES"
+            . " ('018bcfe5-6800-7abc-8def-0123456789ab', 'x', '{\"slug\":\"taken\"}')"
+        );
+        try {
+            $mirror->pull();
+            $this->fail('Expected a unique index violation from the store.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('Unique index violation', $exception->getMessage());
+        }
+
+        try {
+            $mirror->pull('unknown');
+            $this->fail('Expected an unknown collection failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('Unknown SQL mirror collection', $exception->getMessage());
+        }
+    }
+
+    public function test_pull_restores_segmented_log_records_in_id_order(): void
+    {
+        $log = new SegmentedLogStore($this->root . '/live', 'events', 2048);
+        for ($i = 0; $i < 8; $i++) {
+            $log->put(array( 'sequence' => $i ), UuidV7::generate(1_700_000_000_000 + $i));
+        }
+
+        $pdo = new \PDO('sqlite:' . $this->root . '/mirror.db');
+        ( new SqlMirror($pdo) )->collection($log, 'events')->install();
+        ( new SqlMirror($pdo) )->collection($log, 'events')->push();
+
+        $restored_log = new SegmentedLogStore($this->root . '/restored', 'events', 2048);
+        $restore = ( new SqlMirror($pdo) )->collection($restored_log, 'events');
+        $this->assertSame(array( 'written' => 8, 'unchanged' => 0 ), $restore->pull());
+
+        $sequences = array_map(
+            static fn($record) => $record->data()['sequence'],
+            iterator_to_array($restored_log->stream(), false)
+        );
+        $this->assertSame(range(0, 7), $sequences);
     }
 
     public function test_push_and_rebuild_scope_to_a_single_collection(): void
