@@ -30,6 +30,11 @@
         "php": "^8.2",
         "ext-json": "*"
     },
+    "suggest": {
+        "ext-pdo": "Required to mirror collections into SQLite or MySQL with SqlMirror.",
+        "ext-pdo_sqlite": "SQLite driver for SqlMirror mirrors.",
+        "ext-pdo_mysql": "MySQL driver for SqlMirror mirrors."
+    },
     "require-dev": {
         "phpstan/phpstan": "^2.0",
         "phpunit/phpunit": "^13.1",

@@ -28,6 +28,8 @@ that want durable local records without a database server. It provides:
 - an append-only log-backed queue
 - Prisma/Drizzle-style fluent querying, secondary indexes, schema validation,
   caching, bulk JSONL import/export, maintenance APIs, benchmarks, and a CLI
+- an optional SQL mirror that pushes collections into SQLite or MySQL for
+  joins, search, and reporting while the files stay canonical
 - UUIDv7 ids, UUID-tail sharding, atomic writes, torn-write recovery, retention,
   and compaction
 
@@ -206,6 +208,27 @@ $docs->query()->where('slug')->eq('home')->explain();
 Two `eq` predicates on non-unique equality-indexed fields use automatic
 compound buckets, so common filters like `kind = page AND bucket = 4` avoid
 intersecting large single-field result sets.
+
+## SQL Mirrors
+
+For joins, cross-table ordering, substring search, and reporting, push
+collections into SQLite or MySQL with `SqlMirror`. The files stay canonical;
+the mirror is a derived, disposable projection that `push()` keeps converged
+and `rebuild()` recreates from scratch:
+
+```php
+$mirror = new Storh\SqlMirror(new PDO('sqlite:' . $root . '/mirror.db'));
+$mirror->collection($docs, 'pages', $schema);
+$mirror->collection($events, 'events');
+$mirror->install();
+$mirror->push();
+
+$pdo->query('SELECT ... FROM storh_pages INNER JOIN storh_events ON ...');
+```
+
+`push()` reconciles by content hash and writes each collection in one
+transaction; `flush()` pushes specific ids for read-your-writes;
+`verify()` reports drift. Requires `ext-pdo` only when used.
 
 ## Operations
 

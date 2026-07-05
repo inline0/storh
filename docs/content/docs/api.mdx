@@ -122,6 +122,20 @@ Alias of `LogQueue`.
 - `CacheValidation::STAT`
 - `CacheValidation::TRUST`
 
+## `SqlMirror`
+
+Requires `ext-pdo` with the `sqlite` or `mysql` driver.
+
+- `new SqlMirror(PDO $pdo, string $prefix = 'storh_', ?string $driver = null)`
+- `collection(FileStoreInterface $store, string $name, ?Schema $schema = null): SqlMirror`
+- `install(): void`
+- `uninstall(): void`
+- `push(): array`
+- `flush(string $name, array $ids): array`
+- `verify(): array`
+- `rebuild(): array`
+- `table(string $name): string`
+
 ## `RecordQuery`
 
 - `RecordQuery::all(): RecordQuery`

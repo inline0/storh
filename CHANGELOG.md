@@ -4,6 +4,17 @@ All notable changes to storh are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `SqlMirror`: push DocStore and SegmentedLog collections into SQLite or
+  MySQL as derived, rebuildable tables for joins, search, and reporting.
+  Reconcile-based `push()` with per-collection transactions, `flush()` for
+  read-your-writes, `verify()` drift reports, `rebuild()`, and schema-mapped
+  typed columns with unique and index flags. Requires `ext-pdo` only when
+  used; the core package stays dependency-free.
+
 ## [0.0.2] - 2026-07-05
 
 ### Added
@@ -51,5 +62,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - CLI for stats, verify, compaction, and document reindex operations.
 - Documentation site, README examples, security policy, and MIT license.
 
+[Unreleased]: https://github.com/inline0/storh/compare/v0.0.2...HEAD
 [0.0.2]: https://github.com/inline0/storh/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/inline0/storh/releases/tag/v0.0.1

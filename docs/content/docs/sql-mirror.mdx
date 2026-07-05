@@ -1,0 +1,90 @@
+---
+title: SQL Mirror
+description: Push collections into SQLite or MySQL for joins, search, and reporting.
+---
+
+# SQL Mirror
+
+`SqlMirror` pushes storh collections into SQLite or MySQL tables so you can
+run joins, cross-table ordering, substring search, and reporting in SQL while
+the files stay canonical. Think of it as a secondary index that happens to be
+a database: the mirror is derived, disposable, and rebuildable at any time.
+`ext-pdo` with the `sqlite` or `mysql` driver is required only when you use
+it; the core package stays dependency-free.
+
+## Setup
+
+```php
+use Storh\DocStore;
+use Storh\Schema;
+use Storh\SqlMirror;
+
+$schema = Schema::collection('pages')
+    ->string('slug')->unique()
+    ->string('kind')->index()
+    ->int('publishedAt')->range();
+
+$pages  = new DocStore($root, 'pages', schema: $schema);
+$events = new Storh\SegmentedLog($root, 'events');
+
+$mirror = new SqlMirror(new PDO('sqlite:' . $root . '/mirror.db'), 'app_');
+$mirror->collection($pages, 'pages', $schema);
+$mirror->collection($events, 'events');
+
+$mirror->install();
+$mirror->push();
+```
+
+Both engines can be mirrored: `DocStore` collections and `SegmentedLog`
+streams (only live records are pushed). Passing a `Schema` is optional and
+independent of the store: declared `string`/`int`/`float`/`bool` fields
+become typed, indexed columns; everything else stays queryable in the `data`
+JSON column. `mixed` fields cannot be flagged for indexing.
+
+Every table gets `id` (primary key), `hash` (drives incremental pushes), the
+typed columns, and `data` (the full record JSON).
+
+## Syncing
+
+```php
+$mirror->push();                    // reconcile: insert, update, delete as needed
+$mirror->flush('pages', $ids);      // push or remove just these ids
+$mirror->verify();                  // report missing, stale, and orphaned rows
+$mirror->rebuild();                 // clear all rows and push from scratch
+$mirror->uninstall();               // drop the mirror tables
+```
+
+`push()` diffs record hashes against the mirror and writes each collection in
+one transaction, so a crashed or failed push never leaves a half-applied
+batch. Unchanged records cost one `SELECT` plus a record sweep. A periodic
+`push()` (for example from a cron tick) keeps the mirror converged; call
+`flush()` with the ids you wrote during a request when readers need
+read-your-writes against the mirror.
+
+## Querying
+
+Query the mirror with plain SQL. `table()` returns the mirrored table name:
+
+```php
+$pdo->query(
+    'SELECT p.slug, COUNT(*) AS sales
+     FROM ' . $mirror->table('purchases') . ' o
+     INNER JOIN ' . $mirror->table('products') . ' p ON p.id = o.product_id
+     GROUP BY p.slug
+     ORDER BY sales DESC'
+);
+```
+
+## Contract and limits
+
+- Files are canonical. The mirror is read-only output; anything written to it
+  by hand is overwritten or deleted by the next `push()`.
+- Unique columns in the mirror are a backstop, not write-time enforcement: a
+  duplicate that files allowed surfaces as a failed (and fully rolled back)
+  push. Use storh unique indexes for write-time enforcement.
+- The mirror lags files by up to one push interval, except for ids you
+  `flush()` explicitly.
+- Mirroring does not add transactions to storh itself. Multi-record atomic
+  writes remain a job for a real database as the system of record.
+- Schema changes are applied by dropping and reinstalling the mirror:
+  `uninstall()`, `install()`, `push()`.

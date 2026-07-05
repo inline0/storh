@@ -35,6 +35,9 @@ Rules of thumb:
 - Jobs handed from producers to worker processes: `Queue`. Claims and
   completions are multi-process safe, and `claimMany()`/`completeMany()`
   amortize lock and fsync cost.
+- Joins, search, or reporting over any collection: add a
+  [SQL mirror](/docs/sql-mirror). Files stay canonical; the mirror is a
+  rebuildable projection in SQLite or MySQL.
 
 Engines compose: they only share the root directory, so one application can
 keep content in a `DocStore`, an audit trail in a `SegmentedLog`, and
