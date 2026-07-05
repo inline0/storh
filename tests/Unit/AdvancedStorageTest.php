@@ -685,6 +685,24 @@ final class AdvancedStorageTest extends TestCase
         $this->assertLessThan(0, \Storh\QueryCondition::compare(false, true));
         $this->assertNotSame(0, \Storh\QueryCondition::compare(array( 'a' ), array( 'b' )));
 
+        $mixed_pairs = array(
+            array( 5, 'five' ),
+            array( array( 'a' ), 'text' ),
+            array( null, 0 ),
+            array( true, array( 1 ) ),
+            array( array( 'a' ), array( 'b' ) ),
+        );
+        foreach ($mixed_pairs as [ $left, $right ]) {
+            $forward  = \Storh\QueryCondition::compare($left, $right);
+            $backward = \Storh\QueryCondition::compare($right, $left);
+            $this->assertSame(0, \Storh\QueryCondition::compare($left, $left));
+            $this->assertSame(
+                $forward <=> 0,
+                -$backward <=> 0,
+                'compare() must be antisymmetric for mixed types.'
+            );
+        }
+
         try {
             ( new \Storh\QueryCondition('name', 'unknown') )->matches(new \Storh\StorageRecord($this->fixed_ids(1)[0], array()));
             $this->fail('Expected unknown operator failure.');

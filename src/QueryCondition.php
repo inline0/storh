@@ -98,6 +98,11 @@ final class QueryCondition
             return 0;
         }
 
-        return strcmp(Jsonc::encode_object(array( 'left' => $left )), Jsonc::encode_object(array( 'right' => $right )));
+        // Encode both sides under the same key so mixed-type comparisons stay
+        // symmetric: compare(a, b) must equal -compare(b, a).
+        return strcmp(
+            Jsonc::encode_object(array( 'value' => $left )),
+            Jsonc::encode_object(array( 'value' => $right ))
+        );
     }
 }

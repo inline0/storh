@@ -13,6 +13,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   store machinery (schema validation, unique indexes, durable writes), rows
   must carry UUIDv7 ids and object data, matching records are skipped, and
   local records are never deleted.
+- A `pull` metric in the mirror benchmark engine, and `mirror.push` and
+  `mirror.rebuild` in the CI benchmark gate.
+
+### Changed
+
+- The CI benchmark baseline is now recorded from an actual GitHub Actions
+  runner instead of a development machine, so the regression gate measures
+  runner-vs-runner and stops flaking on slow runners.
+
+### Fixed
+
+- `QueryCondition::compare()` encodes both sides of a mixed-type comparison
+  under the same key. Comparing values of different types previously
+  returned a constant regardless of the operands, which made mixed-type
+  ordering asymmetric and `gt`/`lt` filters on mixed-type fields one-sided.
 
 ## [0.3.0] - 2026-07-05
 

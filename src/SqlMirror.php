@@ -58,9 +58,18 @@ final class SqlMirror
             throw new StorageException('SQL mirror collection is already registered: ' . $name);
         }
 
+        $table = $this->prefix . str_replace('-', '_', $name);
+        foreach ($this->collections as $other => $existing) {
+            if ($existing['table'] === $table) {
+                throw new StorageException(
+                    'SQL mirror table for ' . $name . ' collides with collection ' . $other . ': ' . $table
+                );
+            }
+        }
+
         $this->collections[ $name ] = array(
             'store'   => $store,
-            'table'   => $this->prefix . str_replace('-', '_', $name),
+            'table'   => $table,
             'columns' => null === $schema ? array() : $this->columns_from_schema($schema),
         );
 

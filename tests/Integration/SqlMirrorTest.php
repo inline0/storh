@@ -13,6 +13,7 @@ use Storh\SqlMirror;
 use Storh\SqlMirrorConnection;
 use Storh\SqlMirrorStatement;
 use Storh\StorageException;
+use Storh\Tests\Support\FlakySqlMirrorConnection;
 use Storh\Tests\Support\TestFilesystem;
 use Storh\UuidV7;
 
@@ -290,6 +291,14 @@ final class SqlMirrorTest extends TestCase
             $this->fail('Expected a duplicate registration failure.');
         } catch (StorageException $exception) {
             $this->assertStringContainsString('already registered', $exception->getMessage());
+        }
+
+        $mirror->collection($store, 'my-pages');
+        try {
+            $mirror->collection($store, 'my_pages');
+            $this->fail('Expected a table collision failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('collides with collection my-pages', $exception->getMessage());
         }
 
         try {
@@ -600,6 +609,129 @@ final class SqlMirrorTest extends TestCase
         } finally {
             $pdo->rollBack();
         }
+    }
+
+    public function test_failed_push_leaves_the_mirror_exactly_as_it_was(): void
+    {
+        $store = new DocPerFileStore($this->root, 'pages');
+        $ids = array();
+        for ($i = 0; $i < 3; $i++) {
+            $ids[] = $store->put(array( 'slug' => 'page-' . $i, 'views' => $i ))->id();
+        }
+
+        $pdo   = new \PDO('sqlite::memory:');
+        $inner = new PdoSqlMirrorConnection($pdo);
+
+        ( new SqlMirror($inner) )->collection($store, 'pages')->install();
+
+        $failing = ( new SqlMirror(new FlakySqlMirrorConnection($inner, 3)) )->collection($store, 'pages');
+        try {
+            $failing->push();
+            $this->fail('Expected the injected failure.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('Injected SQL mirror failure', $exception->getMessage());
+        }
+
+        $count = $pdo->query('SELECT COUNT(*) FROM storh_pages');
+        $this->assertNotFalse($count);
+        $this->assertSame(0, (int) $count->fetchColumn(), 'A failed initial push must leave the mirror empty.');
+
+        $mirror = ( new SqlMirror($inner) )->collection($store, 'pages');
+        $mirror->push();
+        $before = $pdo->query('SELECT id, hash FROM storh_pages ORDER BY id');
+        $this->assertNotFalse($before);
+        $rows_before = $before->fetchAll(\PDO::FETCH_ASSOC);
+
+        $store->put(array( 'slug' => 'page-0', 'views' => 100 ), $ids[0]);
+        $store->put(array( 'slug' => 'page-1', 'views' => 101 ), $ids[1]);
+
+        $failing_update = ( new SqlMirror(new FlakySqlMirrorConnection($inner, 4)) )->collection($store, 'pages');
+        try {
+            $failing_update->push();
+            $this->fail('Expected the injected failure during updates.');
+        } catch (StorageException $exception) {
+            $this->assertStringContainsString('Injected SQL mirror failure', $exception->getMessage());
+        }
+
+        $after = $pdo->query('SELECT id, hash FROM storh_pages ORDER BY id');
+        $this->assertNotFalse($after);
+        $this->assertSame($rows_before, $after->fetchAll(\PDO::FETCH_ASSOC), 'A failed push must roll back to the prior mirror state.');
+
+        $healed = $mirror->push();
+        $this->assertSame(2, $healed['updated']);
+        $this->assertTrue($mirror->verify()['ok']);
+    }
+
+    public function test_randomized_mutations_always_reconcile_and_round_trip(): void
+    {
+        $store = new DocPerFileStore($this->root, 'pages');
+        $pdo    = new \PDO('sqlite::memory:');
+        $mirror = ( new SqlMirror($pdo) )->collection($store, 'pages');
+        $mirror->install();
+
+        $values = array(
+            'plain',
+            'ünïcøde ✅ 🚀',
+            "multi\nline\ttext",
+            'quote " and \\ backslash',
+            42,
+            -7,
+            1.5,
+            0.1,
+            true,
+            false,
+            null,
+            array( 'nested' => array( 'deep' => array( 1, 2, 3 ) ) ),
+            array( 'a', 'b', 'c' ),
+            array(),
+        );
+
+        mt_srand(4242);
+        $live = array();
+        for ($round = 0; $round < 6; $round++) {
+            for ($mutation = 0; $mutation < 15; $mutation++) {
+                $action = mt_rand(0, 2);
+                $existing_ids = array_keys($live);
+
+                if (0 === $action || array() === $existing_ids) {
+                    $data = array(
+                        'value' => $values[ mt_rand(0, count($values) - 1) ],
+                        'round' => $round,
+                    );
+                    $record = $store->put($data);
+                    $live[ $record->id() ] = $data;
+                    continue;
+                }
+
+                $id = $existing_ids[ mt_rand(0, count($existing_ids) - 1) ];
+                if (1 === $action) {
+                    $data = array(
+                        'value'   => $values[ mt_rand(0, count($values) - 1) ],
+                        'updated' => $round . ':' . $mutation,
+                    );
+                    $store->put($data, $id);
+                    $live[ $id ] = $data;
+                    continue;
+                }
+
+                $store->delete($id);
+                unset($live[ $id ]);
+            }
+
+            $mirror->push();
+            $health = $mirror->verify();
+            $this->assertTrue($health['ok'], 'round ' . $round . ': ' . implode(' | ', $health['errors']));
+            $this->assertSame(count($live), $health['stats']['pages']['rows']);
+        }
+
+        $restored_store = new DocPerFileStore($this->root . '/restored', 'pages');
+        $restore = ( new SqlMirror($pdo) )->collection($restored_store, 'pages');
+        $this->assertSame(count($live), $restore->pull()['written']);
+
+        foreach ($live as $id => $data) {
+            $this->assertSame($data, $restored_store->get($id)?->data());
+        }
+        $this->assertSame(count($live), iterator_count($restored_store->stream()));
     }
 
     public function test_mysql_dialect_generates_expected_sql(): void

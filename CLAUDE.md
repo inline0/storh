@@ -38,7 +38,10 @@ vendor/bin/storh reindex <root> [collection]
 Run `composer verify` from the repo root after every meaningful change and
 before treating work as done. Performance-sensitive changes additionally run
 `composer bench:ci`; it executes the 1k benchmark and gates the tracked
-metrics against `bench/baselines/ci-1k-all.json`.
+metrics against `bench/baselines/ci-1k-all.json`. That baseline is recorded
+on a GitHub Actions runner; refresh it from a CI benchmark job log, never
+from a development machine, or the gate loses its headroom against runner
+variance.
 
 ## Architecture
 

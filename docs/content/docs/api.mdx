@@ -137,6 +137,21 @@ Requires `ext-pdo` (`sqlite` or `mysql` driver) or `ext-mysqli`.
 - `rebuild(?string $name = null): array`
 - `table(string $name): string`
 
+## `SqlMirrorConnection`
+
+Implement this interface (and `SqlMirrorStatement`) to drive `SqlMirror`
+through a custom database layer. `PdoSqlMirrorConnection` and
+`MysqliSqlMirrorConnection` are the bundled implementations.
+
+- `driver(): string`
+- `execute(string $sql): void`
+- `rows(string $sql): Generator`
+- `statement(string $sql): SqlMirrorStatement`
+- `begin(): void`
+- `commit(): void`
+- `rollback(): void`
+- `in_transaction(): bool`
+
 ## `RecordQuery`
 
 - `RecordQuery::all(): RecordQuery`

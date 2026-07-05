@@ -23,6 +23,8 @@ $metrics = array(
     'cache.cold',
     'cache.warm',
     'uuid.monotonic',
+    'mirror.push',
+    'mirror.rebuild',
 );
 
 if (! is_dir(dirname($current)) && ! mkdir(dirname($current), 0777, true) && ! is_dir(dirname($current))) {

@@ -55,5 +55,5 @@ read or written, validated per the configured mode. Attaching a backend adds
 a cache that outlives the instance: `Cache::memory()` helps long-running
 processes that reopen stores, and `Cache::apcu()` shares decoded records
 across PHP-FPM requests. The [benchmarks](/docs/benchmarks) measure the
-memory backend at about 77 µs per cold read versus 6 µs per warm,
+memory backend at about 78 µs per cold read versus 6 µs per warm,
 STAT-validated hit.

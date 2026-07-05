@@ -637,7 +637,13 @@ function bench_mirror(string $root, int $dataset): array
         $mirror->rebuild();
     });
 
-    return compact('push', 'reconcile', 'flush', 'query', 'rebuild');
+    $restored = new DocPerFileStore($root, 'mirror-restored');
+    $restore  = ( new SqlMirror($pdo, 'bench_') )->collection($restored, 'docs');
+    $pull     = timed(static function () use ($restore): void {
+        $restore->pull();
+    });
+
+    return compact('push', 'reconcile', 'flush', 'query', 'rebuild', 'pull');
 }
 
 /**
