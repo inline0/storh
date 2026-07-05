@@ -319,7 +319,7 @@ default segment size is 1 MiB.
 
 ## API Stability
 
-For 0.4.0, the documented API is the surface shown in the README and docs.
+For 0.5.0, the documented API is the surface shown in the README and docs.
 Some classes expose extra public methods so storh engines can cooperate
 internally; treat those as implementation details unless they are documented.
 That keeps future performance work focused on internal storage, indexing,
