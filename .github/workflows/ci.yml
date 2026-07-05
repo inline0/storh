@@ -21,7 +21,7 @@ jobs:
           php-version: '8.4'
           tools: composer
       - run: composer install --no-interaction --prefer-dist
-      - run: composer cs
+      - run: composer cs # phpcs
 
   static-analysis:
     name: Static Analysis

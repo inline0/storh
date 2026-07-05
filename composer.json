@@ -56,6 +56,7 @@
     "scripts": {
         "test": "phpunit",
         "test:unit": "phpunit --testsuite=unit",
+        "test:integration": "phpunit --testsuite=integration",
         "test:coverage": "XDEBUG_MODE=coverage phpunit --coverage-text --colors=never",
         "test:coverage:clover": "mkdir -p build && XDEBUG_MODE=coverage phpunit --coverage-clover build/clover.xml --colors=never",
         "test:coverage:gate": [
