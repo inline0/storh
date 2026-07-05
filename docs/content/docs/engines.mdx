@@ -19,6 +19,13 @@ good at:
 | Sweet spot | point reads and indexed lookups at any collection size | append-heavy streams into roughly 1M records | durable work dispatch between processes |
 | Weak spot  | non-indexed field scans past roughly 10k records | frequent single-record rewrites (old versions occupy space until compaction) | not a general record store; payloads are dropped once a job completes |
 
+`DocStore` and `SegmentedLog` share the same fluent
+[query API](/docs/query-builder): the same `where()` chain runs on either
+engine, and only the execution differs. `DocStore` can answer from its
+secondary indexes, while `SegmentedLog` filters while scanning segments.
+`Queue` is claim-based, not queryable: workers `claim()` the next job instead
+of filtering jobs.
+
 Rules of thumb:
 
 - Records you fetch, update, or delete individually and query by field:

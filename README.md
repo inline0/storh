@@ -40,6 +40,10 @@ data) with three different disk layouts. Pick by workload:
 | `SegmentedLog` | append-heavy streams read by cursor or time window, into roughly 1M records | frequent single-record rewrites                     |
 | `Queue`        | durable job handoff between worker processes                             | payloads you need to read back after completion     |
 
+`DocStore` and `SegmentedLog` share the same fluent query API; only the
+execution differs (index lookups vs segment scans). `Queue` is claim-based
+rather than queryable.
+
 Engines compose: one storage root can hold `DocStore` collections,
 `SegmentedLog` streams, and `Queue` directories side by side.
 
