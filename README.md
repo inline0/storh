@@ -206,6 +206,61 @@ composer bench:gate -- build/bench-main.json build/bench-current.json --threshol
 composer bench:ci
 ```
 
+## Benchmarks
+
+Medians of three full runs of the shipped harness, 50,000 records per engine,
+on an Apple M1 Pro (16 GB, macOS 26.5, APFS) with PHP 8.5 CLI, opcache and JIT
+off:
+
+```bash
+composer bench:repeat -- --dataset=50000 --engine=all --repeat=3 --memory-limit=512M
+```
+
+Every write is flushed and fsynced before storh reports it stored, so write
+rates are filesystem-bound. Reads run against the OS page cache. Rates are
+derived from the medians; run `composer bench` for your own hardware.
+
+| DocStore, 50k records                          | median          |
+| ---------------------------------------------- | --------------- |
+| `put()`, one durable file per record           | 3.8k records/s  |
+| `putStream()` bulk ingest                      | 3.9k records/s  |
+| `importJsonl()`                                | 3.9k records/s  |
+| `get()` point read, STAT-validated             | 6.4 µs          |
+| indexed equality query, `limit(100)`           | 1.0 ms          |
+| indexed `count()` across the collection        | 39 µs           |
+| index build, 2 equality + 1 range field        | 53k records/s   |
+| full `stream()` with STAT re-validation        | 104k records/s  |
+| `exportJsonl()`                                | 105k records/s  |
+
+| SegmentedLog, 50k records, 16 KB segments      | median          |
+| ---------------------------------------------- | --------------- |
+| `put()`, fsync per append                      | 17k appends/s   |
+| `appendStream()` bulk ingest                   | 52k records/s   |
+| cursor read, 100 records from the midpoint     | 2.1 ms          |
+| time-range read                                | 1.1 ms          |
+| equality `count()`                             | 9 µs            |
+| `compact()` all sealed segments                | 70k records/s   |
+| reopen with torn-tail recovery                 | 226k records/s  |
+
+The benchmark seals a segment every 16 KB to stress segment rolls; the
+default segment size is 1 MiB.
+
+| Queue, 50k jobs                                | median          |
+| ---------------------------------------------- | --------------- |
+| `enqueue()`, fsync per event                   | 23k jobs/s      |
+| `claim()`                                      | 25k jobs/s      |
+| `complete()`                                   | 24k jobs/s      |
+| `enqueueMany()`                                | 208k jobs/s     |
+| `claimMany()`                                  | 471k jobs/s     |
+| `completeMany()`                               | 519k jobs/s     |
+
+| Micro                                          | median          |
+| ---------------------------------------------- | --------------- |
+| cached `get()`, cold then warm (MemoryCache, STAT) | 77 µs / 6.1 µs |
+| UUIDv7 generate                                | 1.3 µs          |
+| UUIDv7 validate                                | 0.30 µs         |
+| in-memory predicate filtering                  | 4.4M rows/s     |
+
 ## API Stability
 
 For 0.0.2, the documented API is the surface shown in the README and docs.
