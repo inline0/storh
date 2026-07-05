@@ -6,7 +6,9 @@ description: File-backed equality, unique, and range indexes for DocStore.
 # Indexes
 
 `DocStore` indexes are stored beside the collection under `.storh/indexes`.
-They are ordinary files and can be rebuilt from records.
+They are ordinary files, derived entirely from the records, and can be
+rebuilt at any time. Declare them fluently or through a
+[schema](/docs/schema):
 
 ```php
 $docs->indexes()
@@ -18,18 +20,28 @@ $docs->indexes()
 
 Index types:
 
-- equality indexes for fields like `kind` or `status`
-- unique indexes for fields like `slug`
-- range indexes for numeric, string, boolean, and null scalar values
+- equality indexes for fields like `kind` or `status`: one file per distinct
+  value, so a point lookup reads only the matching value file
+- unique indexes for fields like `slug`: enforced at write time, a duplicate
+  value fails the `put()` before anything is written
+- range indexes for scalar values: a sorted file with sparse seek
+  checkpoints, serving `gt`, `gte`, `lt`, `lte`, `between`, and `prefix`
 
-Equality and unique indexes are split by field value, so point lookups read only
-the matching value file. Writes update index entries after the record file is atomically replaced.
-Deletes remove matching index entries. `reindex()` rebuilds every configured
-index from the record files.
+Range indexes can also answer `orderBy` on the same field with a `limit`
+straight from index order, ascending or descending, without materializing and
+sorting the whole result.
 
 When a query combines two `eq` predicates on non-unique equality-indexed fields,
 storh can use an automatic compound bucket for that field pair. This keeps
 selective two-field filters fast without requiring another index declaration.
+
+## Consistency and repair
+
+Writes update index entries after the record file is atomically replaced,
+under the collection write lock, so records and indexes move together.
+`verify()` compares every index against a full record scan and reports drift;
+`reindex()` rebuilds every configured index from the record files; `repair()`
+quarantines corrupt records and then rebuilds.
 
 ```php
 $docs->reindex();

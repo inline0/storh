@@ -43,4 +43,29 @@ Operators:
 - `orderBy`, `limit`, `cursor`, `page`
 
 `andWhere` and `orWhere` use callbacks because `and` and `or` are reserved PHP
-keywords.
+keywords:
+
+```php
+$docs->query()
+    ->where('kind')->eq('page')
+    ->orWhere(fn ($q) => $q->where('kind')->eq('post')->where('featured')->eq(true))
+    ->get();
+```
+
+Chained `where()` calls combine with AND; each `orWhere()` branch adds an
+alternative.
+
+## What executes how
+
+Every condition works on every collection; indexes only change the cost.
+On `DocStore`, `eq` and `in` resolve through equality indexes, the range
+operators and `prefix` resolve through range indexes, and `orderBy` with
+`limit` on a range-indexed field reads in index order. Everything else
+filters a record scan. `orderBy` on a field the planner cannot serve from an index sorts the
+matched records in PHP, so on large collections pair it with indexed
+conditions. `count()` uses index entry counts on `DocStore` and in-memory
+counters on `SegmentedLog` when the filter is a single equality.
+
+`cursor($id)` restricts results to records after the id, which combines with
+`page()` for stable pagination ordered by record id. For plain streaming
+filters without the builder, see [Queries](/docs/queries).

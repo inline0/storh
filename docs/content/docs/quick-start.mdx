@@ -43,3 +43,22 @@ if (null !== $job) {
 
 All three engines store arrays as record payloads and return `StorageRecord`
 objects with `id()` and `data()` accessors.
+
+Both stores also expose a fluent query builder:
+
+```php
+$pages = $docs
+    ->query()
+    ->where('kind')->eq('page')
+    ->orderBy('title')
+    ->limit(20)
+    ->get();
+```
+
+Where to next:
+
+- [Choosing an engine](/docs/engines#choosing-an-engine) for which store fits
+  which workload
+- [Indexes](/docs/indexes) before filtering collections beyond a few thousand
+  records
+- [SQL Mirror](/docs/sql-mirror) for joins, search, and reporting in SQL

@@ -5,15 +5,34 @@ description: UUID-tail sharding keeps large collections out of single hot direct
 
 # Sharding
 
-storh shards point-addressed document files by UUID tail bytes:
+`DocStore` writes one file per record. Without sharding, a large collection
+would pile every file into one directory, and directory operations degrade as
+entry counts grow. storh therefore buckets record files by two characters of
+the record id:
 
 ```text
-data/2d/<uuid>.jsonc
+pages/data/2d/018bcfe5-6800-7000-8000-2d5dba6274da.jsonc
 ```
 
-UUIDv7 prefixes are timestamp-heavy, so hot write bursts can share the same
-leading characters. Tail sharding uses entropy bytes instead, spreading new
-document files across buckets while stream order remains sorted by record id.
+The bucket is taken from the start of the UUID's final group (characters 24
+and 25), which is random entropy. Two hex characters give 256 buckets, so a
+100k-record collection averages under 400 files per directory.
 
-The segmented log keeps state in a derived in-memory index; segment files live
-under `segments/` and are bounded by `max_segment_bytes`.
+## Why the tail and not the head
+
+UUIDv7 ids start with a 48-bit millisecond timestamp, so ids created close
+together share their leading characters. Sharding by prefix would send every
+write burst into the same hot directory and only rotate buckets as time
+passes. The tail bytes are random per record, so writes spread evenly from the
+first record on.
+
+Sharding is invisible to reads and queries: `get()` computes the bucket from
+the id, and `stream()` returns records sorted by id across all buckets, so
+cursor pagination behaves as if the collection were one ordered list.
+
+## The other engines
+
+`SegmentedLog` and `Queue` do not shard because they do not create one file
+per record. The log appends to segment files under `segments/`, bounded by
+`max_segment_bytes` (1 MiB by default), and the queue appends events to a
+single `queue.log`. File counts stay low by construction.
