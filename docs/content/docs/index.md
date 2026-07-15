@@ -1,6 +1,11 @@
 ---
-title: Introduction
-description: storh is a standalone, framework-agnostic file datastore for PHP records.
+title: "Introduction"
+description: "storh is a standalone, framework-agnostic file datastore for PHP records."
+path: "."
+order: 0
+section: "Documentation"
+meta_title: "Introduction"
+meta_description: "storh is a standalone, framework-agnostic file datastore for PHP records."
 ---
 
 # storh

@@ -1,6 +1,11 @@
 ---
-title: Caching
-description: Read-through memory and optional APCu caching.
+title: "Caching"
+description: "Read-through memory and optional APCu caching."
+path: "caching"
+order: 7
+section: "Documentation"
+meta_title: "Caching"
+meta_description: "Read-through memory and optional APCu caching."
 ---
 
 # Caching

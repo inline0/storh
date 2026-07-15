@@ -1,6 +1,11 @@
 ---
-title: Benchmarks
-description: Benchmark harness and comparison reports.
+title: "Benchmarks"
+description: "Benchmark harness and comparison reports."
+path: "benchmarks"
+order: 10
+section: "Documentation"
+meta_title: "Benchmarks"
+meta_description: "Benchmark harness and comparison reports."
 ---
 
 # Benchmarks
