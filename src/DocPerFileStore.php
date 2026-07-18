@@ -68,7 +68,7 @@ final class DocPerFileStore implements FileStoreInterface
 
     private bool $writer_registered = false;
 
-    private int $writer_pid = 0;
+    private string $writer_pid = '';
 
     /** @var array<string, array{mtime: int, size: int, hash: string, data: array<string, mixed>}> */
     private array $validated_record_cache = array();
@@ -96,7 +96,7 @@ final class DocPerFileStore implements FileStoreInterface
         $this->collection_path = rtrim($this->root, '/\\') . '/' . $this->collection;
         $this->cache_scope     = hash(self::CACHE_HASH_ALGORITHM, $this->collection_path);
         $this->data_path       = $this->collection_path . '/data';
-        $this->temp_prefix     = getmypid() . '.' . bin2hex(random_bytes(4));
+        $this->temp_prefix     = self::process_identity() . '.' . bin2hex(random_bytes(4));
         $this->writer_marker_path = AtomicFilesystem::writer_marker_path($this->collection_path, $this->temp_prefix);
         $this->validated_record_cache_max_bytes = self::default_validated_record_cache_max_bytes();
         AtomicFilesystem::cleanup_temp_files_on_open($this->collection_root());
@@ -114,12 +114,35 @@ final class DocPerFileStore implements FileStoreInterface
     {
         // Only the registering process may unlink its marker: a forked child
         // inherits this object but must not unregister the parent's writer.
-        if ($this->writer_registered && $this->writer_pid === getmypid()) {
+        if ($this->writer_registered && $this->writer_pid === self::process_identity()) {
             AtomicFilesystem::unregister_writer($this->writer_marker_path);
         }
         if (is_resource($this->write_lock_handle)) {
             fclose($this->write_lock_handle);
         }
+    }
+
+    /**
+     * Stable per-process identity that survives hardened hosts.
+     *
+     * Shared hosts commonly disable getmypid() (PHP 8 then reports it as
+     * undefined), so fall back to a lazily generated token. The token is
+     * fork-safe in practice because hosts that disable getmypid() disable
+     * pcntl_fork() as well.
+     */
+    private static function process_identity(): string
+    {
+        static $fallback = null;
+
+        if (function_exists('getmypid')) {
+            return (string) getmypid();
+        }
+
+        if (! is_string($fallback)) {
+            $fallback = 'p' . bin2hex(random_bytes(8));
+        }
+
+        return $fallback;
     }
 
     /**
@@ -1375,7 +1398,7 @@ final class DocPerFileStore implements FileStoreInterface
             // is detectable by the next cleanup_temp_files_on_open().
             AtomicFilesystem::register_writer($this->writer_marker_path);
             $this->writer_registered = true;
-            $this->writer_pid        = (int) getmypid();
+            $this->writer_pid        = self::process_identity();
         }
 
         $this->write_lock_depth++;
