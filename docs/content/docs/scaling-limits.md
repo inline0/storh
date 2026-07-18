@@ -1,6 +1,11 @@
 ---
-title: Scaling & Limits
-description: Practical limits for file-first storage.
+title: "Scaling & Limits"
+description: "Practical limits for file-first storage."
+path: "scaling-limits"
+order: 170
+section: "Performance & Scale"
+meta_title: "Scaling & Limits"
+meta_description: "Practical limits for file-first storage."
 ---
 
 # Scaling & Limits

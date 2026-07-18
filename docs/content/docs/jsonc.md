@@ -1,6 +1,11 @@
 ---
-title: JSONC
-description: storh reads JSON documents with comments and trailing commas.
+title: "JSONC"
+description: "storh reads JSON documents with comments and trailing commas."
+path: "jsonc"
+order: 70
+section: "Core Concepts"
+meta_title: "JSONC"
+meta_description: "storh reads JSON documents with comments and trailing commas."
 ---
 
 # JSONC

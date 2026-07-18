@@ -1,6 +1,11 @@
 ---
-title: Atomicity & Recovery
-description: How storh handles atomic writes, torn records, and compaction leftovers.
+title: "Atomicity & Recovery"
+description: "How storh handles atomic writes, torn records, and compaction leftovers."
+path: "atomicity"
+order: 130
+section: "Data Operations"
+meta_title: "Atomicity & Recovery"
+meta_description: "How storh handles atomic writes, torn records, and compaction leftovers."
 ---
 
 # Atomicity & Recovery

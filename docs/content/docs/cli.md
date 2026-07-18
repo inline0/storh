@@ -1,6 +1,11 @@
 ---
-title: CLI
-description: Complete command reference for the bin/storh executable.
+title: "CLI"
+description: "Complete command reference for the bin/storh executable."
+path: "cli"
+order: 180
+section: "Reference"
+meta_title: "CLI"
+meta_description: "Complete command reference for the bin/storh executable."
 ---
 
 # CLI

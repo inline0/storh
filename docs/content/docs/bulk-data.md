@@ -1,6 +1,11 @@
 ---
-title: Bulk Data
-description: Bulk writes, JSONL import/export, partitioning, and retention.
+title: "Bulk Data"
+description: "Bulk writes, JSONL import/export, partitioning, and retention."
+path: "bulk-data"
+order: 110
+section: "Data Operations"
+meta_title: "Bulk Data"
+meta_description: "Bulk writes, JSONL import/export, partitioning, and retention."
 ---
 
 # Bulk Data

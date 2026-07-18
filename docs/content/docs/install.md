@@ -1,6 +1,10 @@
 ---
-title: Install
-description: Install storh with Composer.
+title: "Install"
+description: "Install storh with Composer."
+path: "install"
+order: 20
+meta_title: "Install"
+meta_description: "Install storh with Composer."
 ---
 
 # Install

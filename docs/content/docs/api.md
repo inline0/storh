@@ -1,6 +1,11 @@
 ---
-title: API
-description: Public classes and their main methods.
+title: "API"
+description: "Public classes and their main methods."
+path: "api"
+order: 190
+section: "Reference"
+meta_title: "API"
+meta_description: "Public classes and their main methods."
 ---
 
 # API

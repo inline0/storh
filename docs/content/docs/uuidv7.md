@@ -1,6 +1,11 @@
 ---
-title: UUIDv7
-description: UUIDv7 ids make records sortable and time-addressable.
+title: "UUIDv7"
+description: "UUIDv7 ids make records sortable and time-addressable."
+path: "uuidv7"
+order: 60
+section: "Core Concepts"
+meta_title: "UUIDv7"
+meta_description: "UUIDv7 ids make records sortable and time-addressable."
 ---
 
 # UUIDv7

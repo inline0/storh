@@ -1,6 +1,11 @@
 ---
-title: Schema
-description: Optional collection schemas for validation and index declaration.
+title: "Schema"
+description: "Optional collection schemas for validation and index declaration."
+path: "schema"
+order: 50
+section: "Core Concepts"
+meta_title: "Schema"
+meta_description: "Optional collection schemas for validation and index declaration."
 ---
 
 # Schema

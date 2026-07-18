@@ -1,6 +1,11 @@
 ---
-title: Engines
-description: Choose between DocStore, SegmentedLog, and Queue.
+title: "Engines"
+description: "Choose between DocStore, SegmentedLog, and Queue."
+path: "engines"
+order: 40
+section: "Core Concepts"
+meta_title: "Engines"
+meta_description: "Choose between DocStore, SegmentedLog, and Queue."
 ---
 
 # Engines

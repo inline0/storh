@@ -1,6 +1,11 @@
 ---
-title: Indexes
-description: File-backed equality, unique, and range indexes for DocStore.
+title: "Indexes"
+description: "File-backed equality, unique, and range indexes for DocStore."
+path: "indexes"
+order: 90
+section: "Querying"
+meta_title: "Indexes"
+meta_description: "File-backed equality, unique, and range indexes for DocStore."
 ---
 
 # Indexes

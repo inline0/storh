@@ -1,6 +1,11 @@
 ---
-title: Query Builder
-description: Fluent Prisma/Drizzle-style querying over storh records.
+title: "Query Builder"
+description: "Fluent Prisma/Drizzle-style querying over storh records."
+path: "query-builder"
+order: 80
+section: "Querying"
+meta_title: "Query Builder"
+meta_description: "Fluent Prisma/Drizzle-style querying over storh records."
 ---
 
 # Query Builder

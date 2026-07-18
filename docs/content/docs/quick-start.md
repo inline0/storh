@@ -1,6 +1,10 @@
 ---
-title: Quick Start
-description: Create records, append log entries, and claim queued work.
+title: "Quick Start"
+description: "Create records, append log entries, and claim queued work."
+path: "quick-start"
+order: 30
+meta_title: "Quick Start"
+meta_description: "Create records, append log entries, and claim queued work."
 ---
 
 # Quick Start
