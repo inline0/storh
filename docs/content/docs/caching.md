@@ -2,8 +2,8 @@
 title: "Caching"
 description: "Read-through memory and optional APCu caching."
 path: "caching"
-order: 7
-section: "Documentation"
+order: 140
+section: "Performance & Scale"
 meta_title: "Caching"
 meta_description: "Read-through memory and optional APCu caching."
 ---

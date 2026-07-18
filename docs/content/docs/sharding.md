@@ -2,8 +2,8 @@
 title: "Sharding"
 description: "UUID-tail sharding keeps large collections out of single hot directories."
 path: "sharding"
-order: 15
-section: "Documentation"
+order: 160
+section: "Performance & Scale"
 meta_title: "Sharding"
 meta_description: "UUID-tail sharding keeps large collections out of single hot directories."
 ---

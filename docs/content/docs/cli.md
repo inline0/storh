@@ -2,8 +2,8 @@
 title: "CLI"
 description: "Complete command reference for the bin/storh executable."
 path: "cli"
-order: 17
-section: "Documentation"
+order: 180
+section: "Reference"
 meta_title: "CLI"
 meta_description: "Complete command reference for the bin/storh executable."
 ---

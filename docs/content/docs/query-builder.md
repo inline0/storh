@@ -2,8 +2,8 @@
 title: "Query Builder"
 description: "Fluent Prisma/Drizzle-style querying over storh records."
 path: "query-builder"
-order: 4
-section: "Documentation"
+order: 80
+section: "Querying"
 meta_title: "Query Builder"
 meta_description: "Fluent Prisma/Drizzle-style querying over storh records."
 ---

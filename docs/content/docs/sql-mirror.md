@@ -2,8 +2,8 @@
 title: "SQL Mirror"
 description: "Push collections into SQLite or MySQL for joins, search, and reporting."
 path: "sql-mirror"
-order: 9
-section: "Documentation"
+order: 120
+section: "Data Operations"
 meta_title: "SQL Mirror"
 meta_description: "Push collections into SQLite or MySQL for joins, search, and reporting."
 ---

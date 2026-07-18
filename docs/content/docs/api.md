@@ -2,8 +2,8 @@
 title: "API"
 description: "Public classes and their main methods."
 path: "api"
-order: 18
-section: "Documentation"
+order: 190
+section: "Reference"
 meta_title: "API"
 meta_description: "Public classes and their main methods."
 ---

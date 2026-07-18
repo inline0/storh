@@ -2,8 +2,8 @@
 title: "Queries"
 description: "Stream records with cursors, time ranges, limits, and field equality filters."
 path: "queries"
-order: 13
-section: "Documentation"
+order: 100
+section: "Querying"
 meta_title: "Queries"
 meta_description: "Stream records with cursors, time ranges, limits, and field equality filters."
 ---

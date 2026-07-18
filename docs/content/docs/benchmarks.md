@@ -2,8 +2,8 @@
 title: "Benchmarks"
 description: "Benchmark harness and comparison reports."
 path: "benchmarks"
-order: 10
-section: "Documentation"
+order: 150
+section: "Performance & Scale"
 meta_title: "Benchmarks"
 meta_description: "Benchmark harness and comparison reports."
 ---

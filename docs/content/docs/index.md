@@ -2,8 +2,8 @@
 title: "Introduction"
 description: "storh is a standalone, framework-agnostic file datastore for PHP records."
 path: "."
-order: 0
-section: "Documentation"
+order: 10
+section: "Introduction"
 meta_title: "Introduction"
 meta_description: "storh is a standalone, framework-agnostic file datastore for PHP records."
 ---
