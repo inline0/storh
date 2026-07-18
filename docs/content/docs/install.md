@@ -3,7 +3,6 @@ title: "Install"
 description: "Install storh with Composer."
 path: "install"
 order: 20
-section: "Introduction"
 meta_title: "Install"
 meta_description: "Install storh with Composer."
 ---
