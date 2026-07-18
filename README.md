@@ -1,8 +1,8 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="./docs/public/logo-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="./docs/public/logo-light.svg">
-    <img alt="storh" src="./docs/public/logo-light.svg" height="56">
+    <source media="(prefers-color-scheme: dark)" srcset="./.github/logo-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="./.github/logo-light.svg">
+    <img alt="storh" src="./.github/logo-light.svg" height="56">
   </picture>
 </p>
 

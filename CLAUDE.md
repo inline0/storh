@@ -88,9 +88,10 @@ speed; a perf change must keep the durability tests and the bench gate green.
 - `tests/Support/` holds temp-dir cleanup and a fault-injection stream wrapper.
 - `bench/` is the benchmark harness; `bench/baselines/` feeds `composer bench:ci`.
 - `bin/storh` is the maintenance CLI.
-- `docs/` is the Next.js docs site; authored content lives in
-  `docs/content/docs/*.mdx`. Update it together with README.md when the
-  documented API surface changes.
+- `docs/` is the portable Markdown documentation (`docs/*.md` plus
+  `docs/meta.json` for navigation), validated by
+  `scripts/check-docs-content.mjs`. Update it together with README.md when
+  the documented API surface changes.
 - `tools/coverage-gate.php` enforces the coverage floor in CI.
 
 ## Conventions
