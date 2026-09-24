@@ -4,6 +4,31 @@ All notable changes to storh are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2026-09-24
+
+### Fixed
+
+- `vendor/bin/storh` works when storh is installed as a dependency. The binary
+  only looked for the autoloader in its own `vendor/`.
+- The Composer package no longer ships tests, docs, benchmarks, tools or
+  scripts, taking it from 188 KB to 79 KB.
+
+### Changed
+
+- Documentation rewritten as portable Markdown in `docs/`.
+- Development dependencies raised to the inline0 canonical minimums,
+  including `squizlabs/php_codesniffer` `^3.13.6` for CVE-2026-67434. Dev
+  only, no effect on consumers.
+
+## [0.5.1] - 2026-07-18
+
+### Fixed
+
+- Survives hosts that list `getmypid` in `disable_functions`, where the call
+  is fatal on PHP 8. The per-process identity helper falls back to a lazily
+  generated token, and fork safety holds because such hosts disable
+  `pcntl_fork` as well.
+
 ## [0.5.0] - 2026-07-05
 
 ### Changed
@@ -111,6 +136,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - CLI for stats, verify, compaction, and document reindex operations.
 - Documentation site, README examples, security policy, and MIT license.
 
+[0.5.2]: https://github.com/inline0/storh/compare/v0.5.1...v0.5.2
+[0.5.1]: https://github.com/inline0/storh/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/inline0/storh/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/inline0/storh/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/inline0/storh/compare/v0.0.2...v0.3.0
