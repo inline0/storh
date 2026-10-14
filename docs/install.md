@@ -23,7 +23,7 @@ composer require storh/storh
 storh has no Composer runtime dependencies. Two extensions unlock optional
 features when present: `ext-pdo` or `ext-mysqli` for
 [SQL mirrors](/docs/sql-mirror), and `ext-apcu` for the shared
-`Cache::apcu()` backend.
+`Cache::apcu()` backend, which caches nothing when APCu is unavailable.
 
 ## Pick a storage root
 

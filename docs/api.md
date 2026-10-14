@@ -10,9 +10,10 @@ meta_description: "Public classes and their main methods."
 
 # API
 
-The methods listed here are the documented 0.5.0 API. Some classes expose
-additional public methods so storh engines can cooperate internally; treat those
-as implementation details unless they are listed on this page.
+The methods listed here are the documented API of the 0.5 releases. Some
+classes expose additional public methods so storh engines can cooperate
+internally; treat those as implementation details unless they are listed on
+this page.
 
 ## `StorageRoot`
 

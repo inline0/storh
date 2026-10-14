@@ -21,8 +21,9 @@ global constants, or require a framework adapter.
 
 - `DocStore` stores one JSONC file per record with UUID-tail-sharded paths.
   Best for point reads by id and indexed field queries.
-- `SegmentedLog` appends length and checksum guarded records to NDJSON
-  segments. Best for append-heavy streams with cursor and time-range reads.
+- `SegmentedLog` appends records to segment files as JSON lines guarded by a
+  byte length and checksum prefix. Best for append-heavy streams with cursor
+  and time-range reads.
 - `Queue` appends durable job events and keeps queue state in memory. Best
   for durable work dispatch between processes.
 
@@ -30,8 +31,9 @@ Unsure which one fits your workload? See
 [Choosing an engine](/docs/engines#choosing-an-engine) for a side-by-side
 comparison.
 
-The extracted class names remain available as `DocPerFileStore`,
-`SegmentedLogStore`, and `LogQueue`.
+`DocStore`, `SegmentedLog`, and `Queue` are class aliases of the
+implementation classes `DocPerFileStore`, `SegmentedLogStore`, and `LogQueue`,
+so both names refer to the same class.
 
 ## Requirements
 

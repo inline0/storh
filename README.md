@@ -27,7 +27,7 @@ that want durable local records without a database server. It provides:
 - an append-only segmented log with cursor and time-range reads
 - an append-only log-backed queue
 - Prisma/Drizzle-style fluent querying, secondary indexes, schema validation,
-  caching, bulk JSONL import/export, maintenance APIs, benchmarks, and a CLI
+  caching, bulk JSONL import/export, maintenance APIs, and a CLI
 - an optional SQL mirror that pushes collections into SQLite or MySQL for
   joins, search, and reporting while the files stay canonical
 - UUIDv7 ids, UUID-tail sharding, atomic writes, torn-write recovery, retention,
@@ -113,8 +113,9 @@ if (null !== $job) {
 path. It is best for point reads and modest field scans. `putStream()` ingests
 large iterables without retaining returned record objects.
 
-`SegmentedLog` appends records to length and checksum guarded NDJSON segments.
-It is best for append-heavy workflows, cursor pagination, time-range scans, and
+`SegmentedLog` appends records to segment files as JSON lines guarded by a
+byte length and checksum prefix, so plain NDJSON tools cannot read them. It is
+best for append-heavy workflows, cursor pagination, time-range scans, and
 compaction. `appendStream()` ingests large iterables without retaining returned
 record objects.
 
@@ -235,12 +236,26 @@ mysqli handle; the extensions are required only when the mirror is used.
 
 ## Operations
 
-```bash
-vendor/bin/storh stats var/storh pages doc
-vendor/bin/storh verify var/storh events log
-vendor/bin/storh compact var/storh events log
-vendor/bin/storh reindex var/storh pages
+The CLI takes the storage root the engines were opened with, which is the path
+`StorageRoot::resolve()` returns. For the Quick Start root
+(`StorageRoot::resolve(__DIR__ . '/var/storh', 'app')`) that is `var/storh/app`:
 
+```bash
+vendor/bin/storh stats var/storh/app pages doc
+vendor/bin/storh verify var/storh/app events log
+vendor/bin/storh compact var/storh/app events log
+vendor/bin/storh reindex var/storh/app pages
+```
+
+`vendor/bin/storh` needs storh 0.5.2 or later when storh is installed as a
+dependency; earlier versions only looked for the autoloader in the package's own
+`vendor/` directory.
+
+The benchmark harness lives in `bench/` in this repository and has not been
+part of the Composer package since 0.5.2. Run it from a clone after
+`composer install`:
+
+```bash
 composer bench
 composer bench -- --dataset=100000 --engine=doc
 composer bench -- --dataset=100000 --engine=cache --cache-validation=trust
@@ -254,9 +269,9 @@ composer bench:ci
 
 ## Benchmarks
 
-Medians of three full runs of the shipped harness, 50,000 records per engine,
-on an Apple M1 Pro (16 GB, macOS 26.5, APFS) with PHP 8.5 CLI, opcache and JIT
-off:
+Medians of three full runs of the repository's benchmark harness, 50,000
+records per engine, on an Apple M1 Pro (16 GB, macOS 26.5, APFS) with PHP 8.5
+CLI, opcache and JIT off:
 
 ```bash
 composer bench:repeat -- --dataset=50000 --engine=all --repeat=3 --memory-limit=512M
@@ -264,7 +279,8 @@ composer bench:repeat -- --dataset=50000 --engine=all --repeat=3 --memory-limit=
 
 Every write is flushed and fsynced before storh reports it stored, so write
 rates are filesystem-bound. Reads run against the OS page cache. Rates are
-derived from the medians; run `composer bench` for your own hardware.
+derived from the medians; run `composer bench` from a clone of the repository
+for your own hardware.
 
 | DocStore, 50k records                          | median          |
 | ---------------------------------------------- | --------------- |
@@ -319,7 +335,7 @@ default segment size is 1 MiB.
 
 ## API Stability
 
-For 0.5.0, the documented API is the surface shown in the README and docs.
+For the 0.5 releases, the documented API is the surface shown in the README and docs.
 Some classes expose extra public methods so storh engines can cooperate
 internally; treat those as implementation details unless they are documented.
 That keeps future performance work focused on internal storage, indexing,

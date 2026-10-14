@@ -18,7 +18,7 @@ good at:
 
 |            | DocStore | SegmentedLog | Queue |
 | ---------- | -------- | ------------ | ----- |
-| On disk    | one JSONC file per record, UUID-tail sharded | append-only NDJSON segments plus a manifest | one append-only event log |
+| On disk    | one JSONC file per record, UUID-tail sharded | append-only segments of length and checksum prefixed JSON lines, plus a manifest | one append-only event log |
 | Writing    | atomic file replace per record | checksummed appends; overwrites and deletes append new entries, reclaimed by `compact()` | checksummed append per queue event |
 | Reading    | `get()` by id, indexed queries | cursor and time-range scans, `get()` via the state index | `claim()` in enqueue order |
 | Sweet spot | point reads and indexed lookups at any collection size | append-heavy streams into roughly 1M records | durable work dispatch between processes |
@@ -69,8 +69,11 @@ articles/data/2d/018bcfe5-6800-7000-8000-2d5dba6274da.jsonc
 ## SegmentedLog
 
 `SegmentedLog` is for append-heavy records, cursor reads, and time-range reads.
-Records are written to active NDJSON segments. Full segments roll to sealed
-segments with sparse indexes.
+Records are written to the active segment, one line per record in the form
+`<byte-length>\t<xxh32>\t<json>` (see [Atomicity](/docs/atomicity)). The
+segment files use an `.ndjson` extension, but the length and checksum prefix
+means plain NDJSON tools cannot read them; read records back with `stream()` or
+the query builder. Full segments roll to sealed segments with sparse indexes.
 
 ```php
 $events = new Storh\SegmentedLog($root, 'events');

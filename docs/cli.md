@@ -17,12 +17,25 @@ vendor/bin/storh compact <root> [collection] [doc|log]
 vendor/bin/storh reindex <root> [collection]
 ```
 
+`<root>` is the storage root the engines were opened with, which is the path
+`StorageRoot::resolve()` returns: the base directory plus the namespace. A store
+opened under `StorageRoot::resolve(__DIR__ . '/var/storh', 'app')` lives under
+`var/storh/app`:
+
 ```bash
-vendor/bin/storh stats var/storh pages doc
-vendor/bin/storh verify var/storh events log
-vendor/bin/storh compact var/storh events log
-vendor/bin/storh reindex var/storh pages
+vendor/bin/storh stats var/storh/app pages doc
+vendor/bin/storh verify var/storh/app events log
+vendor/bin/storh compact var/storh/app events log
+vendor/bin/storh reindex var/storh/app pages
 ```
+
+Passing the base directory alone (`var/storh`) points the commands at a
+collection that does not exist yet, so they report an empty collection instead
+of failing.
+
+`vendor/bin/storh` needs storh 0.5.2 or later when storh is installed as a
+dependency. Earlier versions only looked for the Composer autoloader in the
+package's own `vendor/` directory and failed with a `require` error.
 
 The CLI prints stable JSON so it can be used from cron jobs and deployment
 health checks. The collection defaults to `default`; the engine defaults to

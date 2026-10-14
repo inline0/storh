@@ -10,7 +10,10 @@ meta_description: "Benchmark harness and comparison reports."
 
 # Benchmarks
 
-The benchmark harness writes stable JSON and a human-readable report.
+The benchmark harness writes stable JSON and a human-readable report. It lives
+in `bench/` in the [storh repository](https://github.com/inline0/storh) and has
+not been part of the Composer package since 0.5.2, so the `composer bench*`
+commands below run only from a clone, after `composer install`:
 
 ```bash
 composer bench
@@ -41,7 +44,8 @@ composer bench:repeat -- --dataset=50000 --engine=all --repeat=3 --memory-limit=
 
 Every write is flushed and fsynced before storh reports it stored, so write
 rates are filesystem-bound. Reads run against the OS page cache. Rates are
-derived from the medians; run `composer bench` for your own hardware.
+derived from the medians; run `composer bench` from a clone of the repository
+for your own hardware.
 
 | DocStore, 50k records                          | median          |
 | ---------------------------------------------- | --------------- |
