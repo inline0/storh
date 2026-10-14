@@ -4,6 +4,15 @@ All notable changes to storh are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.3] - 2026-10-14
+
+### Fixed
+
+- CLI stats, verification, compaction and reindexing reject missing storage
+  roots and collections instead of creating an empty collection and reporting
+  it as healthy.
+- Composer suggests `ext-apcu` for the optional `Cache::apcu()` backend.
+
 ## [0.5.2] - 2026-09-24
 
 ### Fixed
@@ -136,6 +145,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - CLI for stats, verify, compaction, and document reindex operations.
 - Documentation site, README examples, security policy, and MIT license.
 
+[0.5.3]: https://github.com/inline0/storh/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/inline0/storh/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/inline0/storh/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/inline0/storh/compare/v0.4.0...v0.5.0
