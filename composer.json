@@ -31,6 +31,7 @@
         "ext-json": "*"
     },
     "suggest": {
+        "ext-apcu": "Shared cross-request record cache through Cache::apcu().",
         "ext-pdo": "Required to mirror collections into SQLite or MySQL with SqlMirror.",
         "ext-pdo_sqlite": "SQLite driver for SqlMirror mirrors.",
         "ext-pdo_mysql": "MySQL driver for SqlMirror mirrors.",

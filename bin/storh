@@ -103,7 +103,17 @@ function command_target(array $args, string $defaultEngine): array
         throw new RuntimeException('Usage: storh <stats|verify|compact|reindex> <root> [collection] [doc|log|queue]');
     }
 
-    return array($root, $args[1] ?? 'default', $args[2] ?? $defaultEngine);
+    $collection = $args[1] ?? 'default';
+    if (! is_dir($root)) {
+        throw new RuntimeException('Storage root does not exist: ' . $root);
+    }
+
+    $path = rtrim($root, '/\\') . '/' . $collection;
+    if ('' === trim($collection) || ! is_dir($path)) {
+        throw new RuntimeException('Collection does not exist: ' . $path);
+    }
+
+    return array($root, $collection, $args[2] ?? $defaultEngine);
 }
 
 function store_for(string $root, string $collection, string $engine): DocPerFileStore|SegmentedLogStore|LogQueue

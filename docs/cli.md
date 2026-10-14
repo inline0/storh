@@ -29,9 +29,10 @@ vendor/bin/storh compact var/storh/app events log
 vendor/bin/storh reindex var/storh/app pages
 ```
 
-Passing the base directory alone (`var/storh`) points the commands at a
-collection that does not exist yet, so they report an empty collection instead
-of failing.
+Every command requires an existing root and collection directory. A missing
+target prints a clear error and exits 1 without creating storage directories.
+Passing the base directory alone (`var/storh`) therefore fails when the
+collection lives under its namespace (`var/storh/app`).
 
 `vendor/bin/storh` needs storh 0.5.2 or later when storh is installed as a
 dependency. Earlier versions only looked for the Composer autoloader in the

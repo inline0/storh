@@ -241,6 +241,30 @@ final class StorageWorkflowTest extends TestCase
         $this->assertSame(1, $verified['stats']['records']);
     }
 
+    public function test_cli_rejects_missing_targets_without_creating_them(): void
+    {
+        if (! function_exists('exec')) {
+            $this->markTestSkipped('exec() is unavailable.');
+        }
+
+        foreach (array( 'stats', 'verify', 'compact', 'reindex' ) as $command) {
+            foreach (array( 'doc', 'log', 'queue' ) as $engine) {
+                foreach (array( $this->root, $this->root . '/missing-root' ) as $root) {
+                    $arguments = array( PHP_BINARY, dirname(__DIR__, 2) . '/bin/storh', $command, $root, 'missing', $engine );
+                    $output = array();
+                    exec(implode(' ', array_map('escapeshellarg', $arguments)) . ' 2>&1', $output, $status);
+
+                    $this->assertSame(1, $status, implode("\n", $output));
+                    $this->assertStringContainsString('does not exist:', implode("\n", $output));
+                    $this->assertDirectoryDoesNotExist($root . '/missing');
+                    $this->assertDirectoryDoesNotExist($this->root . '/missing-root');
+                }
+            }
+        }
+
+        $this->assertSame(array(), array_values(array_diff(scandir($this->root), array( '.', '..' ))));
+    }
+
     /**
      * @param list<string> $arguments
      * @return array<string, mixed>
