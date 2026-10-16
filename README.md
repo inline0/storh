@@ -125,7 +125,7 @@ bounded events instead of creating one file per job. Bulk enqueue, claim, and
 complete methods reduce lock and flush cost for large queues.
 
 For a side-by-side comparison with rules of thumb, see
-[Choosing an engine](https://storh.dev/docs/engines#choosing-an-engine) in
+[Choosing an engine](https://storh.inline0.dev/docs/engines#choosing-an-engine) in
 the docs.
 
 ## Durability & Concurrency
