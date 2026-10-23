@@ -5,9 +5,15 @@ log, and a log-backed queue. Zero dependencies beyond `php ^8.2` and
 `ext-json`. Callers pass a base directory; storh never discovers application
 paths and has no framework coupling.
 
+## Agent instructions
+
+Keep agent instructions in `AGENTS.md` only. Use nested `AGENTS.md` files when
+guidance needs a narrower scope. Do not add `CLAUDE.md` files, symlinks, or
+forwarding stubs for repository guidance.
+
 ## Releases
 
-Follow the [shared release rule](https://github.com/inline0/_cp/blob/main/CLAUDE.md#canonical-github-releases).
+Follow the [shared release rule](https://github.com/inline0/_cp/blob/main/AGENTS.md#canonical-github-releases).
 Titles are exactly the tag. Bodies contain only the linked `CHANGELOG.md`
 sentence with that tag. Keep complete notes in `CHANGELOG.md` before publishing.
 `.github/workflows/release-format.yml` enforces this format; keep it identical
