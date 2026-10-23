@@ -5,6 +5,14 @@ log, and a log-backed queue. Zero dependencies beyond `php ^8.2` and
 `ext-json`. Callers pass a base directory; storh never discovers application
 paths and has no framework coupling.
 
+## Releases
+
+Follow the [shared release rule](https://github.com/inline0/_cp/blob/main/CLAUDE.md#canonical-github-releases).
+Titles are exactly the tag. Bodies contain only the linked `CHANGELOG.md`
+sentence with that tag. Keep complete notes in `CHANGELOG.md` before publishing.
+`.github/workflows/release-format.yml` enforces this format; keep it identical
+to `_cp/scripts/release-format.yml`.
+
 ## Quick Reference
 
 ```bash
