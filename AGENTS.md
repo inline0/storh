@@ -104,7 +104,7 @@ speed; a perf change must keep the durability tests and the bench gate green.
 - `bin/storh` is the maintenance CLI.
 - `docs/` is the portable Markdown documentation (`docs/*.md` plus
   `docs/meta.json` for navigation), validated by
-  `scripts/check-docs-content.mjs`. Update it together with README.md when
+  `scripts/check-docs-content.ts`. Update it together with README.md when
   the documented API surface changes.
 - `tools/coverage-gate.php` enforces the coverage floor in CI.
 
@@ -119,3 +119,13 @@ PHPStan must stay green at level 10 over `src/` with
 Comment policy: PHPDoc on public APIs and wherever array shapes need typing;
 inline comments explain why, not what; no decorative separator comments; no
 em dashes.
+
+## Development tooling
+
+Repository tooling uses Node.js 26.12+, pnpm 12.14 and Effect 4.0.5. Install
+with `pnpm install --frozen-lockfile`. Run `pnpm typecheck`, `pnpm test:scripts`
+and `pnpm docs:check` for the TypeScript gate. Scripts run directly as
+`node scripts/<name>.ts`; the shared runtime provides typed CLI failures,
+filesystem services and scoped subprocesses that close on interruption.
+These are development dependencies only; PHP consumers keep the same runtime
+requirements and Composer archives exclude the Node tooling.

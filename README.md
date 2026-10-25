@@ -353,3 +353,13 @@ caching, and query-planner improvements without changing user-facing calls.
 ## License
 
 MIT © inline0.
+
+## Development tooling
+
+Repository tooling uses Node.js 26.12+, pnpm 12.14 and Effect 4.0.5. Install
+with `pnpm install --frozen-lockfile`. Run `pnpm typecheck`, `pnpm test:scripts`
+and `pnpm docs:check` for the TypeScript gate. Scripts run directly as
+`node scripts/<name>.ts`; the shared runtime provides typed CLI failures,
+filesystem services and scoped subprocesses that close on interruption.
+These are development dependencies only; PHP consumers keep the same runtime
+requirements and Composer archives exclude the Node tooling.

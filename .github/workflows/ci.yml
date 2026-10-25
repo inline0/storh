@@ -58,6 +58,13 @@ jobs:
           tools: composer
           coverage: xdebug
       - run: composer install --no-interaction --prefer-dist
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.12.0'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.14.0
+      - run: pnpm install --frozen-lockfile
       - run: composer test:coverage:gate
 
   benchmark:
@@ -70,6 +77,13 @@ jobs:
           php-version: '8.4'
           tools: composer
       - run: composer install --no-interaction --prefer-dist
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.12.0'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.14.0
+      - run: pnpm install --frozen-lockfile
       - run: composer bench:ci
 
   mirror-mysql:
